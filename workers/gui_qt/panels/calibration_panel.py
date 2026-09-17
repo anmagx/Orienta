@@ -1,0 +1,1768 @@
+"""
+PyQt5 Calibration Panel for orienta GUI.
+
+Contains drift correction angle control, and runtime
+controls for resetting orientation and recalibrating gyro bias.
+"""
+from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
+                             QLabel, QPushButton, QSlider, QFrame, QWidget, QComboBox, QDialog, QApplication, QSizePolicy)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont, QPainter, QPen, QColor, QKeySequence
+
+import math
+import queue
+
+from config.config import (
+    DEFAULT_CENTER_THRESHOLD,
+    THRESH_DEBOUNCE_MS,
+    QUEUE_PUT_TIMEOUT,
+    VISUALIZATION_RANGE,
+    VISUALIZATION_SIZE
+)
+from util.error_utils import safe_queue_put
+
+
+class KeyCaptureDialog(QDialog):
+    """Dialog to capture keyboard and gamepad input via input worker."""
+    
+    def __init__(self, parent=None, current_key=None, input_command_queue=None, input_response_queue=None):
+        super().__init__(parent)
+        self.setWindowTitle("Capture Reset Shortcut")
+        self.setModal(True)
+        self.resize(300, 150)
+        
+        # Store input worker queues
+        self.input_command_queue = input_command_queue
+        self.input_response_queue = input_response_queue
+        
+        # Apply dark mode styling if parent uses dark theme
+        if parent:
+            bg_color = parent.palette().color(parent.backgroundRole())
+            is_dark = bg_color.value() < 128
+            
+            if is_dark:
+                dark_style = """
+                QDialog {
+                    background-color: #2b2b2b;
+                    color: #ffffff;
+                }
+                QLabel {
+                    color: #ffffff;
+                    background-color: transparent;
+                }
+                QLabel[status="disabled"] {
+                    color: #888888;
+                }
+                """
+                self.setStyleSheet(dark_style)
+        
+        # Center dialog over parent
+        if parent:
+            parent_geo = parent.geometry()
+            x = parent_geo.x() + (parent_geo.width() - 300) // 2
+            y = parent_geo.y() + (parent_geo.height() - 120) // 2
+            self.move(x, y)
+        
+        self.captured_key = current_key if current_key and current_key != 'None' else None
+        self.display_name = None
+        
+        layout = QVBoxLayout()
+        
+        # Instructions
+        instructions = QLabel("Press any key or gamepad button to set as shortcut:")
+        instructions.setAlignment(Qt.AlignCenter)
+        layout.addWidget(instructions)
+        
+        # Additional info
+        info_label = QLabel("(Keyboard, gamepad buttons, or D-pad supported)\\n(Esc to cancel)")
+        info_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(info_label)
+        
+        if current_key and current_key != 'None':
+            layout.addWidget(QLabel(f"Current: {current_key}"))
+            
+        self.status_label = QLabel("Waiting for input...")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.status_label)
+        
+        self.setLayout(layout)
+        
+        # Start input capture via input worker
+        if self.input_command_queue:
+            try:
+                self.input_command_queue.put(('start_capture',))
+                print("[KeyCaptureDialog] Sent start_capture command to input worker")
+                # Start timer to check for responses
+                self.response_timer = QTimer()
+                self.response_timer.timeout.connect(self._check_input_response)
+                self.response_timer.start(50)  # Check every 50ms
+            except Exception as e:
+                print(f"[KeyCaptureDialog] Error starting capture: {e}")
+                self.status_label.setText("Input capture unavailable")
+        else:
+            print("[KeyCaptureDialog] No input command queue available")
+            self.status_label.setText("Input capture unavailable")
+    
+    def _check_input_response(self):
+        """Check for responses from input worker."""
+        if not self.input_response_queue:
+            return
+            
+        try:
+            response = self.input_response_queue.get_nowait()
+            print(f"[KeyCaptureDialog] Received response from input worker: {response}")
+            if response and len(response) >= 3 and response[0] == 'input_captured':
+                self.captured_key = response[1]
+                self.display_name = response[2]
+                print(f"[KeyCaptureDialog] Captured input: key={self.captured_key}, display={self.display_name}")
+                self.status_label.setText(f"Captured: {self.display_name}")
+                QApplication.processEvents()
+                QTimer.singleShot(500, self.accept)
+        except queue.Empty:
+            pass  # No response available
+        except Exception as e:
+            print(f"[KeyCaptureDialog] Error checking response: {e}")
+    
+    def closeEvent(self, event):
+        """Clean up when dialog closes."""
+        if hasattr(self, 'response_timer'):
+            self.response_timer.stop()
+        
+        # Only stop capture if dialog was rejected (not accepted)
+        # When accepted, preferences_panel will send set_shortcut which starts the appropriate listener
+        if self.result() != QDialog.Accepted and self.input_command_queue:
+            try:
+                self.input_command_queue.put(('stop_capture',))
+                print("[KeyCaptureDialog] Dialog cancelled - sent stop_capture command to input worker")
+            except Exception as e:
+                print(f"[KeyCaptureDialog] Error stopping capture: {e}")
+        
+        super().closeEvent(event)
+    
+    def keyPressEvent(self, event):
+        """Capture keyboard input directly."""
+        key = event.key()
+        
+        # ESC to cancel
+        if key == 0x01000000:  # Qt.Key_Escape
+            self.reject()
+            return
+            
+        # Map numpad keys to their string representations
+        numpad_keys = {
+            0x01000030: 'KP_0', 0x01000031: 'KP_1', 0x01000032: 'KP_2',
+            0x01000033: 'KP_3', 0x01000034: 'KP_4', 0x01000035: 'KP_5',
+            0x01000036: 'KP_6', 0x01000037: 'KP_7', 0x01000038: 'KP_8',
+            0x01000039: 'KP_9', 0x01000041: 'KP_Decimal', 0x01000042: 'KP_Divide',
+            0x01000043: 'KP_Multiply', 0x01000044: 'KP_Subtract',
+            0x01000045: 'KP_Add', 0x01000046: 'KP_Enter'
+        }
+        
+        # Check if it's a numpad key
+        if key in numpad_keys:
+            self.captured_key = numpad_keys[key]
+            self.display_name = f"Numpad {numpad_keys[key][3:]}"
+        else:
+            # For regular keys, use the text
+            text = event.text()
+            if text and text.isprintable():
+                self.captured_key = text.lower()
+                self.display_name = text.upper()
+            else:
+                # Special keys like F1-F12, Space, etc.
+                key_name = QKeySequence(key).toString()
+                if key_name:
+                    self.captured_key = key_name.lower()
+                    self.display_name = key_name
+                else:
+                    self.status_label.setText("Unsupported key, try another")
+                    return
+        
+        self.status_label.setText(f"Captured: {self.display_name}")
+        QTimer.singleShot(500, self.accept)
+
+
+class OrientationVisualizationWidget(QWidget):
+    """Real-time visualization of pitch, yaw, and roll orientation."""
+    
+    def __init__(self, parent=None, range_degrees=None):
+        """
+        Initialize the orientation visualization.
+        
+        Args:
+            parent: Parent widget
+            range_degrees: +/- range for pitch/yaw axes in degrees (defaults to config value)
+        """
+        super().__init__(parent)
+        # Use config value if not specified, allows for dynamic updates
+        self.range_degrees = range_degrees if range_degrees is not None else VISUALIZATION_RANGE
+        self.setFixedSize(VISUALIZATION_SIZE, VISUALIZATION_SIZE)
+        
+        # Current orientation values
+        self.pitch = 0.0
+        self.yaw = 0.0
+        self.roll = 0.0
+        
+        # Drift correction status
+        self.drift_correction_active = False
+        self.drift_angle_yaw = 5.0  # Default yaw drift angle in degrees
+        self.drift_angle_pitch = 5.0  # Default pitch drift angle in degrees
+        self.drift_angle_roll = 5.0  # Default roll drift angle in degrees
+        
+        # Axis inversion settings
+        self.invert_yaw = False
+        self.invert_pitch = False
+        self.invert_roll = False
+        
+        # Widget appearance
+        self.setStyleSheet("background-color: black; border: 1px solid gray;")
+    
+    def update_orientation(self, pitch, yaw, roll):
+        """
+        Update the visualization with new orientation data.
+        
+        Args:
+            pitch: Pitch angle in degrees
+            yaw: Yaw angle in degrees  
+            roll: Roll angle in degrees
+        """
+        self.pitch = float(pitch)
+        self.yaw = float(yaw)
+        self.roll = float(roll)
+        self.update()  # Trigger repaint
+    
+    def update_drift_correction(self, active):
+        """
+        Update the drift correction status.
+        
+        Args:
+            active: Boolean indicating if drift correction is active
+        """
+        self.drift_correction_active = bool(active)
+        self.update()  # Trigger repaint
+    
+    def update_drift_angle_yaw(self, angle):
+        """
+        Update the yaw drift angle for ellipse calculation.
+        
+        Args:
+            angle: Yaw drift angle in degrees
+        """
+        self.drift_angle_yaw = float(angle)
+        self.update()  # Trigger repaint
+    
+    def update_drift_angle_pitch(self, angle):
+        """
+        Update the pitch drift angle for ellipse calculation.
+        
+        Args:
+            angle: Pitch drift angle in degrees
+        """
+        self.drift_angle_pitch = float(angle)
+        self.update()  # Trigger repaint
+    
+    def update_drift_angle_roll(self, angle):
+        """
+        Update the roll drift angle for ellipse calculation.
+        
+        Args:
+            angle: Roll drift angle in degrees
+        """
+        self.drift_angle_roll = float(angle)
+        self.update()  # Trigger repaint
+    
+    def set_invert_yaw(self, invert):
+        """
+        Set yaw axis inversion.
+        
+        Args:
+            invert: Boolean indicating if yaw should be inverted
+        """
+        self.invert_yaw = bool(invert)
+        self.update()  # Trigger repaint
+    
+    def set_invert_pitch(self, invert):
+        """
+        Set pitch axis inversion.
+        
+        Args:
+            invert: Boolean indicating if pitch should be inverted
+        """
+        self.invert_pitch = bool(invert)
+        self.update()  # Trigger repaint
+    
+    def set_invert_roll(self, invert):
+        """
+        Set roll axis inversion.
+        
+        Args:
+            invert: Boolean indicating if roll should be inverted
+        """
+        self.invert_roll = bool(invert)
+        self.update()  # Trigger repaint
+
+    def paintEvent(self, event):
+        """
+        Draw the orientation visualization.
+        """
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Get widget center and size
+        width = self.width()
+        height = self.height()
+        center_x = width // 2
+        center_y = height // 2
+        
+        # Draw coordinate system
+        self._draw_coordinate_system(painter, center_x, center_y, width, height)
+        
+        # Draw orientation indicator
+        self._draw_orientation_indicator(painter, center_x, center_y, width, height)
+        
+        # Draw drift correction circle
+        self._draw_drift_correction_circle(painter, center_x, center_y)
+    
+    def _get_theme_colors(self):
+        """
+        Get theme-appropriate colors based on current application style.
+        
+        Returns:
+            dict: Dictionary of color values for different elements
+        """
+        # Try to detect if we're in dark mode by checking widget background
+        bg_color = self.palette().color(self.backgroundRole())
+        is_dark = bg_color.value() < 128  # Dark if background is dark
+        
+        if is_dark:
+            return {
+                'grid': QColor(80, 80, 80),
+                'axis': QColor(160, 160, 160),
+                'text': QColor(200, 200, 200),
+                'center': QColor(255, 255, 255),
+                'within_threshold': QColor(100, 150, 255),  # Blue
+                'outside_threshold': QColor(100, 255, 100),  # Green
+                'drift_active': QColor(255, 100, 100),  # Red
+                'drift_inactive': QColor(100, 100, 100)  # Gray
+            }
+        else:
+            return {
+                'grid': QColor(200, 200, 200),
+                'axis': QColor(100, 100, 100),
+                'text': QColor(50, 50, 50),
+                'center': QColor(0, 0, 0),
+                'within_threshold': QColor(0, 50, 200),  # Dark Blue
+                'outside_threshold': QColor(0, 150, 0),  # Dark Green
+                'drift_active': QColor(200, 0, 0),  # Dark Red
+                'drift_inactive': QColor(150, 150, 150)  # Light Gray
+            }
+            
+    
+    def _draw_coordinate_system(self, painter, center_x, center_y, width, height):
+        """
+        Draw the coordinate grid and axes.
+        """
+        colors = self._get_theme_colors()
+        
+        # Get current range from config (allows dynamic updates)
+        current_range = VISUALIZATION_RANGE
+        
+        # Grid lines
+        painter.setPen(QPen(colors['grid'], 1))
+        
+        # Vertical grid lines
+        for i in range(-2, 3):  
+            if i != 0:
+                x = center_x + i * (width // 5)
+                if 5 <= x <= width - 5:
+                    painter.drawLine(x, 5, x, height - 5)
+        
+        # Horizontal grid lines  
+        for i in range(-2, 3):  
+            if i != 0:
+                y = center_y + i * (height // 5)
+                if 5 <= y <= height - 5:
+                    painter.drawLine(5, y, width - 5, y)
+        
+        # Center axes
+        painter.setPen(QPen(colors['axis'], 2))
+        painter.drawLine(center_x, 5, center_x, height - 5)  # Vertical axis
+        painter.drawLine(5, center_y, width - 5, center_y)   # Horizontal axis
+        
+        # Corner range labels (use current config value)
+        painter.setPen(QPen(colors['text'], 1))
+        painter.drawText(5, 15, f"{current_range:.0f}")
+        painter.drawText(width - 25, 15, f"{current_range:.0f}")
+        painter.drawText(5, height - 5, f"{-current_range:.0f}")
+        painter.drawText(width - 30, height - 5, f"{-current_range:.0f}")
+    
+    def _draw_orientation_indicator(self, painter, center_x, center_y, width, height):
+        """
+        Draw the orientation indicator line with color based on threshold status.
+        Blue when all angles are within their respective thresholds, green when outside.
+        """
+        colors = self._get_theme_colors()
+        
+        # Get current range from config (allows dynamic updates)
+        current_range = VISUALIZATION_RANGE
+        
+        # Data is already inverted by fusion worker, so just use it directly
+        # Calculate position based on pitch/yaw
+        # Yaw maps to X axis, Pitch maps to Y axis
+        yaw_ratio = max(-1.0, min(1.0, -self.yaw / current_range))  # Negate yaw for display
+        pitch_ratio = max(-1.0, min(1.0, self.pitch / current_range))
+        
+        indicator_x = center_x + yaw_ratio * (width // 2 - 10)
+        indicator_y = center_y + pitch_ratio * (height // 2 - 10)
+        
+        # Calculate line endpoints based on roll angle
+        roll_rad = math.radians(self.roll)
+        line_length = 20
+        
+        start_x = indicator_x - line_length * math.cos(roll_rad)
+        start_y = indicator_y - line_length * math.sin(roll_rad)
+        end_x = indicator_x + line_length * math.cos(roll_rad)
+        end_y = indicator_y + line_length * math.sin(roll_rad)
+        
+        # Check if all angles are within their respective thresholds
+        def _angle_diff(a, b):
+            diff = abs(a - b)
+            return min(diff, 360 - diff)
+        
+        yaw_within = _angle_diff(self.yaw, 0) < self.drift_angle_yaw
+        pitch_within = _angle_diff(self.pitch, 0) < self.drift_angle_pitch
+        roll_within = _angle_diff(self.roll, 0) < self.drift_angle_roll
+        
+        all_within_threshold = yaw_within and pitch_within and roll_within
+        
+        # Choose line color: blue if within all thresholds, green if outside
+        if all_within_threshold:
+            line_color = colors['within_threshold']
+        else:
+            line_color = colors['outside_threshold']
+        
+        # Draw orientation line
+        painter.setPen(QPen(line_color, 3))
+        painter.drawLine(int(start_x), int(start_y), int(end_x), int(end_y))
+        
+        # Draw center dot
+        painter.setPen(QPen(colors['center'], 2))
+        painter.drawEllipse(int(indicator_x - 3), int(indicator_y - 3), 6, 6)
+    
+    def _draw_drift_correction_circle(self, painter, center_x, center_y):
+        """
+        Draw the drift correction status ellipse at the center.
+        Ellipse size corresponds to the yaw and pitch drift correction angles scaled to coordinate system.
+        Forms a circle when yaw and pitch angles are equal, ellipse when different.
+        Red outline at all times, blue filled when drift correction is active.
+        """
+        colors = self._get_theme_colors()
+        
+        # Get current range and size from config (allows dynamic updates)
+        current_range = VISUALIZATION_RANGE
+        current_size = VISUALIZATION_SIZE
+        
+        # Calculate radii based on drift angles (scale to visualization coordinate system)
+        widget_size = min(current_size, self.height())
+        usable_radius = (widget_size // 2) - 10  # Usable radius in pixels (margin for edges)
+        pixels_per_degree = usable_radius / current_range  # Pixels per degree
+        
+        # Convert drift angles directly to pixels
+        # Yaw maps to horizontal (width), pitch maps to vertical (height)
+        ellipse_width_pixels = int(self.drift_angle_yaw * pixels_per_degree * 2)  # Full width
+        ellipse_height_pixels = int(self.drift_angle_pitch * pixels_per_degree * 2)  # Full height
+        
+        # Ensure minimum visibility and maximum size
+        ellipse_width_pixels = max(4, min(ellipse_width_pixels, usable_radius * 2))
+        ellipse_height_pixels = max(4, min(ellipse_height_pixels, usable_radius * 2))
+        
+        # Calculate ellipse rectangle
+        ellipse_rect_x = center_x - ellipse_width_pixels // 2
+        ellipse_rect_y = center_y - ellipse_height_pixels // 2
+        
+        if self.drift_correction_active:
+            # Active: Blue filled with red outline
+            painter.setBrush(QColor(100, 150, 255, 100))  # Semi-transparent blue fill
+            painter.setPen(QPen(QColor(255, 50, 50), 2))  # Red outline
+            painter.drawEllipse(ellipse_rect_x, ellipse_rect_y, ellipse_width_pixels, ellipse_height_pixels)
+        else:
+            # Inactive: Red outline only
+            painter.setBrush(Qt.NoBrush)  # No fill
+            painter.setPen(QPen(QColor(255, 50, 50), 2))  # Red outline
+            painter.drawEllipse(ellipse_rect_x, ellipse_rect_y, ellipse_width_pixels, ellipse_height_pixels)
+
+
+class CalibrationPanelQt(QGroupBox):
+    """PyQt5 Panel that groups calibration-related controls.
+
+    This is intentionally small and self-contained so the main
+    `OrientationPanel` can remain focused on display-only concerns.
+    """
+
+    def __init__(self, parent=None, control_queue=None, message_callback=None, padding=6, 
+                 input_command_queue=None, input_response_queue=None):
+        super().__init__("Calibration", parent)
+        
+        self.control_queue = control_queue
+        self.message_callback = message_callback
+        self.input_command_queue = input_command_queue
+        self.input_response_queue = input_response_queue
+
+        # Drift correction controls
+        self.drift_angle_yaw_value = DEFAULT_CENTER_THRESHOLD
+        self.drift_angle_pitch_value = DEFAULT_CENTER_THRESHOLD
+        self.drift_angle_roll_value = DEFAULT_CENTER_THRESHOLD
+        self.drift_angle_yaw_label = None
+        self.drift_angle_pitch_label = None
+        self.drift_angle_roll_label = None
+        
+        # Store previous drift values for disengage feature
+        self.stored_drift_yaw = DEFAULT_CENTER_THRESHOLD
+        self.stored_drift_pitch = DEFAULT_CENTER_THRESHOLD
+        self.stored_drift_roll = DEFAULT_CENTER_THRESHOLD
+        
+        # Status indicator for gyro calibration
+        self.calib_status_label = None
+        
+        # Debounce timers for sending drift angle updates (parented to this widget)
+        self._drift_yaw_send_timer = QTimer(self)
+        self._drift_yaw_send_timer.setSingleShot(True)
+        self._drift_yaw_send_timer.timeout.connect(self._apply_drift_angle_yaw)
+        self._pending_drift_yaw_value = None
+        
+        self._drift_pitch_send_timer = QTimer(self)
+        self._drift_pitch_send_timer.setSingleShot(True)
+        self._drift_pitch_send_timer.timeout.connect(self._apply_drift_angle_pitch)
+        self._pending_drift_pitch_value = None
+        
+        self._drift_roll_send_timer = QTimer(self)
+        self._drift_roll_send_timer.setSingleShot(True)
+        self._drift_roll_send_timer.timeout.connect(self._apply_drift_angle_roll)
+        self._pending_drift_roll_value = None
+
+        # Orientation visualization widget
+        self.visualization_widget = None
+        
+        # Drift correction status
+        self.drift_status_label = None
+        
+        # Input worker response monitoring
+        if self.input_response_queue:
+            # Parent the timer to this widget so it is cleaned up by Qt
+            self.input_response_timer = QTimer(self)
+            self.input_response_timer.timeout.connect(self._check_input_responses)
+            self.input_response_timer.start(50)  # Check every 50ms
+        else:
+            self.input_response_timer = None
+        
+        # Reset orientation controls
+        self.reset_shortcut = "None"
+        self.reset_shortcut_display_name = "None"
+        self.reset_button = None
+        
+        # Disengage drift correction controls
+        self.disengage_shortcut = "None"
+        self.disengage_shortcut_display_name = "None"
+        self.disengage_toggle_mode = False  # False = hold, True = toggle
+        self.disengage_toggled_on = False  # Track toggle state
+        
+        # Position offset tracking (for reset functionality)
+        self._x_offset = 0.0
+        self._y_offset = 0.0
+        self._last_raw_translation = (0.0, 0.0, 0.0)
+        
+        # Initialization flag to prevent duplicate startup messages
+        self._initializing = False
+
+        self._build_ui()
+        
+        # Send initial drift angle to fusion worker after UI is built
+        self._initial_drift_sent = False
+        # Use a parented single-shot timer to avoid calling a bound method after deletion
+        try:
+            t = QTimer(self)
+            t.setSingleShot(True)
+            t.timeout.connect(self._send_initial_drift_angle)
+            t.start(100)
+        except Exception:
+            # Fallback to static singleShot if something goes wrong
+            QTimer.singleShot(100, self._send_initial_drift_angle)
+
+    def _build_ui(self):
+        """Build the calibration panel UI."""
+        # Main layout
+        main_layout = QVBoxLayout()
+        self.setLayout(main_layout)
+        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(4, 6, 4, 6)
+        # Allow the calibration panel to expand vertically to fill available space
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Filter and reset controls frame at top
+        controls_frame = QFrame()
+        # Prevent top controls from expanding vertically
+        controls_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        controls_layout = QHBoxLayout(controls_frame)
+        controls_layout.setSpacing(4)
+        controls_layout.setContentsMargins(6, 4, 6, 4)
+        
+        # Add stretch to center the remaining controls
+        controls_layout.addStretch()
+        
+        # Gyro calibration controls (centered)
+        self.calib_status_label = QLabel("Gyro: Not calibrated")
+        self.calib_status_label.setAlignment(Qt.AlignCenter)
+        self.calib_status_label.setProperty("status", "error")
+        controls_layout.addWidget(self.calib_status_label)
+        
+        self.recal_button = QPushButton("Recalibrate Yaw Drift Correction")
+        self.recal_button.clicked.connect(self._on_recalibrate)
+        self.recal_button.setEnabled(False)  # Start disabled until processing is active
+        controls_layout.addWidget(self.recal_button)
+        
+        
+        main_layout.addWidget(controls_frame)
+        
+        # Second row of controls
+        controls2_frame = QFrame()
+        # Prevent second-row controls from expanding vertically
+        controls2_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        controls2_layout = QHBoxLayout(controls2_frame)
+        controls2_layout.setSpacing(4)
+        controls2_layout.setContentsMargins(6, 4, 6, 4)
+        
+        # Add stretch to push reset controls to the right
+        controls2_layout.addStretch()
+        
+        # Reset controls (right side)
+        self.reset_button = QPushButton("Reset Orientation")
+        self.reset_button.clicked.connect(self._on_reset_orientation)
+        controls2_layout.addWidget(self.reset_button)
+        
+        main_layout.addWidget(controls2_frame)
+        
+        # Add dividing line below gyro controls
+        divider_frame = QFrame()
+        divider_frame.setFrameShape(QFrame.HLine)
+        divider_frame.setFrameShadow(QFrame.Sunken)
+        divider_frame.setObjectName("sectionDivider")
+        divider_frame.setFixedHeight(1)
+        main_layout.addWidget(divider_frame)
+        
+        # Horizontal layout for sliders and visualization
+        sliders_viz_layout = QHBoxLayout()
+        
+        # Drift correction sliders frame
+        sliders_frame = QFrame()
+        sliders_layout = QVBoxLayout(sliders_frame)
+        sliders_layout.setSpacing(8)  # Space between each slider group
+        sliders_layout.setContentsMargins(6, 4, 6, 4)
+        
+        # Add header label for drift correction sliders
+        drift_header_label = QLabel("Drift Correction Angles")
+        drift_header_label.setAlignment(Qt.AlignCenter)
+        drift_header_label.setStyleSheet("font-weight: bold; margin-bottom: 4px;")
+        sliders_layout.addWidget(drift_header_label)
+        
+        # Yaw drift correction
+        yaw_layout = QHBoxLayout()
+        drift_yaw_label = QLabel("Yaw:")
+        drift_yaw_label.setMinimumWidth(40)
+        yaw_layout.addWidget(drift_yaw_label)
+        
+        self.drift_yaw_slider = QSlider(Qt.Horizontal)
+        self.drift_yaw_slider.setMinimum(0)
+        self.drift_yaw_slider.setMaximum(250)  # 0-25.0 with 0.1 precision
+        self.drift_yaw_slider.setValue(int(DEFAULT_CENTER_THRESHOLD * 10))
+        self.drift_yaw_slider.valueChanged.connect(self._on_drift_yaw_angle_change)
+        yaw_layout.addWidget(self.drift_yaw_slider, 1)  # Stretch factor 1 to fill space
+        
+        self.drift_angle_yaw_label = QLabel(f"{DEFAULT_CENTER_THRESHOLD:.1f}°")
+        self.drift_angle_yaw_label.setMinimumWidth(40)
+        self.drift_angle_yaw_label.setAlignment(Qt.AlignCenter)
+        yaw_layout.addWidget(self.drift_angle_yaw_label)
+        
+        sliders_layout.addLayout(yaw_layout)
+        
+        # Pitch drift correction
+        pitch_layout = QHBoxLayout()
+        drift_pitch_label = QLabel("Pitch:")
+        drift_pitch_label.setMinimumWidth(40)
+        pitch_layout.addWidget(drift_pitch_label)
+        
+        self.drift_pitch_slider = QSlider(Qt.Horizontal)
+        self.drift_pitch_slider.setMinimum(0)
+        self.drift_pitch_slider.setMaximum(250)  # 0-25.0 with 0.1 precision
+        self.drift_pitch_slider.setValue(int(DEFAULT_CENTER_THRESHOLD * 10))
+        self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
+        pitch_layout.addWidget(self.drift_pitch_slider, 1)  # Stretch factor 1 to fill space
+        
+        self.drift_angle_pitch_label = QLabel(f"{DEFAULT_CENTER_THRESHOLD:.1f}°")
+        self.drift_angle_pitch_label.setMinimumWidth(40)
+        self.drift_angle_pitch_label.setAlignment(Qt.AlignCenter)
+        pitch_layout.addWidget(self.drift_angle_pitch_label)
+        
+        sliders_layout.addLayout(pitch_layout)
+        
+        # Roll drift correction
+        roll_layout = QHBoxLayout()
+        drift_roll_label = QLabel("Roll:")
+        drift_roll_label.setMinimumWidth(40)
+        roll_layout.addWidget(drift_roll_label)
+        
+        self.drift_roll_slider = QSlider(Qt.Horizontal)
+        self.drift_roll_slider.setMinimum(0)
+        self.drift_roll_slider.setMaximum(250)  # 0-25.0 with 0.1 precision
+        self.drift_roll_slider.setValue(int(DEFAULT_CENTER_THRESHOLD * 10))
+        self.drift_roll_slider.valueChanged.connect(self._on_drift_roll_angle_change)
+        roll_layout.addWidget(self.drift_roll_slider, 1)  # Stretch factor 1 to fill space
+        
+        self.drift_angle_roll_label = QLabel(f"{DEFAULT_CENTER_THRESHOLD:.1f}°")
+        self.drift_angle_roll_label.setMinimumWidth(40)
+        self.drift_angle_roll_label.setAlignment(Qt.AlignCenter)
+        roll_layout.addWidget(self.drift_angle_roll_label)
+        
+        sliders_layout.addLayout(roll_layout)
+        
+        # Add disengage button
+        disengage_layout = QHBoxLayout()
+        disengage_layout.setContentsMargins(0, 8, 0, 0)  # Add top margin for spacing
+        self.disengage_btn = QPushButton("Disengage Drift Correction")
+        self.disengage_btn.setCheckable(True)  # Makes it a toggle button
+        self.disengage_btn.setToolTip("Hold to temporarily disable drift correction")
+        
+        # Set fixed size to prevent size changes when text becomes bold
+        # Calculate dimensions based on the longer text variant with bold font
+        from PyQt5.QtGui import QFontMetrics, QFont
+        bold_font = QFont(self.disengage_btn.font())
+        bold_font.setBold(True)
+        fm = QFontMetrics(bold_font)
+        text_width = fm.horizontalAdvance("🔴 Drift Correction DISENGAGED")
+        text_height = fm.height()
+        self.disengage_btn.setFixedHeight(text_height + 16)  # Add padding for button chrome
+        self.disengage_btn.setMinimumWidth(text_width + 30)  # Add padding for button chrome
+        
+        self.disengage_btn.pressed.connect(self._on_disengage_pressed)
+        self.disengage_btn.released.connect(self._on_disengage_released)
+        disengage_layout.addWidget(self.disengage_btn)
+        sliders_layout.addLayout(disengage_layout)
+        
+        # Add sliders frame to horizontal layout
+        sliders_viz_layout.addWidget(sliders_frame, stretch=1)
+        
+        # Visualization frame
+        viz_frame = QFrame()
+        viz_layout = QVBoxLayout(viz_frame)
+        viz_layout.setSpacing(4)
+        viz_layout.setContentsMargins(6, 4, 6, 4)
+        
+        # Visualization title
+        viz_title = QLabel("Orientation")
+        viz_title.setAlignment(Qt.AlignCenter)
+        viz_layout.addWidget(viz_title)
+        
+        # Create visualization widget
+        self.visualization_widget = OrientationVisualizationWidget(self)
+        viz_layout.addWidget(self.visualization_widget)
+        
+        # Drift correction status indicator
+        self.drift_status_label = QLabel("Drift Correction Inactive")
+        self.drift_status_label.setProperty("status", "error")
+        self.drift_status_label.setAlignment(Qt.AlignCenter)
+        viz_layout.addWidget(self.drift_status_label)
+        
+        # Add visualization frame to horizontal layout
+        sliders_viz_layout.addWidget(viz_frame, stretch=0)
+        
+        # Add horizontal layout to main layout
+        main_layout.addLayout(sliders_viz_layout)
+
+    def _on_drift_yaw_angle_change(self, value):
+        """Handle yaw drift angle slider changes with debouncing."""
+        try:
+            # Convert slider value (0-250) to float (0.0-25.0)
+            v = float(value) / 10.0
+        except Exception:
+            v = 0.0
+
+        # Quantize to 0.1 and update display immediately
+        vq = round(v * 10.0) / 10.0
+        self.drift_angle_yaw_value = vq
+        self.drift_angle_yaw_label.setText(f"{vq:.1f}°")
+        
+        # Update visualization widget immediately
+        if self.visualization_widget:
+            self.visualization_widget.update_drift_angle_yaw(vq)
+        
+        # Update stored value if not disengaged
+        if not self.disengage_btn.isChecked():
+            self.stored_drift_yaw = vq
+
+        # Store the value for debounced sending
+        self._pending_drift_yaw_value = vq
+        
+        # Restart debounce timer
+        self._drift_yaw_send_timer.stop()
+        self._drift_yaw_send_timer.start(THRESH_DEBOUNCE_MS)
+
+    def _on_drift_pitch_angle_change(self, value):
+        """Handle pitch drift angle slider changes with debouncing."""
+        try:
+            # Convert slider value (0-250) to float (0.0-25.0)
+            v = float(value) / 10.0
+        except Exception:
+            v = 0.0
+
+        # Quantize to 0.1 and update display immediately
+        vq = round(v * 10.0) / 10.0
+        self.drift_angle_pitch_value = vq
+        self.drift_angle_pitch_label.setText(f"{vq:.1f}°")
+        
+        # Update visualization widget immediately
+        if self.visualization_widget:
+            self.visualization_widget.update_drift_angle_pitch(vq)
+        
+        # Update stored value if not disengaged
+        if not self.disengage_btn.isChecked():
+            self.stored_drift_pitch = vq
+
+        # Store the value for debounced sending
+        self._pending_drift_pitch_value = vq
+        
+        # Restart debounce timer
+        self._drift_pitch_send_timer.stop()
+        self._drift_pitch_send_timer.start(THRESH_DEBOUNCE_MS)
+
+    def _on_drift_roll_angle_change(self, value):
+        """Handle roll drift angle slider changes with debouncing."""
+        try:
+            # Convert slider value (0-250) to float (0.0-25.0)
+            v = float(value) / 10.0
+        except Exception:
+            v = 0.0
+
+        # Quantize to 0.1 and update display immediately
+        vq = round(v * 10.0) / 10.0
+        self.drift_angle_roll_value = vq
+        self.drift_angle_roll_label.setText(f"{vq:.1f}°")
+        
+        # Update visualization widget immediately
+        if self.visualization_widget:
+            self.visualization_widget.update_drift_angle_roll(vq)
+        
+        # Update stored value if not disengaged
+        if not self.disengage_btn.isChecked():
+            self.stored_drift_roll = vq
+
+        # Store the value for debounced sending
+        self._pending_drift_roll_value = vq
+        
+        # Restart debounce timer
+        self._drift_roll_send_timer.stop()
+        self._drift_roll_send_timer.start(THRESH_DEBOUNCE_MS)
+
+    def _on_disengage_pressed(self):
+        """Called when disengage button is pressed - disable drift correction."""
+        # In toggle mode, toggle the state
+        if self.disengage_toggle_mode:
+            if self.disengage_toggled_on:
+                # Already on, turn it off
+                self._disengage_off()
+            else:
+                # Turn it on
+                self._disengage_on()
+        else:
+            # Hold mode - engage immediately
+            self._disengage_on()
+    
+    def _disengage_on(self):
+        """Enable drift correction disengagement."""
+        # Store current drift values from sliders
+        self.stored_drift_yaw = self.drift_angle_yaw_value
+        self.stored_drift_pitch = self.drift_angle_pitch_value
+        self.stored_drift_roll = self.drift_angle_roll_value
+        
+        # Set drift correction to 0,0,0 (effectively disabling it)
+        if self.control_queue:
+            safe_queue_put(self.control_queue, ('set_threshold', 0.0, 0.0, 0.0), timeout=QUEUE_PUT_TIMEOUT)
+        
+        # Visual feedback
+        self.disengage_btn.setText("🔴 Drift Correction DISENGAGED")
+        self.disengage_btn.setStyleSheet("background-color: #ff4444; color: white; font-weight: bold;")
+        
+        # Track toggle state
+        self.disengage_toggled_on = True
+        
+        if self.message_callback:
+            self.message_callback("Drift correction temporarily disabled")
+    
+    def _disengage_off(self):
+        """Disable drift correction disengagement (restore drift correction)."""
+        # Restore previous drift values
+        if self.control_queue:
+            safe_queue_put(self.control_queue, 
+                          ('set_threshold', self.stored_drift_yaw, self.stored_drift_pitch, self.stored_drift_roll), 
+                          timeout=QUEUE_PUT_TIMEOUT)
+        
+        # Restore visual appearance - preserve shortcut name if set
+        if self.disengage_shortcut and self.disengage_shortcut != 'None':
+            self.disengage_btn.setText(f"Disengage Drift Correction ({self.disengage_shortcut_display_name})")
+        else:
+            self.disengage_btn.setText("Disengage Drift Correction")
+        self.disengage_btn.setStyleSheet("")
+        
+        # Track toggle state
+        self.disengage_toggled_on = False
+        
+        if self.message_callback:
+            self.message_callback(f"Drift correction re-enabled: Yaw={self.stored_drift_yaw:.1f}° Pitch={self.stored_drift_pitch:.1f}° Roll={self.stored_drift_roll:.1f}°")
+    
+    def _on_disengage_released(self):
+        """Called when disengage button is released - restore drift correction (hold mode only)."""
+        # Only restore if in hold mode (not toggle mode)
+        if not self.disengage_toggle_mode:
+            self._disengage_off()
+    
+    def _on_reset(self):
+        """Handle reset button click (if needed in future)."""
+        if not safe_queue_put(self.control_queue, 'reset', timeout=QUEUE_PUT_TIMEOUT):
+            if self.message_callback:
+                self.message_callback("Failed to send reset command")
+            return
+
+        if self.message_callback:
+            self.message_callback("Orientation reset requested (from GUI)")
+
+    def _on_recalibrate(self):
+        """Handle recalibrate gyro bias button click."""
+        # Get sample count from preferences panel if available
+        sample_count = None
+        if hasattr(self, 'preferences_panel') and self.preferences_panel:
+            try:
+                sample_count = self.preferences_panel.gyro_bias_cal_samples
+            except AttributeError:
+                # Fallback if preferences panel doesn't have the attribute
+                sample_count = None
+        
+        # Send command with or without sample count
+        if sample_count is not None:
+            command = ('recalibrate_gyro_bias', sample_count)
+        else:
+            command = ('recalibrate_gyro_bias',)
+            
+        if not safe_queue_put(self.control_queue, command, timeout=QUEUE_PUT_TIMEOUT):
+            if self.message_callback:
+                self.message_callback("Failed to send recalibration request")
+            return
+
+        if self.message_callback:
+            if sample_count is not None:
+                self.message_callback(f"Gyro bias recalibration requested ({sample_count} samples)")
+            else:
+                self.message_callback("Gyro bias recalibration requested")
+
+    def _on_reset_level(self):
+        """Handle reset level (center) button click."""
+        pass
+    
+    def _on_filter_change(self, filter_type):
+        """Send filter selection change to fusion worker via control queue."""
+        try:
+            if self.control_queue:
+                # Send tuple command: ('set_filter', 'quaternion'|'complementary')
+                safe_queue_put(self.control_queue, ('set_filter', filter_type), timeout=QUEUE_PUT_TIMEOUT)
+                # Only log if not during initialization to prevent startup spam
+                if not getattr(self, '_initializing', False) and self.message_callback:
+                    cb = self.message_callback
+                    QTimer.singleShot(0, lambda msg=f"Filter changed to: {filter_type}", _cb=cb: _cb(msg))
+        except Exception as ex:
+            if self.message_callback:
+                cb = self.message_callback
+                QTimer.singleShot(0, lambda msg=f"Failed to set filter to: {filter_type} - {ex}", _cb=cb: _cb(msg))
+    
+    def _set_reset_shortcut(self, key, display_name):
+        """Set the keyboard or gamepad shortcut for reset orientation via input worker."""
+        # Store shortcut info
+        self.reset_shortcut = key
+        self.reset_shortcut_display_name = display_name if display_name else key
+        
+        # Update button text
+        if key and key != 'None':
+            self.reset_button.setText(f"Reset Orientation ({display_name})")
+        else:
+            self.reset_button.setText("Reset Orientation")
+        
+        # Register shortcut with input worker
+        if self.input_command_queue and key and key != 'None':
+            try:
+                # Only print during non-initialization to reduce startup spam
+                if not getattr(self, '_initializing', False):
+                    print(f"[CalibrationPanel] Sending set_shortcut: {key} ({display_name})")
+                self.input_command_queue.put(('set_shortcut', key, display_name, 'reset_orientation'))
+                
+                # Only log if not during initialization to prevent startup spam
+                if not getattr(self, '_initializing', False) and self.message_callback:
+                    cb = self.message_callback
+                    QTimer.singleShot(0, lambda _cb=cb, _d=display_name: _cb(f"Reset shortcut set to: {_d}"))
+            except Exception as ex:
+                if self.message_callback:
+                    cb = self.message_callback
+                    QTimer.singleShot(0, lambda msg=f"Failed to set shortcut: {ex}", _cb=cb: _cb(msg))
+        elif self.input_command_queue:
+            # Clear any existing shortcut
+            try:
+                print("[CalibrationPanel] Sending clear_shortcut for reset_orientation")
+                self.input_command_queue.put(('clear_shortcut', 'reset_orientation'))
+            except Exception:
+                pass
+    
+    def _set_disengage_shortcut(self, key, display_name):
+        """Set the keyboard or gamepad shortcut for disengage drift correction via input worker."""
+        # Store shortcut info
+        self.disengage_shortcut = key
+        self.disengage_shortcut_display_name = display_name if display_name else key
+        
+        # Update button text to show the shortcut
+        if key and key != 'None':
+            self.disengage_btn.setText(f"Disengage Drift Correction ({display_name})")
+        else:
+            self.disengage_btn.setText("Disengage Drift Correction")
+        
+        # Register shortcut with input worker
+        if self.input_command_queue and key and key != 'None':
+            try:
+                # Only print during non-initialization to reduce startup spam
+                if not getattr(self, '_initializing', False):
+                    print(f"[CalibrationPanel] Sending disengage shortcut: {key} ({display_name})")
+                self.input_command_queue.put(('set_shortcut', key, display_name, 'disengage_drift'))
+                
+                # Only log if not during initialization to prevent startup spam
+                if not getattr(self, '_initializing', False) and self.message_callback:
+                    cb = self.message_callback
+                    QTimer.singleShot(0, lambda _cb=cb, _d=display_name: _cb(f"Disengage shortcut set to: {_d}"))
+            except Exception as ex:
+                if self.message_callback:
+                    cb = self.message_callback
+                    QTimer.singleShot(0, lambda msg=f"Failed to set disengage shortcut: {ex}", _cb=cb: _cb(msg))
+        elif self.input_command_queue:
+            # Clear any existing shortcut
+            try:
+                print("[CalibrationPanel] Sending clear_shortcut for disengage_drift")
+                self.input_command_queue.put(('clear_shortcut', 'disengage_drift'))
+            except Exception:
+                pass
+    
+    def set_disengage_toggle_mode(self, toggle_mode):
+        """Set the disengage toggle mode.
+        
+        Args:
+            toggle_mode: Boolean - True for toggle mode, False for hold mode
+        """
+        self.disengage_toggle_mode = toggle_mode
+        
+        # If switching to hold mode while toggled on, turn it off
+        if not toggle_mode and self.disengage_toggled_on:
+            self._disengage_off()
+    
+    def _check_input_responses(self):
+        """Check for responses from input worker and handle shortcut triggers."""
+        if not self.input_response_queue:
+            return
+            
+        try:
+            response = self.input_response_queue.get_nowait()
+            print(f"[CalibrationPanel] Received input response: {response}")
+            if response and len(response) >= 2:
+                response_type = response[0]
+                
+                # Handle old-style shortcut_triggered for backward compatibility
+                if response_type == 'shortcut_triggered' and len(response) >= 3:
+                    action = response[2]
+                    print(f"[CalibrationPanel] Shortcut triggered, action: {action}")
+                    if action == 'reset_orientation':
+                        print(f"[CalibrationPanel] Triggering reset orientation")
+                        self._on_reset_orientation()
+                
+                # Handle new-style shortcut_pressed events
+                elif response_type == 'shortcut_pressed' and len(response) >= 3:
+                    action = response[2]
+                    print(f"[CalibrationPanel] Shortcut pressed, action: {action}")
+                    if action == 'reset_orientation':
+                        self._on_reset_orientation()
+                    elif action == 'disengage_drift':
+                        print(f"[CalibrationPanel] Triggering disengage drift correction (pressed)")
+                        self._on_disengage_pressed()
+                
+                # Handle new-style shortcut_released events
+                elif response_type == 'shortcut_released' and len(response) >= 3:
+                    action = response[2]
+                    print(f"[CalibrationPanel] Shortcut released, action: {action}")
+                    if action == 'disengage_drift':
+                        # Only handle release in hold mode (not toggle mode)
+                        if not self.disengage_toggle_mode:
+                            print(f"[CalibrationPanel] Triggering disengage drift correction (released)")
+                            self._on_disengage_released()
+                        
+        except queue.Empty:
+            # No response available, this is normal
+            pass
+        except Exception as e:
+            print(f"[CalibrationPanel] ERROR checking input responses: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _on_reset_orientation(self):
+        """Handle orientation reset button click."""
+        # First: request the camera worker to latch the current pixel as camera-local origin
+        # so subsequent position outputs are relative to that point.
+        try:
+            parent = self.parent()
+            camera_cqs = []
+            if parent is not None:
+                for child in parent.findChildren(QWidget):
+                    try:
+                        if hasattr(child, 'control_queue') and hasattr(child, 'track_btn'):
+                            cq = getattr(child, 'control_queue', None)
+                            if cq is not None:
+                                camera_cqs.append(cq)
+                    except Exception:
+                        pass
+            # Send latch request to all discovered camera control queues
+            for cq in camera_cqs:
+                try:
+                    safe_queue_put(cq, ('latch_origin',), timeout=QUEUE_PUT_TIMEOUT)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # If a direct camera control queue or panel reference was provided by the GUI host,
+        # use it so we can affect the camera tab even when it's in a different parent widget.
+        try:
+            if hasattr(self, 'camera_control_queue') and getattr(self, 'camera_control_queue') is not None:
+                try:
+                    safe_queue_put(self.camera_control_queue, ('latch_origin',), timeout=QUEUE_PUT_TIMEOUT)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Schedule fusion reset shortly after camera latch so fusion can observe the
+        # freshest translation sample and set its own origin accordingly.
+        def _send_fusion_reset():
+            try:
+                if self.control_queue:
+                    if not safe_queue_put(self.control_queue, 'reset_orientation', timeout=QUEUE_PUT_TIMEOUT):
+                        if self.message_callback:
+                            cb = self.message_callback
+                            QTimer.singleShot(0, lambda _cb=cb: _cb("Failed to send reset command"))
+                        return
+                    if self.message_callback:
+                        cb = self.message_callback
+                        QTimer.singleShot(0, lambda _cb=cb: _cb("Orientation reset requested (from GUI)"))
+            except Exception as ex:
+                if self.message_callback:
+                    cb = self.message_callback
+                    QTimer.singleShot(0, lambda msg=f"Failed to send reset command: {ex}", _cb=cb: _cb(msg))
+        # 100ms delay to allow camera worker to publish its latched sample
+        QTimer.singleShot(100, _send_fusion_reset)
+
+        # Reset displayed position (X,Y,Z) to zero in other panels.
+        # Try to find sibling OrientationPanel and CameraPanel within the same parent
+        parent = self.parent()
+        if parent is not None:
+            for child in parent.findChildren(QWidget):
+                try:
+                    # Orientation panel: clear internal offsets if supported
+                    if hasattr(child, 'reset_position_offsets') and callable(getattr(child, 'reset_position_offsets')):
+                        try:
+                            child.reset_position_offsets()
+                        except Exception:
+                            pass
+
+                    # Any panel that displays position: update its display to zero
+                    if hasattr(child, 'update_position') and callable(getattr(child, 'update_position')):
+                        try:
+                            child.update_position(0.0, 0.0, 0.0)
+                        except Exception:
+                            pass
+
+                    # Camera latch already requested above; here we only reset displays
+                except Exception:
+                    pass
+
+        if self.message_callback:
+            QTimer.singleShot(0, lambda: self.message_callback("Position displays reset to 0,0,0"))
+        # Also update the CameraPanel UI directly if a reference was provided by the GUI host
+        try:
+            if hasattr(self, 'camera_panel') and self.camera_panel is not None:
+                try:
+                    if hasattr(self.camera_panel, 'update_position'):
+                        self.camera_panel.update_position(0.0, 0.0, 0.0)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(self.camera_panel, 'update_pixel_position'):
+                        self.camera_panel.update_pixel_position(0, 0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        except Exception:
+            pass
+
+    def _on_force_trigger(self):
+        """Send a manual trigger command to the input worker for testing."""
+        if self.input_command_queue:
+            try:
+                print("[CalibrationPanel] Sending manual trigger to input worker")
+                self.input_command_queue.put(('trigger_reset',))
+            except Exception as ex:
+                if self.message_callback:
+                    QTimer.singleShot(0, lambda msg=f"Failed to send manual trigger: {ex}": self.message_callback(msg))
+
+    def update_calibration_status(self, calibrated):
+        """Update gyro calibration status with color changes.
+        
+        Args:
+            calibrated: Boolean indicating if gyro is calibrated
+        """
+        try:
+            if calibrated:
+                # Green color for calibrated
+                self.calib_status_label.setText("Gyro: Calibrated")
+                self.calib_status_label.setProperty("status", "enabled")
+                self.calib_status_label.style().polish(self.calib_status_label)
+            else:
+                # Red color for not calibrated
+                self.calib_status_label.setText("Gyro: Not calibrated")
+                self.calib_status_label.setProperty("status", "error")
+                self.calib_status_label.style().polish(self.calib_status_label)
+        except Exception:
+            pass
+    
+    def update_calibrating_status(self, calibrating):
+        """Update gyro calibrating status with color changes.
+        
+        Args:
+            calibrating: Boolean indicating if gyro calibration is in progress
+        """
+        try:
+            if calibrating:
+                # Yellow color for calibrating in progress
+                self.calib_status_label.setText("Gyro: Calibrating...")
+                self.calib_status_label.setProperty("status", "calibrating")
+                self.calib_status_label.style().polish(self.calib_status_label)
+        except Exception:
+            pass
+
+    def get_prefs(self):
+        """Get current preferences for persistence.
+        
+        Returns:
+            dict: Dictionary with drift angles, filter, and reset shortcut preferences
+        """
+        # Persist all drift angles to one decimal place
+        try:
+            yaw_v = round(float(self.drift_angle_yaw_value) * 10.0) / 10.0
+            pitch_v = round(float(self.drift_angle_pitch_value) * 10.0) / 10.0
+            roll_v = round(float(self.drift_angle_roll_value) * 10.0) / 10.0
+            return {
+                'drift_angle_yaw': f"{yaw_v:.1f}",
+                'drift_angle_pitch': f"{pitch_v:.1f}",
+                'drift_angle_roll': f"{roll_v:.1f}",
+                'reset_shortcut': self.reset_shortcut,
+                'reset_shortcut_display_name': self.reset_shortcut_display_name,
+                'disengage_shortcut': self.disengage_shortcut,
+                'disengage_shortcut_display_name': self.disengage_shortcut_display_name,
+                'disengage_toggle_mode': self.disengage_toggle_mode
+            }
+        except Exception:
+            return {
+                'drift_angle_yaw': f"{DEFAULT_CENTER_THRESHOLD:.1f}",
+                'drift_angle_pitch': f"{DEFAULT_CENTER_THRESHOLD:.1f}",
+                'drift_angle_roll': f"{DEFAULT_CENTER_THRESHOLD:.1f}",
+                'reset_shortcut': 'None',
+                'reset_shortcut_display_name': 'None',
+                'disengage_shortcut': 'None',
+                'disengage_shortcut_display_name': 'None',
+                'disengage_toggle_mode': False
+            }
+
+    def set_prefs(self, prefs):
+        """Apply saved preferences.
+        
+        Args:
+            prefs: Dictionary with optional drift_angle preferences
+        """
+        if prefs is None:
+            return
+        
+        # Set initialization flag to prevent duplicate messages
+        self._initializing = True
+        
+        # Mark that initial drift angles have been loaded (prevents duplicate sending)
+        self._initial_drift_sent = True
+        
+        # Handle new format (separate yaw, pitch, and roll)
+        if 'drift_angle_yaw' in prefs and prefs['drift_angle_yaw']:
+            try:
+                angle = float(prefs['drift_angle_yaw'])
+                angle = round(angle * 10.0) / 10.0
+                self.set_drift_angle_yaw(angle)
+            except Exception:
+                pass
+        
+        if 'drift_angle_pitch' in prefs and prefs['drift_angle_pitch']:
+            try:
+                angle = float(prefs['drift_angle_pitch'])
+                angle = round(angle * 10.0) / 10.0
+                self.set_drift_angle_pitch(angle)
+            except Exception:
+                pass
+        
+        if 'drift_angle_roll' in prefs and prefs['drift_angle_roll']:
+            try:
+                angle = float(prefs['drift_angle_roll'])
+                angle = round(angle * 10.0) / 10.0
+                self.set_drift_angle_roll(angle)
+            except Exception:
+                pass
+        
+        # Backward compatibility: if old format exists but new doesn't, use for all three
+        if ('drift_angle' in prefs and prefs['drift_angle'] and 
+            'drift_angle_yaw' not in prefs and 'drift_angle_pitch' not in prefs and 'drift_angle_roll' not in prefs):
+            try:
+                angle = float(prefs['drift_angle'])
+                angle = round(angle * 10.0) / 10.0
+                self.set_drift_angle_yaw(angle)
+                self.set_drift_angle_pitch(angle)
+                self.set_drift_angle_roll(angle)
+            except Exception:
+                pass
+        
+        # Restore keyboard/gamepad shortcut if saved
+        shortcut = prefs.get('reset_shortcut', 'None')
+        if shortcut and shortcut != 'None':
+            try:
+                # Try to get saved display name first
+                display_name = prefs.get('reset_shortcut_display_name', shortcut)
+                
+                # If no saved display name, generate one
+                if display_name == shortcut or not display_name:
+                    if shortcut.startswith('KP_'):
+                        # Generate display name for numpad keys
+                        numpad_map = {
+                            'KP_0': 'Numpad 0', 'KP_1': 'Numpad 1', 'KP_2': 'Numpad 2',
+                            'KP_3': 'Numpad 3', 'KP_4': 'Numpad 4', 'KP_5': 'Numpad 5',
+                            'KP_6': 'Numpad 6', 'KP_7': 'Numpad 7', 'KP_8': 'Numpad 8',
+                            'KP_9': 'Numpad 9', 'KP_Decimal': 'Numpad .', 'KP_Divide': 'Numpad /',
+                            'KP_Multiply': 'Numpad *', 'KP_Subtract': 'Numpad -', 'KP_Add': 'Numpad +',
+                            'KP_Enter': 'Numpad Enter'
+                        }
+                        display_name = numpad_map.get(shortcut, shortcut)
+                    elif shortcut.startswith('joy'):
+                        # For gamepad shortcuts without saved name, show generic label
+                        display_name = f"Gamepad ({shortcut})"
+                    else:
+                        # For other keys, use the shortcut itself
+                        display_name = shortcut.upper()
+                
+                self._set_reset_shortcut(shortcut, display_name)
+            except Exception:
+                pass
+        else:
+            # Ensure button shows no shortcut
+            if self.reset_button:
+                self.reset_button.setText("Reset Orientation")
+        
+        # Restore disengage drift correction shortcut if saved
+        disengage_shortcut = prefs.get('disengage_shortcut', 'None')
+        if disengage_shortcut and disengage_shortcut != 'None':
+            try:
+                # Try to get saved display name first
+                display_name = prefs.get('disengage_shortcut_display_name', disengage_shortcut)
+                
+                # If no saved display name, generate one
+                if display_name == disengage_shortcut or not display_name:
+                    if disengage_shortcut.startswith('KP_'):
+                        numpad_map = {
+                            'KP_0': 'Numpad 0', 'KP_1': 'Numpad 1', 'KP_2': 'Numpad 2',
+                            'KP_3': 'Numpad 3', 'KP_4': 'Numpad 4', 'KP_5': 'Numpad 5',
+                            'KP_6': 'Numpad 6', 'KP_7': 'Numpad 7', 'KP_8': 'Numpad 8',
+                            'KP_9': 'Numpad 9', 'KP_Decimal': 'Numpad .', 'KP_Divide': 'Numpad /',
+                            'KP_Multiply': 'Numpad *', 'KP_Subtract': 'Numpad -', 'KP_Add': 'Numpad +',
+                            'KP_Enter': 'Numpad Enter'
+                        }
+                        display_name = numpad_map.get(disengage_shortcut, disengage_shortcut)
+                    elif disengage_shortcut.startswith('joy'):
+                        display_name = f"Gamepad ({disengage_shortcut})"
+                    else:
+                        display_name = disengage_shortcut.upper()
+                
+                self._set_disengage_shortcut(disengage_shortcut, display_name)
+            except Exception:
+                pass
+        else:
+            # Ensure button shows no shortcut
+            if self.disengage_btn:
+                self.disengage_btn.setText("Disengage Drift Correction")
+        
+        # Load disengage toggle mode
+        self.disengage_toggle_mode = prefs.get('disengage_toggle_mode', False)
+        if isinstance(self.disengage_toggle_mode, str):
+            self.disengage_toggle_mode = self.disengage_toggle_mode.lower() in ('true', '1', 'yes')
+        
+        # Clear initialization flag
+        self._initializing = False
+
+    def get_drift_angle_yaw(self):
+        """Get current yaw drift angle value.
+        
+        Returns:
+            float: Current yaw drift angle
+        """
+        return self.drift_angle_yaw_value
+    
+    def get_drift_angle_pitch(self):
+        """Get current pitch drift angle value.
+        
+        Returns:
+            float: Current pitch drift angle
+        """
+        return self.drift_angle_pitch_value
+
+    def get_drift_angle_roll(self):
+        """Get current roll drift angle value.
+        
+        Returns:
+            float: Current roll drift angle
+        """
+        return self.drift_angle_roll_value
+
+    def set_drift_angle_yaw(self, angle):
+        """Set yaw drift angle programmatically.
+        
+        Args:
+            angle: Yaw drift angle value (0.0-25.0)
+        """
+        try:
+            angle = float(angle)
+            angle = max(0.0, min(25.0, angle))
+            angle = round(angle * 10.0) / 10.0
+            
+            self.drift_angle_yaw_value = angle
+            self.drift_angle_yaw_label.setText(f"{angle:.1f}°")
+            self.drift_yaw_slider.setValue(int(angle * 10))
+            
+            if self.control_queue:
+                safe_queue_put(self.control_queue, ('set_center_threshold_yaw', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
+        except Exception:
+            pass
+
+    def set_drift_angle_pitch(self, angle):
+        """Set pitch drift angle programmatically.
+        
+        Args:
+            angle: Pitch drift angle value (0.0-25.0)
+        """
+        try:
+            angle = float(angle)
+            angle = max(0.0, min(25.0, angle))
+            angle = round(angle * 10.0) / 10.0
+            
+            self.drift_angle_pitch_value = angle
+            self.drift_angle_pitch_label.setText(f"{angle:.1f}°")
+            self.drift_pitch_slider.setValue(int(angle * 10))
+            
+            if self.control_queue:
+                safe_queue_put(self.control_queue, ('set_center_threshold_pitch', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
+        except Exception:
+            pass
+
+    def _apply_drift_angle_yaw(self):
+        """Send the quantized yaw drift angle to the control queue (debounced)."""
+        try:
+            if self._pending_drift_yaw_value is not None and self.control_queue:
+                if not safe_queue_put(self.control_queue, ('set_center_threshold_yaw', float(self._pending_drift_yaw_value)), timeout=QUEUE_PUT_TIMEOUT):
+                    if self.message_callback:
+                        self.message_callback("Failed to send yaw drift angle update")
+                else:
+                    if self.message_callback:
+                        self.message_callback(f"Yaw drift angle updated to {self._pending_drift_yaw_value:.1f}°")
+                self._pending_drift_yaw_value = None
+        except Exception:
+            pass
+
+    def _apply_drift_angle_pitch(self):
+        """Send the quantized pitch drift angle to the control queue (debounced)."""
+        try:
+            if self._pending_drift_pitch_value is not None and self.control_queue:
+                if not safe_queue_put(self.control_queue, ('set_center_threshold_pitch', float(self._pending_drift_pitch_value)), timeout=QUEUE_PUT_TIMEOUT):
+                    if self.message_callback:
+                        self.message_callback("Failed to send pitch drift angle update")
+                else:
+                    if self.message_callback:
+                        self.message_callback(f"Pitch drift angle updated to {self._pending_drift_pitch_value:.1f}°")
+                self._pending_drift_pitch_value = None
+        except Exception:
+            pass
+
+    def _apply_drift_angle_roll(self):
+        """Send the quantized roll drift angle to the control queue (debounced)."""
+        try:
+            if self._pending_drift_roll_value is not None and self.control_queue:
+                if not safe_queue_put(self.control_queue, ('set_center_threshold_roll', float(self._pending_drift_roll_value)), timeout=QUEUE_PUT_TIMEOUT):
+                    if self.message_callback:
+                        self.message_callback("Failed to send roll drift angle update")
+                else:
+                    if self.message_callback:
+                        self.message_callback(f"Roll drift angle updated to {self._pending_drift_roll_value:.1f}°")
+                self._pending_drift_roll_value = None
+        except Exception:
+            pass
+
+    def _send_initial_drift_angle(self):
+        """Send the initial drift angle values to the fusion worker."""
+        try:
+            # Prevent double sending of initial values
+            if self._initial_drift_sent or not self.control_queue:
+                return
+            self._initial_drift_sent = True
+            
+            if self.control_queue:
+                # Send yaw drift angle
+                if not safe_queue_put(self.control_queue, ('set_center_threshold_yaw', float(self.drift_angle_yaw_value)), timeout=QUEUE_PUT_TIMEOUT):
+                    if self.message_callback:
+                        self.message_callback("Failed to send initial yaw drift angle")
+                else:
+                    if self.message_callback:
+                        self.message_callback(f"Initial yaw drift angle set to {self.drift_angle_yaw_value:.1f}°")
+                
+                # Send pitch drift angle
+                if not safe_queue_put(self.control_queue, ('set_center_threshold_pitch', float(self.drift_angle_pitch_value)), timeout=QUEUE_PUT_TIMEOUT):
+                    if self.message_callback:
+                        self.message_callback("Failed to send initial pitch drift angle")
+                else:
+                    if self.message_callback:
+                        self.message_callback(f"Initial pitch drift angle set to {self.drift_angle_pitch_value:.1f}°")
+                
+                # Send roll drift angle
+                if not safe_queue_put(self.control_queue, ('set_center_threshold_roll', float(self.drift_angle_roll_value)), timeout=QUEUE_PUT_TIMEOUT):
+                    if self.message_callback:
+                        self.message_callback("Failed to send initial roll drift angle")
+                else:
+                    if self.message_callback:
+                        self.message_callback(f"Initial roll drift angle set to {self.drift_angle_roll_value:.1f}°")
+        except Exception:
+            pass
+    
+    def update_orientation(self, pitch, yaw, roll):
+        """Update the orientation visualization with current angles.
+        
+        Args:
+            pitch: Pitch angle in degrees
+            yaw: Yaw angle in degrees
+            roll: Roll angle in degrees
+        """
+        if self.visualization_widget:
+            self.visualization_widget.update_orientation(pitch, yaw, roll)
+    
+    def update_drift_status(self, active):
+        """Update the drift correction status in visualization and label.
+        
+        Args:
+            active: Boolean indicating if drift correction is active
+        """
+        try:
+            # Update visualization widget
+            if self.visualization_widget:
+                self.visualization_widget.update_drift_correction(active)
+            
+            # Update status label
+            if self.drift_status_label:
+                if active:
+                    self.drift_status_label.setText("Drift Correction Active")
+                    self.drift_status_label.setProperty("status", "enabled")
+                else:
+                    self.drift_status_label.setText("Drift Correction Inactive")
+                    self.drift_status_label.setProperty("status", "error")
+                self.drift_status_label.style().polish(self.drift_status_label)
+        except Exception:
+            pass
+    
+    def update_processing_status(self, status):
+        """
+        Update processing status and enable/disable recalibrate button accordingly.
+        
+        Args:
+            status: String 'active' or 'inactive' indicating processing state
+        """
+        try:
+            self._processing_active = (status == 'active')
+            self._update_recalibrate_button_state()
+            
+            # Update button text and styling to reflect state
+            if self._processing_active:
+                self.recal_button.setText("Recalibrate Yaw Drift Correction")
+                
+                # Restore calibration status when becoming active
+                current_text = self.calib_status_label.text()
+                if "Calibrated" in current_text and "Disabled" in current_text:
+                    self.calib_status_label.setText("Gyro: Calibrated")
+                    self.calib_status_label.setProperty("status", "enabled")
+                elif "Disabled" in current_text:
+                    self.calib_status_label.setText("Gyro: Not calibrated")
+                    self.calib_status_label.setProperty("status", "error")
+                # Note: calibrating status will be set by update_calibrating_status if needed
+                self.calib_status_label.style().polish(self.calib_status_label)
+            else:
+                self.recal_button.setText("Recalibrate Yaw Drift Correction")
+                
+                # Update the calibration status label styling when not active
+                current_text = self.calib_status_label.text()
+                if "Calibrated" in current_text:
+                    self.calib_status_label.setText("Gyro: Calibrated (Disabled)")
+                elif "Calibrating" in current_text:
+                    self.calib_status_label.setText("Gyro: Not calibrated (Disabled)")
+                else:
+                    self.calib_status_label.setText("Gyro: Not calibrated (Disabled)")
+                self.calib_status_label.setProperty("status", "disabled")
+                self.calib_status_label.style().polish(self.calib_status_label)
+        except Exception:
+            pass
+    
+    def clear_calibration_state(self):
+        """
+        Clear calibration state when serial is stopped.
+        Reset gyro bias status and mark serial as disconnected.
+        """
+        try:
+            # Mark serial as disconnected
+            self._serial_connected = False
+            self._update_recalibrate_button_state()
+            
+            # Reset gyro calibration status to "not calibrated" with disabled styling
+            self.calib_status_label.setText("Gyro: Not calibrated")
+            self.calib_status_label.setProperty("status", "disabled")
+            self.calib_status_label.style().polish(self.calib_status_label)
+        except Exception:
+            pass
+    
+    def _update_recalibrate_button_state(self):
+        """
+        Update recalibrate button state based on both serial connection and processing status.
+        Button is only enabled when both serial is connected AND processing is active.
+        """
+        try:
+            should_enable = self._processing_active and self._serial_connected
+            self.recal_button.setEnabled(should_enable)
+            # Reset Level button removed; no extra controls here
+            
+            if should_enable:
+                # Remove disabled styling
+                self.recal_button.setProperty("status", "")
+            else:
+                # Apply disabled styling
+                self.recal_button.setProperty("status", "disabled")
+            
+            self.recal_button.style().polish(self.recal_button)
+        except Exception:
+            pass
+    
+    def update_serial_connection_status(self, status):
+        """
+        Update serial connection status and recalibrate button state.
+        
+        Args:
+            status: String indicating serial connection state
+        """
+        try:
+            # Consider connected when status is not in the disconnected states
+            self._serial_connected = status not in ['stopped', 'disconnected', 'error', 'inactive']
+            self._update_recalibrate_button_state()
+        except Exception:
+            pass
+    
+    def connect_preferences_panel(self, preferences_panel):
+        """Connect to preferences panel to access configuration values."""
+        self.preferences_panel = preferences_panel
+    
+    def set_invert_yaw(self, invert):
+        """Set yaw axis inversion for visualization."""
+        if self.visualization_widget:
+            self.visualization_widget.set_invert_yaw(invert)
+    
+    def set_invert_pitch(self, invert):
+        """Set pitch axis inversion for visualization."""
+        if self.visualization_widget:
+            self.visualization_widget.set_invert_pitch(invert)
+    
+    def set_invert_roll(self, invert):
+        """Set roll axis inversion for visualization."""
+        if self.visualization_widget:
+            self.visualization_widget.set_invert_roll(invert)
+    
+    def cleanup(self):
+        """Clean up threads and resources when the panel is destroyed."""
+        try:
+            # Stop gamepad monitor thread if running
+            if hasattr(self, '_gamepad_monitor') and self._gamepad_monitor:
+                try:
+                    self._gamepad_monitor.stop()
+                    self._gamepad_monitor.wait(2000)  # Wait up to 2 seconds
+                except Exception:
+                    pass
+                finally:
+                    self._gamepad_monitor = None
+            # Stop response timer if running to avoid calls after widget deletion
+            if hasattr(self, 'input_response_timer') and self.input_response_timer:
+                try:
+                    try:
+                        self.input_response_timer.timeout.disconnect()
+                    except Exception:
+                        pass
+                    self.input_response_timer.stop()
+                    self.input_response_timer = None
+                except Exception:
+                    pass
+
+            # Stop debounce timers to avoid calling slots after deletion
+            for tname in ('_drift_yaw_send_timer', '_drift_pitch_send_timer', '_drift_roll_send_timer'):
+                try:
+                    timer = getattr(self, tname, None)
+                    if timer:
+                        try:
+                            timer.timeout.disconnect()
+                        except Exception:
+                            pass
+                        timer.stop()
+                        setattr(self, tname, None)
+                except Exception:
+                    pass
+            
+            # Clean up keyboard hooks
+            try:
+                import keyboard
+                keyboard.unhook_all()
+            except ImportError:
+                pass  # keyboard module not available
+            except Exception:
+                pass  # Already cleaned up or other error
+                    
+        except Exception as ex:
+            import traceback
+            print(f"Error during cleanup: {ex}")
+            traceback.print_exc()
+    
+    def closeEvent(self, event):
+        """Handle panel close event."""
+        self.cleanup()
+        super().closeEvent(event)
+    
+    def __del__(self):
+        """Destructor - ensure cleanup happens."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass
