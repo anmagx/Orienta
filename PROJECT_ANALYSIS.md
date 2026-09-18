@@ -1,371 +1,157 @@
 # Orienta Project Analysis
 
 This document is a maintained technical reference for contributors and agents.
-It describes the system as observed after the migration to Orienta and before
-any refactoring. Update it when an architectural contract changes.
+It describes the orientation-only architecture after the removal of the optional
+optical subsystem. Update it whenever a runtime contract changes.
 
-## Purpose and operating environment
+## Purpose
 
 Orienta is a Windows-focused, real-time 3DOF head-tracking desktop application.
-It receives accelerometer and gyroscope samples over a serial connection,
-estimates yaw, pitch, and roll, optionally estimates X/Y position from a
-single bright camera marker, and sends the resulting six degrees-of-freedom
-packet to OpenTrack over UDP.
+It reads accelerometer and gyroscope samples from serial, estimates yaw, pitch,
+and roll, and sends those orientation values to OpenTrack over UDP.
 
-The supplied Arduino firmware targets an Arduino Nano with a FastIMU-supported
-IMU (configured as MPU6500 at I2C address `0x68`). It emits a CSV record at a
-target 250 Hz on a 500000 baud serial link:
+The included Arduino Nano/FastIMU example is configured for an MPU6500 at I2C
+address `0x68`. It emits this seven-field numeric CSV schema at a target 250 Hz
+and 500000 baud:
 
 ```text
 time_seconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
 ```
 
-The Python parser expects seven numeric CSV fields. Accelerometer values are
-treated as g units and gyroscope values as degrees per second.
+Accelerometer samples are g units; gyroscope samples are degrees per second.
 
-## Repository map
+## Runtime topology
 
-| Location | Responsibility |
-|---|---|
-| `orienta.py` | Command-line entry point and lifecycle owner. |
-| `config/config.py` | Versioned application defaults and limits. |
-| `config/config.cfg` | Ignored, machine-local user preferences written by the GUI. |
-| `workers/process_man.py` | Creates queues/events, starts workers, monitors/restarts them, and writes logs. |
-| `workers/serial_wrk.py` | Serial connection control and raw sample acquisition. |
-| `workers/fusion_wrk.py` | Complementary orientation filters, calibration, drift handling, and combined output. |
-| `workers/udp_wrk.py` | OpenTrack-compatible UDP serialization and send enablement. |
-| `workers/camera_wrk.py` | Bright-marker tracking, preview production, and relative position output. |
-| `workers/pseyepy_prov.py` | Isolated PS3 Eye capture subprocess and JPEG framing protocol. |
-| `workers/input_wrk.py` | Global keyboard/gamepad shortcut capture and monitoring. |
-| `workers/gui_wrk.py` | Qt main window, panel composition, queue draining, status routing, and preference lifecycle. |
-| `workers/gui_qt/` | Qt panels, theme/preference managers, and icon/shortcut helpers. |
-| `util/error_utils.py` | Queue, parsing, conversion, clamping, and angle helper functions. |
-| `util/log_utils.py` | Best-effort worker-to-manager logging helper. |
-| `themes/` | Application-wide Qt stylesheets. |
-| `arduino/` | Reference firmware. |
+`orienta.py` validates Python version, accepts `--diagnostics`, creates
+`ProcessHandler`, starts workers, and waits for its shared stop event.
 
-No automated tests, packaging metadata, type-checker configuration, or CI
-workflow were present at the time of analysis.
-
-## Startup and shutdown
-
-`orienta.py` requires Python 3.8 or later, warns for Python 3.14+, parses
-`--diagnostics`, constructs `ProcessHandler`, starts workers, and waits on its
-shared `stop_event`.
-
-`ProcessHandler` creates all queues and starts these processes:
+`ProcessHandler` starts five processes:
 
 1. `InputWorker`
 2. `GUIWorker`
 3. `SerialWorker`
 4. `FusionWorker`
 5. `UDPWorker`
-6. `CameraWorker`
 
-The manager also owns:
-
-- a daemon log-writer thread that appends to `orienta.log`, rotating it at
-  5 MiB to `orienta_YYYYMMDD_HHMMSS.log`;
-- a daemon worker monitor that checks every second, logs unexpected exits, and
-  restarts a worker at most three times; and
-- signal handlers for `SIGINT` and `SIGTERM`.
-
-Closing the GUI sets the shared stop event. Shutdown then stops monitoring,
-sets the event, waits briefly, terminates live worker processes, joins them,
-and finally attempts to terminate leftover pseyepy camera child processes
-recorded in the operating system temporary directory.
-
-## Process and data-flow architecture
+It also owns a log-writer thread, a worker-monitor/restart thread, bounded
+queues, and shutdown signal handlers.
 
 ```text
-Arduino/other IMU --serial CSV--> SerialWorker --serialQueue--> FusionWorker
-                                                              |
-CameraWorker --translationQueue------------------------------|
-                                                              v
-                                                    eulerQueue -> UDPWorker -> UDP/OpenTrack
-                                                              |
-                                                              +-> eulerDisplayQueue -> GUIWorker
+IMU serial input -> SerialWorker -> serialQueue -> FusionWorker -> eulerQueue -> UDPWorker -> OpenTrack
+                                                     |
+                                                     +-> eulerDisplayQueue -> GUIWorker
 
-GUIWorker -> serialControlQueue ------> SerialWorker
-GUIWorker -> controlQueue ------------> FusionWorker
-GUIWorker -> udpControlQueue ---------> UDPWorker
-GUIWorker -> cameraControlQueue ------> CameraWorker
-GUIWorker <-> inputCommand/Response --> InputWorker
-all workers -> status/uiStatus/log/message/display queues -> GUI/manager
+GUIWorker -> serialControlQueue -> SerialWorker
+GUIWorker -> controlQueue -------> FusionWorker
+GUIWorker -> udpControlQueue ----> UDPWorker
+GUIWorker <-> input queues ------> InputWorker
 ```
-
-The design intentionally favors freshness rather than completeness:
-
-- all multiprocessing queues are bounded;
-- data queues default to 300 records, display queues to 60, and control queues
-  to 10;
-- workers generally drain several records and process only the newest; and
-- non-blocking/best-effort queue writes drop data under load rather than
-  increasing latency.
-
-This behavior is essential to real-time responsiveness. Refactors must not
-replace it with unbounded buffering or blocking cross-process writes without
-an explicit latency analysis.
 
 ## Queue contracts
 
-Queues carry Python lists, tuples, and strings rather than declared types.
-These formats are cross-process contracts and must be preserved or migrated
-atomically with every producer and consumer.
+Queue payloads are untyped Python strings, lists, and tuples. They are
+cross-process APIs: update every producer and consumer together.
 
-| Queue | Producer(s) | Consumer(s) | Payload contract |
+| Queue | Producer | Consumer | Contract |
 |---|---|---|---|
-| `serialQueue` | Serial worker | Fusion worker | Raw UTF-8 CSV sample string. |
-| `serialDisplayQueue` | Serial worker | GUI worker | Raw CSV string for the message monitor. |
-| `eulerQueue` | Fusion worker | UDP worker | `[yaw, pitch, roll, x, y, z]`, numeric. |
-| `eulerDisplayQueue` | Fusion worker | GUI worker | Same orientation/position list; GUI shows latest only. |
-| `translationQueue` | Camera worker | Fusion worker, UDP worker | Numeric `[x, y, z]` plus internal control tuples noted below. |
-| `translationDisplayQueue` | Camera worker | GUI worker/camera panel | `_CAM_DATA_`, `_CAM_STATUS_`, or legacy numeric position payloads. |
-| `cameraPreviewQueue` | Camera worker | GUI worker/camera panel | JPEG preview bytes. |
+| `serialQueue` | Serial worker | Fusion worker | Raw UTF-8 IMU CSV string. |
+| `serialDisplayQueue` | Serial worker | GUI worker | Raw CSV string. |
+| `eulerQueue` | Fusion worker | UDP worker | Numeric `[yaw, pitch, roll]`. |
+| `eulerDisplayQueue` | Fusion worker | GUI worker | Numeric `[yaw, pitch, roll]`. |
 | `serialControlQueue` | GUI | Serial worker | `('start', port, baud)`, `('stop',)`. |
-| `controlQueue` | GUI, input-flow bridge | Fusion worker | Orientation, calibration, filter, and axis-inversion commands. |
+| `controlQueue` | GUI/input flow | Fusion worker | Reset, calibration, filter, and tuning commands. |
 | `udpControlQueue` | GUI | UDP worker | `('set_udp', host, port)`, `('udp_enable', bool)`. |
-| `cameraControlQueue` | GUI, calibration panel | Camera worker | Preview, camera, and marker-tracking commands. |
-| `inputCommandQueue` | GUI panels | Input worker | Shortcut setup/clear/capture and manual reset trigger commands. |
-| `inputResponseQueue` | Input worker | GUI panels/GUI worker | Captured input and shortcut-trigger notifications. |
-| `statusQueue` | Most workers | GUI worker | `(status_name, value)` telemetry/state. |
-| `uiStatusQueue` | Serial/fusion workers | GUI worker | UI-specific `(status_name, value)` events. |
-| `messageQueue` | Serial worker | GUI worker | Human-readable strings. |
-| `logQueue` | All workers | Process manager | `(level, worker_name, message)`. |
+| input command/response queues | GUI/Input worker | Both | Shortcut setup, capture, and trigger notifications. |
+| status and UI-status queues | Workers | GUI | `(status_name, value)` telemetry. |
+| `messageQueue` | Serial worker | GUI | Human-readable strings. |
+| `logQueue` | Workers | Manager | `(level, worker_name, message)`. |
 
-### Internal translation controls
+Bounded queues, non-blocking writes, and “latest record wins” draining behavior
+are intentional. They bound latency at the cost of dropping data under load.
 
-`translationQueue` multiplexes numeric positions with control tuples:
+## Serial and fusion behavior
 
-- `('_POS_ENABLE_', bool)` enables/disables fusion-side relative-position
-  handling.
-- `('_CAM_ORIGIN_', x, y, z)` establishes a camera origin; `CAM_ORIGIN` is
-  also accepted by fusion.
+The serial worker does nothing until it receives `('start', port, baud)`. It
+retries connection every two seconds, supports cancellation with `('stop',)`,
+publishes raw records to data and display queues, and reports connection state
+and message rate.
 
-Both fusion and UDP explicitly skip string-first tuples when seeking position
-data. New translation messages must retain that discrimination rule or move to
-a separate queue in one coordinated change.
+`fusion_wrk.py` contains Euler and quaternion complementary-filter
+implementations. The active filter can be changed at runtime. Both parse the
+latest serial record, use the device timestamp for `dt`, reject intervals below
+0.001 s or above 0.1 s, integrate gyroscope rates, and blend gravity-derived
+roll/pitch only for plausible acceleration magnitudes. Yaw has no absolute
+reference because the input contains no magnetometer.
 
-### GUI status vocabulary
+Stationary state requires plausible gravity and a gyro magnitude below the
+configured threshold for the configured debounce duration. Drift correction
+activates only when stationary and inside independently configured yaw, pitch,
+and roll center thresholds.
 
-Observed status names include `processing`, `serial_connection`, `serial_data`,
-`msg_rate`, `send_rate`, `cam_fps`, `stationary`, `drift_correction`,
-`gyro_calibrating`, `gyro_calibrated`, `center_calibrating`,
-`center_calibrated`, `filter_type`, `camera_crashed`, and `cam_origin_ack`.
-The GUI routes them to its serial, calibration, orientation, hold-still, and
-status-bar components.
+Fusion commands include:
 
-## Sensor acquisition and fusion
+- `reset_orientation` and `reset`;
+- center threshold, alpha, drift curve, drift smoothing, drift strength, and
+  axis inversion updates;
+- filter selection;
+- `recalibrate_gyro_bias` with optional sample count; and
+- `calibrate_level` with optional sample count.
 
-### Serial worker
+Fusion publishes numeric `[yaw, pitch, roll]` records to its output queues.
 
-The serial worker is idle until it receives `('start', port, baud)`. Connection
-attempts retry every two seconds and can be cancelled by `('stop',)` or the
-shared stop event. On each readable line it decodes UTF-8 with invalid bytes
-ignored, strips it, publishes the raw string to both serial queues, reports
-data activity, and reports message rate once per second.
+## UDP contract
 
-Connection loss closes the port and reports an error, but does not autonomously
-reopen it; the GUI must send a new start command.
+The UDP worker consumes the latest orientation record. It sends only after
+`('udp_enable', True)` and updates its target through `('set_udp', host, port)`.
+For OpenTrack compatibility it emits six little-endian doubles in
+translation-first order:
 
-### Fusion behavior
-
-`fusion_wrk.py` contains both Euler and quaternion complementary-filter
-implementations. The active filter can be changed at runtime. Each filter:
-
-1. parses the latest serial sample;
-2. computes `dt` from the sample timestamp and rejects duplicate/too-small
-   intervals (`< 0.001 s`) and gaps larger than `0.1 s`;
-3. integrates gyroscope angular velocity;
-4. blends accelerometer-derived roll/pitch only when acceleration magnitude is
-   within the configured gravity tolerance;
-5. treats yaw as gyro-derived because the hardware input has no magnetometer;
-6. detects stationary state using valid gravity and gyro magnitude below the
-   configured threshold for a debounce duration; and
-7. applies gradual drift correction only when stationary and inside independent
-   yaw/pitch/roll center thresholds.
-
-The quaternion implementation represents orientation as `[w, x, y, z]`,
-normalizes after gyro integration, extracts Euler angles for display/output,
-and applies accelerometer roll/pitch blending by converting the blended state
-back into a quaternion. Its drift correction uses spherical interpolation and
-supports exponential, linear, cosine, and quadratic curves.
-
-Gyro-bias calibration collects stationary samples and estimates yaw bias.
-Level calibration collects stationary accelerometer samples and stores
-roll/pitch center offsets. `reset_orientation` retains calibration, reseeds
-from a recent accelerometer sample where possible, schedules level
-recalibration, and resets the relative position origin. `reset` clears the
-runtime calibration state.
-
-Fusion emits the most recent `[yaw, pitch, roll, x, y, z]` to the UDP and
-display queues. Axis inversion is applied at output.
-
-### Fusion control vocabulary
-
-The fusion worker accepts:
-
-- `reset_orientation`, `reset`;
-- `set_center_threshold` and per-axis
-  `set_center_threshold_yaw`, `_pitch`, `_roll`;
-- `set_threshold`;
-- `set_alpha_yaw`, `_pitch`, `_roll`;
-- `set_drift_smoothing_time`, `set_drift_curve_type`,
-  `set_drift_correction_strength`;
-- `set_invert_yaw`, `_pitch`, `_roll`;
-- `set_filter_type`;
-- `recalibrate_gyro_bias` with an optional sample count; and
-- `calibrate_level` with an optional sample count.
-
-Control handling and recalibration consume from `serialQueue`; calibration
-therefore temporarily takes ownership of arriving sensor samples.
-
-## Camera position tracking
-
-The camera worker initializes its provider only while preview or position
-tracking is requested. It currently defaults to the isolated `pseyepy`
-backend. It converts each BGR frame to grayscale, thresholds brightness,
-selects the largest connected contour above `MIN_BLOB_AREA`, maps its center
-relative to the frame center to X/Y, low-pass filters the result, and clamps
-it to the configured output range. Z is always `0.0`.
-
-Camera controls:
-
-- `preview_on`, `preview_off`;
-- `start_pos`, `stop_pos`;
-- `latch_origin`;
-- `set_thresh`, `set_scale`;
-- `set_cam_params(width, height, fps)`, `set_cam(index)`;
-- `set_exposure`, `set_gain`, `set_cam_setting(name, value)`;
-- `set_backend`, `calibrate`, and `close_cam`.
-
-When tracking starts, the first marker is captured as a local origin. The
-worker communicates the origin to fusion and sends relative values thereafter.
-If no marker is visible, the last value remains usable for
-`STALE_DETECTION_TIMEOUT` seconds, then marker-lost status is emitted.
-Translation publication is capped at approximately 50 Hz unless movement
-changes by more than 0.01.
-
-`PSEyeProvider` launches a temporary Python wrapper in a subprocess to
-isolate native camera crashes. The child imports `pseyepy`, captures frames,
-JPEG-encodes them, and writes a binary stream:
-
-```text
-uint32_le jpeg_length | float64_le timestamp | jpeg bytes
+```python
+struct.pack("<6d", 0.0, 0.0, 0.0, yaw, pitch, roll)
 ```
 
-The parent parses that stream on a reader thread and supplies BGR images to
-the camera worker. Changing camera parameters restarts the provider.
+The first three values are permanently zero in this orientation-only version.
 
-## UDP/OpenTrack output
+## GUI, input, and configuration
 
-The UDP worker consumes only the latest orientation record and caches the most
-recent numeric translation. It does not transmit until the GUI sends
-`('udp_enable', True)`. `('set_udp', host, port)` updates the target.
+The PyQt5 GUI includes orientation tracking, optional diagnostics, messages,
+preferences, and about tabs. It drains display queues frequently and renders
+the most recent record. The status bar reports serial message rate, UDP send
+rate, and device stationary/moving state.
 
-It sends six little-endian doubles:
+The input worker manages global keyboard and pygame gamepad shortcuts for
+orientation reset and temporary drift disengagement. Diagnostics lazily imports
+matplotlib and refreshes enabled plots at 10 Hz.
 
-```text
-struct.pack('<6d', tx, ty, tz, yaw, pitch, roll)
-```
+`config/config.py` is the versioned source of defaults and limits. The GUI
+persists machine-local settings in ignored `config/config.cfg`, written
+atomically by `PreferencesManager`. It contains serial, network, orientation,
+calibration, and GUI sections. Themes are application stylesheets in `themes/`.
 
-This translation-first ordering is intentional for OpenTrack compatibility,
-even though the internal fusion payload is rotation-first. Translation falls
-back to zero after its stale timeout.
+## Refactoring constraints
 
-## GUI and preferences
+1. Queue payload shapes and command tuples are cross-process compatibility
+   boundaries. Migrate all producer/consumer pairs atomically.
+2. Data drops are intentional latency control. Do not introduce blocking or
+   unbounded queues without measuring end-to-end latency.
+3. Keep device timestamp calculations separate from host-time telemetry and
+   rate calculations.
+4. The fusion worker combines filters, calibration, command handling, and
+   output publication. Extract behavior only behind deterministic IMU fixtures.
+5. Worker monitoring/restart behavior must continue to use correct target
+   arguments after worker signature changes.
+6. Prefer narrowly scoped error reporting that does not block the real-time
+   path.
+7. There is no automated behavioral suite. Add focused tests before major
+   filter or IPC changes.
 
-`TabbedGUIWorker` owns a PyQt5 application window with:
-
-- Orientation Tracking: serial connection, calibration, orientation display,
-  and network panels;
-- Camera;
-- optional Diagnostics, visible only with `--diagnostics`;
-- Messages;
-- Preferences; and
-- About.
-
-The GUI drains queues frequently but displays only the newest item where
-appropriate. It persists settings on close through `PreferencesManager`.
-`config/config.cfg` has `serial`, `network`, `orientation`, `calibration`,
-`camera`, and `gui` sections. It is deliberately ignored because it contains
-machine/user-specific port, controller, and GUI choices.
-
-The preferences manager writes atomically via a temporary file followed by
-`os.replace`, with fallback replacement behavior. Themes are whole-application
-stylesheets loaded from `themes/light.qss` and `themes/dark.qss`.
-
-The input worker owns keyboard and pygame joystick listeners. It supports
-reset-orientation and drift-disengage shortcut actions, captures either
-keyboard or gamepad input, and reports shortcut events back to the GUI flow.
-The optional diagnostics panel uses a lazy matplotlib import, retains 1000
-orientation samples, and refreshes plots at 10 Hz only when enabled.
-
-## Configuration sources and precedence
-
-`config/config.py` supplies code defaults: queue capacities, timing,
-serial/UDP defaults, filter defaults, camera limits, UI timings, log identity,
-and application identity. GUI-loaded values in `config/config.cfg` override
-many of those settings by issuing worker control commands at startup or after
-the user changes a control.
-
-Do not place mutable session state in `config/config.py`. Do not commit a
-personal `config/config.cfg`; use a sanitized example if configuration sharing
-becomes necessary.
-
-## Refactoring constraints and observed technical debt
-
-These observations are not requested fixes. They identify behavior that a
-future change must deliberately preserve or test.
-
-1. **Untyped, multiplexed IPC is the highest-risk boundary.** Queue contents
-   are dynamically shaped and several queues carry both telemetry and control
-   traffic. Add explicit dataclasses/protocols only with a coordinated
-   producer-and-consumer migration.
-2. **Freshness is a product feature.** Bounded queues, non-blocking writes,
-   draining loops, and frame drops limit latency. Throughput improvements must
-   be evaluated against latency and control-message delivery.
-3. **The fusion module is large and stateful.** Filter math, runtime command
-   handling, calibration loops, translation-origin handling, queue publication,
-   and UI state reporting coexist in one file. Extract only behind tests with
-   recorded IMU fixtures and exact output expectations.
-4. **Time bases must remain compatible.** Filter `dt` uses the MCU timestamp,
-   while stale detection/rates use host `time.time()`. Do not interchange the
-   two without accounting for their domains.
-5. **Camera tracking has two relative-origin layers.** Camera and fusion each
-   manage origins. Preserve their `_POS_ENABLE_` and `_CAM_ORIGIN_` handshake
-   before modifying position reset behavior.
-6. **Camera isolation is intentional.** The pseyepy subprocess, debug files,
-   and shutdown PID-file cleanup protect the main program from native crashes.
-   Any simplification must prove equivalent failure containment on Windows.
-7. **Error handling is frequently best-effort.** Numerous broad catches and
-   dropped log/status messages prevent real-time workers from crashing, but can
-   obscure faults. Improve observability one boundary at a time; do not make a
-   diagnostic path block sensor processing.
-8. **Configuration defaults are not fully centralized at runtime.** Some
-   workers and panels contain local defaults or UI ranges. When changing a
-   setting, trace `config.py`, preference serialization, panel initialization,
-   GUI load/apply behavior, worker command validation, and runtime behavior.
-9. **The GUI has legacy remnants.** Several docstrings and comments reference
-   former Tkinter/legacy behavior, and preference collection includes a
-   duplicate shortcut-preference merge. Treat cleanup as a separate,
-   behavior-preserving task.
-10. **There is no automated behavioral safety net.** Before substantive
-    refactoring, introduce focused tests for IMU parsing, both filters,
-    command handling, UDP byte order, preference round trips, and queue
-    contract validation.
-
-## Recommended verification baseline for future work
-
-At minimum, run:
+## Verification baseline
 
 ```powershell
 python -m compileall -q .
 python orienta.py --help
 ```
 
-For behavioral changes, additionally test with deterministic recorded IMU
-lines and a local UDP receiver; avoid requiring physical serial/camera
-hardware in unit tests. Manually verify serial connection, startup
-calibration, reset, UDP enablement, and the camera preview/tracking toggle
-when changing their respective paths.
+For behavioral changes, test recorded IMU lines and receive UDP locally. Verify
+serial connection, calibration, reset, and UDP enablement manually when their
+paths change.

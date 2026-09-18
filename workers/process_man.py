@@ -3,7 +3,7 @@
 
 This module exposes `ProcessHandler`, a convenience class that initializes
 the multiprocessing queues, starts worker processes (GUI, Serial, Fusion,
-UDP, Camera), and provides a safe shutdown path. The manager also runs a
+UDP), and provides a safe shutdown path. The manager also runs a
 background log writer thread that drains `logQueue` and writes messages to
 `LOG_FILE_NAME`.
 
@@ -47,16 +47,8 @@ class ProcessHandler:
         self.enable_diagnostics = enable_diagnostics
         self.serialQueue = Queue(maxsize=QUEUE_SIZE_DATA)
         self.eulerQueue = Queue(maxsize=QUEUE_SIZE_DATA)
-        # Camera translation queues (camera -> UDP / GUI)
-        self.translationQueue = Queue(maxsize=QUEUE_SIZE_DATA)
-        self.translationDisplayQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
-        
         self.serialDisplayQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
         self.eulerDisplayQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
-        # Camera preview and control queues
-        self.cameraPreviewQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
-        self.cameraControlQueue = Queue(maxsize=QUEUE_SIZE_CONTROL)
-        
         self.udpControlQueue = Queue(maxsize=QUEUE_SIZE_CONTROL)
         
         self.messageQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
@@ -199,14 +191,6 @@ class ProcessHandler:
                             self.logQueue.put_nowait(('ERROR', 'ProcessHandler', f"Worker {worker_name} crashed with fatal exit code {exitcode}; not restarting."))
                         except Exception:
                             pass
-                        # Notify GUI about fatal crash so it can disable camera UI
-                        try:
-                            self.uiStatusQueue.put_nowait(('camera_crashed', exitcode))
-                        except Exception:
-                            try:
-                                self.logQueue.put_nowait(('WARN', 'ProcessHandler', 'Failed to notify GUI of camera crash'))
-                            except Exception:
-                                pass
                         continue
 
                     restart_count = self._worker_restart_counts.get(worker_name, 0)
@@ -305,7 +289,6 @@ class ProcessHandler:
                    self.stop_event, self.eulerDisplayQueue, self.controlQueue, 
                    self.serialControlQueue, 
                    self.udpControlQueue, self.logQueue, self.uiStatusQueue,
-                   self.cameraControlQueue, self.translationDisplayQueue, self.cameraPreviewQueue,
                    self.inputCommandQueue, self.inputResponseQueue, self.enable_diagnostics)
         gui_worker = Process(
             target = run_gui_worker,
@@ -342,7 +325,7 @@ class ProcessHandler:
         }
         
         ## Sensor Fusion Worker
-        fusion_args = (self.serialQueue, self.translationQueue, self.eulerQueue, self.eulerDisplayQueue, 
+        fusion_args = (self.serialQueue, self.eulerQueue, self.eulerDisplayQueue,
                    self.controlQueue, self.statusQueue, self.stop_event, 
                    self.logQueue, self.uiStatusQueue)
         fusion_worker = Process(
@@ -361,7 +344,7 @@ class ProcessHandler:
         }
 
         ## UDP Worker
-        udp_args = (self.eulerQueue, self.translationQueue, self.stop_event, 
+        udp_args = (self.eulerQueue, self.stop_event,
                    None, None, self.udpControlQueue, self.statusQueue, 
                    self.logQueue)
         udp_worker = Process(
@@ -379,34 +362,6 @@ class ProcessHandler:
             'name': "UDPWorker"
         }
 
-        ## Camera Worker (PS3 Eye via pseyepy)
-        from workers.camera_wrk import run_worker as run_camera_worker
-        camera_args = (
-            self.translationQueue,
-            self.translationDisplayQueue,
-            self.cameraControlQueue,
-            self.stop_event,
-            self.cameraPreviewQueue,
-            self.statusQueue,
-            self.logQueue,
-            0,  # default camera index
-        )
-        camera_worker = Process(
-            target = run_camera_worker,
-            args = camera_args,
-            name = "CameraWorker"
-        )
-        camera_worker.start()
-        self.workers.append(camera_worker)
-
-        self._worker_configs["CameraWorker"] = {
-            'target': run_camera_worker,
-            'args': camera_args,
-            'name': "CameraWorker"
-        }
-
-
-
         print("[ProcessHandler] All workers started.")
         
     def get_queue_health_report(self):
@@ -415,12 +370,9 @@ class ProcessHandler:
         
         queues = {
             'serialQueue': self.serialQueue,
-            'translationQueue': self.translationQueue,
             'eulerQueue': self.eulerQueue, 
             'eulerDisplayQueue': self.eulerDisplayQueue,
             'serialDisplayQueue': self.serialDisplayQueue,
-            'translationDisplayQueue': self.translationDisplayQueue,
-            'cameraPreviewQueue': self.cameraPreviewQueue,
             'controlQueue': self.controlQueue,
             'statusQueue': self.statusQueue,
             'messageQueue': self.messageQueue,
@@ -536,47 +488,6 @@ class ProcessHandler:
                     pass
             print("[ProcessHandler] All workers stopped.")
 
-            # Extra cleanup: terminate any leftover camera subprocesses started by
-            # the subprocess provider. These create PID files in the OS temp dir
-            # named `orienta_pseyepy_child_<parentpid>_<childpid>.pid`.
-            try:
-                import glob
-                import signal
-                import tempfile
-                import subprocess
-                td = tempfile.gettempdir()
-                pattern = os.path.join(td, 'orienta_pseyepy_child_*.pid')
-                for pf in glob.glob(pattern):
-                    try:
-                        with open(pf, 'r', encoding='utf-8') as f:
-                            pid_s = f.read().strip()
-                        if not pid_s:
-                            try:
-                                os.remove(pf)
-                            except Exception:
-                                pass
-                            continue
-                        child_pid = int(pid_s)
-                        try:
-                            # Attempt graceful terminate
-                            os.kill(child_pid, signal.SIGTERM)
-                        except Exception:
-                            try:
-                                # On Windows or when os.kill is not effective, try taskkill
-                                subprocess.run(["taskkill", "/PID", str(child_pid), "/F", "/T"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                            except Exception:
-                                try:
-                                    os.kill(child_pid, signal.SIGKILL)
-                                except Exception:
-                                    pass
-                        try:
-                            os.remove(pf)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
         finally:
             self._stopping = False
             try:

@@ -122,17 +122,13 @@ class AboutPanel(QWidget):
         packages_text.setMaximumHeight(200)
         
         packages_content = """• PyQt5 - Cross-platform GUI toolkit
-• NumPy - Numerical computing library
-• OpenCV (cv2) - Computer vision library
-• pseyepy - PS3 Eye camera support
-• keyboard - Global hotkey support
-• pygame - gamepad hotkey support for Python
-• Pillow (PIL) - Image processing
-• pyserial - Serial communication
-• h5py - HDF5 file format support
+        • NumPy - Numerical computing library
+        • keyboard - Global hotkey support
+        • pygame - gamepad hotkey support for Python
+        • pyserial - Serial communication
 
-This application uses these excellent open-source libraries 
-to provide comprehensive head tracking functionality."""
+        This application uses these excellent open-source libraries
+        to provide real-time head tracking."""
         
         packages_text.setPlainText(packages_content)
         packages_layout.addWidget(packages_text)

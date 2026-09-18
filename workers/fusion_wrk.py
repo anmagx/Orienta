@@ -27,7 +27,7 @@ from config.config import (
      FUSION_LOOP_SLEEP_MS,
      DRIFT_SMOOTHING_TIME,
      DRIFT_TRANSITION_CURVE
-    , POSITION_TRACKING_ENABLED
+
 )
 from util.error_utils import (
     safe_queue_put,
@@ -428,7 +428,7 @@ class QuaternionComplementaryFilter:
     
 
 
-def run_worker(serialQueue, translationQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQueue, stop_event, logQueue=None, uiStatusQueue=None):
+def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQueue, stop_event, logQueue=None, uiStatusQueue=None):
     """
     Fusion worker that reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
     """
@@ -455,32 +455,18 @@ def run_worker(serialQueue, translationQueue, eulerQueue, eulerDisplayQueue, con
     except Exception:
         # Best-effort: don't block startup if statusQueue is unavailable
         pass
-    
-    # Translation values (updated from translationQueue when enabled)
-    x, y, z = 0.0, 0.0, 0.0
-    position_enabled = bool(POSITION_TRACKING_ENABLED)
-    # last seen translation and timestamp for staleness handling
-    last_translation = (0.0, 0.0, 0.0)
-    last_translation_time = 0.0
-    translation_stale_timeout = 2.0
-    # Origin handling: when position tracking is enabled, treat the first
-    # numeric translation received as the origin (0,0,0) for subsequent
-    # translations. This makes the initial brightpoint position the reference.
-    _origin_pending = False
-    _origin_set = False
-    _origin = (0.0, 0.0, 0.0)
-    
+
     # Track processing state to avoid spam
     processing_active = False
-    
+
     # Track data flow timeout
     last_data_time = None
     data_timeout = 2.0  # Send inactive after 2 seconds without data
-    
+
     # Track status values to only send updates when they change
     last_drift_active = None
     last_stationary = None
-    
+
     try:
         while not stop_event.is_set():
             # Check for control commands (non-blocking)
@@ -552,62 +538,6 @@ def run_worker(serialQueue, translationQueue, eulerQueue, eulerDisplayQueue, con
                         print(f"[Fusion Worker] Scheduled center recalibration ({LEVEL_CAL_SAMPLES} samples) (after recenter)")
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Failed to schedule center recalibration: {e}")
-                    # Also reset translation origin so position outputs become zero at current brightpoint
-                    try:
-                        # Prefer the freshest numeric translation from the translationQueue if available
-                        raw_x = raw_y = raw_z = None
-                        try:
-                            if translationQueue is not None:
-                                t_latest = None
-                                tcount = 0
-                                while tcount < 50:
-                                    t = safe_queue_get(translationQueue, timeout=0.0, default=None)
-                                    if t is None:
-                                        break
-                                    # skip control tuples
-                                    if isinstance(t, (list, tuple)) and len(t) >= 1 and isinstance(t[0], str):
-                                        continue
-                                    t_latest = t
-                                    tcount += 1
-
-                                if t_latest is not None and len(t_latest) >= 3 and not (isinstance(t_latest[0], str)):
-                                    try:
-                                        raw_x = float(t_latest[0])
-                                        raw_y = float(t_latest[1])
-                                        raw_z = float(t_latest[2])
-                                    except Exception:
-                                        raw_x = raw_y = raw_z = None
-                        except Exception:
-                            raw_x = raw_y = raw_z = None
-
-                        # Fallback: reconstruct raw from last_translation and existing origin if necessary
-                        if raw_x is None:
-                            try:
-                                if _origin_set:
-                                    raw_x = last_translation[0] + _origin[0]
-                                    raw_y = last_translation[1] + _origin[1]
-                                    raw_z = last_translation[2] + _origin[2]
-                                else:
-                                    raw_x, raw_y, raw_z = last_translation
-                            except Exception:
-                                raw_x = raw_y = raw_z = 0.0
-
-                        # Latch this raw translation as the new origin so subsequent outputs are zeroed
-                        _origin = (raw_x, raw_y, raw_z)
-                        _origin_set = True
-                        _origin_pending = False
-
-                        # Zero current outputs and last_translation so UI/UDP see 0,0,0 immediately
-                        x = y = z = 0.0
-                        last_translation = (0.0, 0.0, 0.0)
-                        last_translation_time = time.time()
-
-                        try:
-                            log_info(logQueue, "Fusion Worker", f"Translation origin reset to {_origin} on orientation reset")
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
                 elif cmd == 'reset' or (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'reset'):
                     # Full reset: reset orientation and clear runtime calibration
                     filter.reset()
@@ -1082,103 +1012,6 @@ def run_worker(serialQueue, translationQueue, eulerQueue, eulerDisplayQueue, con
                     except:
                         pass
                 
-                # If position tracking enabled, drain translationQueue to get latest camera position
-                if translationQueue is not None:
-                    try:
-                        latest = None
-                        # Drain a few items to keep the most recent numeric translation
-                        tcount = 0
-                        while tcount < 20:
-                            t = safe_queue_get(translationQueue, timeout=0.0, default=None)
-                            if t is None:
-                                break
-                            # Handle control tuple coming from camera (e.g., position enable/disable)
-                            try:
-                                if isinstance(t, (list, tuple)) and len(t) >= 1 and isinstance(t[0], str):
-                                    # Position enable/disable control
-                                    if t[0] == '_POS_ENABLE_':
-                                        try:
-                                            position_enabled = bool(t[1])
-                                            log_info(logQueue, 'Fusion Worker', f'Position tracking enabled={position_enabled}')
-                                            # When enabling, request origin capture on next numeric translation
-                                            if position_enabled:
-                                                _origin_pending = True
-                                                _origin_set = False
-                                            else:
-                                                # When disabling, clear any origin baseline
-                                                _origin_pending = False
-                                                _origin_set = False
-                                                _origin = (0.0, 0.0, 0.0)
-                                                # Also clear stored translation values
-                                                x = y = z = 0.0
-                                                last_translation = (0.0, 0.0, 0.0)
-                                                last_translation_time = 0.0
-                                        except Exception:
-                                            pass
-                                        continue
-
-                                    # Handle explicit camera origin message deterministically
-                                    if t[0] in ('_CAM_ORIGIN_', 'CAM_ORIGIN') and len(t) >= 4:
-                                        try:
-                                            ox = float(t[1]); oy = float(t[2]); oz = float(t[3])
-                                            _origin = (ox, oy, oz)
-                                            _origin_set = True
-                                            _origin_pending = False
-                                            try:
-                                                log_info(logQueue, 'Fusion Worker', f'Position origin set from explicit camera message to {_origin}')
-                                            except Exception:
-                                                pass
-                                            # Ack back to UI if possible
-                                            try:
-                                                if statusQueue is not None:
-                                                    safe_queue_put(statusQueue, ('cam_origin_ack', _origin), timeout=QUEUE_PUT_TIMEOUT)
-                                            except Exception:
-                                                pass
-                                        except Exception:
-                                            pass
-                                        continue
-
-                                    # ignore other control tuples
-                                    continue
-                            except Exception:
-                                pass
-
-                            latest = t
-                            tcount += 1
-
-                        if latest is not None and len(latest) >= 3 and not (isinstance(latest[0], str)):
-                            try:
-                                tx, ty, tz = float(latest[0]), float(latest[1]), float(latest[2])
-                                # If an origin capture was requested (position just enabled),
-                                # latch the first numeric translation as the origin.
-                                if _origin_pending:
-                                    _origin = (tx, ty, tz)
-                                    _origin_set = True
-                                    _origin_pending = False
-                                    try:
-                                        log_info(logQueue, 'Fusion Worker', f'Position origin set to {_origin}')
-                                    except Exception:
-                                        pass
-
-                                # Apply origin offset if set so outputs are relative to that baseline
-                                if _origin_set:
-                                    ox, oy, oz = _origin
-                                    x, y, z = tx - ox, ty - oy, tz - oz
-                                else:
-                                    x, y, z = tx, ty, tz
-                                last_translation = (x, y, z)
-                                last_translation_time = time.time()
-                            except Exception:
-                                # keep previous values on conversion error
-                                pass
-                        else:
-                            # if translation became stale, zero it
-                            if last_translation_time and (time.time() - last_translation_time) > translation_stale_timeout:
-                                x = y = z = 0.0
-                                last_translation = (0.0, 0.0, 0.0)
-                    except Exception:
-                        # On any error, keep previous values
-                        pass
 
                 # Apply axis inversions if configured
                 output_yaw = -yaw if filter.invert_yaw else yaw
@@ -1186,8 +1019,8 @@ def run_worker(serialQueue, translationQueue, eulerQueue, eulerDisplayQueue, con
                 output_roll = -roll if filter.invert_roll else roll
                 
                 # Put Euler angles into output queues
-                # Format: [Yaw, Pitch, Roll, X, Y, Z]
-                euler_data = [output_yaw, output_pitch, output_roll, x, y, z]
+                # Format: [Yaw, Pitch, Roll]
+                euler_data = [output_yaw, output_pitch, output_roll]
 
                 # Publish to main euler queue (for UDP) - non-blocking for real-time
                 try:
