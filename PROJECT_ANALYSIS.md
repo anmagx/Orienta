@@ -59,7 +59,7 @@ cross-process APIs: update every producer and consumer together.
 | `eulerQueue` | Fusion worker | UDP worker | Numeric `[yaw, pitch, roll]`. |
 | `eulerDisplayQueue` | Fusion worker | GUI worker | Numeric `[yaw, pitch, roll]`. |
 | `serialControlQueue` | GUI | Serial worker | `('start', port, baud)`, `('stop',)`. |
-| `controlQueue` | GUI/input flow | Fusion worker | Reset, calibration, filter, and tuning commands. |
+| `controlQueue` | GUI/input flow | Fusion worker | Reset, calibration, and tuning commands. |
 | `udpControlQueue` | GUI | UDP worker | `('set_udp', host, port)`, `('udp_enable', bool)`. |
 | input command/response queues | GUI/Input worker | Both | Shortcut setup, capture, and trigger notifications. |
 | status and UI-status queues | Workers | GUI | `(status_name, value)` telemetry. |
@@ -76,12 +76,17 @@ retries connection every two seconds, supports cancellation with `('stop',)`,
 publishes raw records to data and display queues, and reports connection state
 and message rate.
 
-`fusion_wrk.py` contains Euler and quaternion complementary-filter
-implementations. The active filter can be changed at runtime. Both parse the
-latest serial record, use the device timestamp for `dt`, reject intervals below
-0.001 s or above 0.1 s, integrate gyroscope rates, and blend gravity-derived
-roll/pitch only for plausible acceleration magnitudes. Yaw has no absolute
-reference because the input contains no magnetometer.
+`fusion_wrk.py` implements orientation estimation with a single
+`QuaternionComplementaryFilter` class (quaternion-based integration with
+accelerometer-derived roll/pitch correction). It parses the latest serial
+record, uses the device timestamp for `dt`, rejects intervals below 0.001 s or
+above 0.1 s, integrates gyroscope rates, and blends gravity-derived roll/pitch
+only for plausible acceleration magnitudes. Yaw has no absolute reference
+because the input contains no magnetometer.
+
+There is no separate Euler-integration filter and no runtime filter switching
+in the current codebase, despite lingering references elsewhere (see
+"Stale artifacts from the recent refactor" below).
 
 Stationary state requires plausible gravity and a gyro magnitude below the
 configured threshold for the configured debounce duration. Drift correction
@@ -93,7 +98,6 @@ Fusion commands include:
 - `reset_orientation` and `reset`;
 - center threshold, alpha, drift curve, drift smoothing, drift strength, and
   axis inversion updates;
-- filter selection;
 - `recalibrate_gyro_bias` with optional sample count; and
 - `calibrate_level` with optional sample count.
 
@@ -116,8 +120,18 @@ The first three values are permanently zero in this orientation-only version.
 
 The PyQt5 GUI includes orientation tracking, optional diagnostics, messages,
 preferences, and about tabs. It drains display queues frequently and renders
-the most recent record. The status bar reports serial message rate, UDP send
-rate, and device stationary/moving state.
+the most recent record. The status bar (embedded in the connection panel)
+reports serial message rate, UDP send rate, and device stationary/moving
+state. A persistent `HoldPanelQt` banner above the tab widget blinks
+"HOLD STILL & UPRIGHT" while serial is connected but the fusion loop has not
+yet begun processing data (e.g. during startup or before calibration).
+
+The former standalone calibration panel was merged into `orientation_panel.py`
+(`OrientationPanelQt`), which now owns calibration status, drift-angle
+sliders, and shortcut capture UI. `gui_wrk.py` keeps a `self.calibration_panel`
+attribute as a backward-compatible alias that simply points at
+`self.orientation_panel`; other panels (preferences, connection) still refer
+to `calibration_panel` by that name.
 
 The input worker manages global keyboard and pygame gamepad shortcuts for
 orientation reset and temporary drift disengagement. Diagnostics lazily imports
@@ -128,6 +142,44 @@ persists machine-local settings in ignored `config/config.cfg`, written
 atomically by `PreferencesManager`. It contains serial, network, orientation,
 calibration, and GUI sections. Themes are application stylesheets in `themes/`.
 
+## Stale artifacts from the recent refactor
+
+The GUI and fusion worker were heavily refactored recently (calibration UI
+merged into the orientation panel, filter selection removed, tabbed layout
+introduced). Some leftovers were not cleaned up. Agents should not assume
+these still work, and should feel free to remove them as part of unrelated
+cleanup work if convenient:
+
+- **Dead `filter_type` status handler.** `gui_wrk.py`'s `_handle_status_update`
+  still has an `elif status_type == 'filter_type':` branch that looks up
+  `self.orientation_panel.filter_combo`. That attribute no longer exists (no
+  `QComboBox` filter selector is built anywhere in `orientation_panel.py`), and
+  `fusion_wrk.py` never emits a `'filter_type'` status. The branch is
+  unreachable dead code left over from when Euler/quaternion filter selection
+  existed.
+- **Orphaned `shortcut_helper.py`.** `workers/gui_qt/helpers/shortcut_helper.py`
+  defines its own `KeyCaptureDialog` and `ShortcutManager` using the
+  `keyboard` module directly. It is only referenced by
+  `workers/gui_qt/helpers/__init__.py`'s re-export; no panel or worker imports
+  it. Shortcut capture today happens through a *different*,
+  actively-used `KeyCaptureDialog` defined inline in `orientation_panel.py`,
+  which round-trips through the input worker's command/response queues
+  (keyboard + pygame gamepad). Treat `shortcut_helper.py` as legacy/unused.
+- **Placeholder file.** `workers/gui_qt/panels/orientation_visualization_tmp.py`
+  contains only the text `PLACEHOLDER` and is not imported anywhere (it is
+  absent from `panels/__init__.py`). It appears to be a leftover scratch file.
+- **Empty `README_v2.md`.** The repository root has a 0-byte `README_v2.md`
+  alongside the real `README.md`; it carries no content.
+- **Duplicate method definitions in `orientation_panel.py`.** `OrientationPanelQt`
+  defines `update_device_status` twice: an earlier definition (whose body
+  references drift status and an undefined `active` parameter — it takes
+  `stationary` but uses `active`, so it would raise `NameError` if ever
+  reached) is entirely shadowed by a later, correct definition that updates the
+  stationary/moving label. Because Python keeps only the last definition, the
+  first is unreachable. `set_drift_angle_pitch` and `set_drift_angle_roll` are
+  likewise each defined twice with identical bodies; the duplicates are
+  harmless but should be removed if the file is touched again.
+
 ## Refactoring constraints
 
 1. Queue payload shapes and command tuples are cross-process compatibility
@@ -136,7 +188,7 @@ calibration, and GUI sections. Themes are application stylesheets in `themes/`.
    unbounded queues without measuring end-to-end latency.
 3. Keep device timestamp calculations separate from host-time telemetry and
    rate calculations.
-4. The fusion worker combines filters, calibration, command handling, and
+4. The fusion worker combines the filter, calibration, command handling, and
    output publication. Extract behavior only behind deterministic IMU fixtures.
 5. Worker monitoring/restart behavior must continue to use correct target
    arguments after worker signature changes.

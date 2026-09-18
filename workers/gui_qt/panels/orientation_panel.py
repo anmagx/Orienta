@@ -13,27 +13,7 @@ import math
 import queue
 
 
-def _apply_button_theme(widget, parent=None):
-    """Apply a minimal theme to buttons so they follow the panel's dark/light background.
-
-    Keeps changes surgical: only applies a simple stylesheet for dark backgrounds
-    and leaves the default style for light backgrounds.
-    """
-    try:
-        p = parent if parent is not None else (widget.parent() if hasattr(widget, 'parent') else None)
-        if p is None:
-            return
-        bg = p.palette().color(p.backgroundRole())
-        is_dark = bg.value() < 128
-        if is_dark:
-            # Dark theme: dark button background, light text, subtle border
-            widget.setStyleSheet("QPushButton, QToolButton { background-color: #3a3a3a; color: #f0f0f0; border: 1px solid #555; }")
-        else:
-            # Light theme: use default styling (clear any custom rules)
-            widget.setStyleSheet("")
-    except Exception:
-        # Best-effort only; avoid breaking UI if anything goes wrong
-        pass
+# Theming is handled via application QSS; per-widget theme helper removed.
 
 class KeyCaptureDialog(QDialog):
     """Dialog to capture keyboard and gamepad input via input worker."""
@@ -862,12 +842,6 @@ class OrientationPanelQt(QGroupBox):
         # Make button span full width of right column
         self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # Apply theme to the button so it matches dark/light panel background
-        try:
-            _apply_button_theme(self.disengage_btn, self)
-        except Exception:
-            pass
-
         # Connect to calibration panel handlers if panel already connected
         try:
             if hasattr(self, 'calibration_panel') and self.calibration_panel:
@@ -904,20 +878,14 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
-        # Small square button to capture/change shortcut
+        # Shortcut button uses the same widget and styling path as every other
+        # button in the panel; only its width is constrained by the row layout.
         try:
-            from PyQt5.QtWidgets import QToolButton
-            self.disengage_shortcut_btn = QToolButton()
-            self.disengage_shortcut_btn.setText("⋯")
+            self.disengage_shortcut_btn = QPushButton("Set Shortcut")
             self.disengage_shortcut_btn.setToolTip("Set shortcut for Disengage Drift Correction")
-            self.disengage_shortcut_btn.setFixedSize(28, 28)
+            self.disengage_shortcut_btn.setFixedHeight(text_height + 16)
+            self.disengage_shortcut_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             disengage_row.addWidget(self.disengage_shortcut_btn)
-
-            # Apply theme to small shortcut button
-            try:
-                _apply_button_theme(self.disengage_shortcut_btn, self)
-            except Exception:
-                pass
 
             # Connect handler to open capture dialog and set shortcut via calibration panel
             def _on_set_disengage_shortcut():
@@ -975,7 +943,6 @@ class OrientationPanelQt(QGroupBox):
 
             self.disengage_shortcut_btn.clicked.connect(_on_set_disengage_shortcut)
         except Exception:
-            # Fall back to no small button if QToolButton not available
             self.disengage_shortcut_btn = None
 
         # Add the composed row to the layout
@@ -1033,26 +1000,13 @@ class OrientationPanelQt(QGroupBox):
 
         reset_row.addWidget(self.reset_button)
 
-        # Apply theme to reset button so it follows dark/light panel background
+        # Shortcut button uses the same construction and height as reset_button.
         try:
-            _apply_button_theme(self.reset_button, self)
-        except Exception:
-            pass
-
-        # Small shortcut button for reset
-        try:
-            from PyQt5.QtWidgets import QToolButton
-            self.reset_shortcut_btn = QToolButton()
-            self.reset_shortcut_btn.setText("⋯")
+            self.reset_shortcut_btn = QPushButton("Set Shortcut")
             self.reset_shortcut_btn.setToolTip("Set shortcut for Reset Orientation")
-            self.reset_shortcut_btn.setFixedSize(28, 28)
+            self.reset_shortcut_btn.setFixedHeight(text_height + 16)
+            self.reset_shortcut_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             reset_row.addWidget(self.reset_shortcut_btn)
-
-            # Apply theme to small shortcut button
-            try:
-                _apply_button_theme(self.reset_shortcut_btn, self)
-            except Exception:
-                pass
 
             def _on_set_reset_shortcut():
                 try:
@@ -1136,12 +1090,6 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
             self.recal_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-            # Apply theme to recalibrate button
-            try:
-                _apply_button_theme(self.recal_button, self)
-            except Exception:
-                pass
 
             # Connect to calibration panel handler if available
             try:
@@ -2084,7 +2032,20 @@ class OrientationPanelQt(QGroupBox):
             try:
                 if hasattr(self, 'disengage_btn') and self.disengage_btn:
                     self.disengage_btn.setText("🔴 Drift Correction DISENGAGED")
-                    self.disengage_btn.setStyleSheet("background-color: #ff4444; color: white; font-weight: bold;")
+                    # Use semantic property so QSS applies the correct styling (dark/light aware)
+                    try:
+                        self.disengage_btn.setProperty('status', 'error')
+                        # Also make text bold via font rather than stylesheet
+                        f = self.disengage_btn.font()
+                        f.setBold(True)
+                        self.disengage_btn.setFont(f)
+                        # Refresh style
+                        try:
+                            self.disengage_btn.style().polish(self.disengage_btn)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
             self.disengage_toggled_on = True
@@ -2104,7 +2065,18 @@ class OrientationPanelQt(QGroupBox):
                         self.disengage_btn.setText(f"Disengage Drift Correction ({self.disengage_shortcut_display_name})")
                     else:
                         self.disengage_btn.setText("Disengage Drift Correction")
-                    self.disengage_btn.setStyleSheet("")
+                    # Clear semantic status property so QSS reverts to default button styling
+                    try:
+                        self.disengage_btn.setProperty('status', '')
+                        f = self.disengage_btn.font()
+                        f.setBold(False)
+                        self.disengage_btn.setFont(f)
+                        try:
+                            self.disengage_btn.style().polish(self.disengage_btn)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
             self.disengage_toggled_on = False
