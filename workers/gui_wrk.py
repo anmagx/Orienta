@@ -24,8 +24,8 @@ from PyQt5.QtGui import QIcon
 from workers.gui_qt.panels.connection_panel import ConnectionPanelQt
 from workers.gui_qt.panels.message_panel import MessagePanelQt
 from workers.gui_qt.panels.orientation_panel import OrientationPanelQt
-from workers.gui_qt.panels.calibration_panel import CalibrationPanelQt
-from workers.gui_qt.panels.status_bar import StatusBarQt
+# CalibrationPanelQt removed; orientation_panel now hosts calibration UI/logic
+# StatusBar moved into ConnectionPanel; StatusBarQt import no longer needed
 from workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from workers.gui_qt.panels.about_panel import AboutPanel
 from workers.gui_qt.panels.diagnostics_panel import DiagnosticsPanelQt
@@ -151,9 +151,8 @@ class TabbedGUIWorker(QMainWindow):
         self.create_preferences_tab()
         self.create_about_tab()
         
-        # Status bar at bottom
-        self.status_bar = StatusBarQt(self)
-        main_layout.addWidget(self.status_bar)
+        # Status bar has been moved into the Connection panel at the bottom of the Orientation tab
+        # (No global status bar needed here.)
     
     def create_orientation_tab(self):
         """Create the Orientation Tracking tab."""
@@ -161,17 +160,6 @@ class TabbedGUIWorker(QMainWindow):
         layout = QVBoxLayout(orientation_widget)
         layout.setSpacing(6)
         layout.setContentsMargins(8, 8, 8, 8)
-        
-        # Calibration Panel (compact)
-        self.calibration_panel = CalibrationPanelQt(
-            orientation_widget,
-            self.fusion_control_queue,
-            self._log_message,
-            padding=6,
-            input_command_queue=self.input_command_queue,
-            input_response_queue=self.input_response_queue
-        )
-        layout.addWidget(self.calibration_panel)
         
         # Orientation Panel (main focus)
         self.orientation_panel = OrientationPanelQt(
@@ -181,9 +169,15 @@ class TabbedGUIWorker(QMainWindow):
             padding=6
         )
         layout.addWidget(self.orientation_panel)
-        
-        # Connect calibration panel to orientation panel for drift angle visualization
-        self.orientation_panel.connect_calibration_panel(self.calibration_panel)
+
+        # Assign input queues to orientation panel so it can manage shortcuts/capture
+        try:
+            self.orientation_panel.input_command_queue = self.input_command_queue
+            self.orientation_panel.input_response_queue = self.input_response_queue
+            # For backward compatibility set calibration_panel reference to orientation_panel
+            self.calibration_panel = self.orientation_panel
+        except Exception:
+            self.calibration_panel = None
 
         # Connection panel moved to the bottom of the tab for easier access
         self.connection_panel = ConnectionPanelQt(
@@ -474,13 +468,24 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self.orientation_panel, 'update_drift_status'):
                 self.orientation_panel.update_drift_status(bool(value))
         elif status_type == 'msg_rate':
-            if hasattr(self.status_bar, 'update_message_rate'):
+            # Prefer connection panel's embedded status area; fall back if needed
+            if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_message_rate'):
+                self.connection_panel.update_message_rate(float(value))
+            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_message_rate'):
                 self.status_bar.update_message_rate(float(value))
         elif status_type == 'send_rate':
-            if hasattr(self.status_bar, 'update_send_rate'):
+            if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_send_rate'):
+                self.connection_panel.update_send_rate(float(value))
+            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_send_rate'):
                 self.status_bar.update_send_rate(float(value))
         elif status_type == 'stationary':
-            if hasattr(self.status_bar, 'update_device_status'):
+            # Prefer showing device movement status in the orientation panel now that
+            # the indicator lives there. Fall back to connection panel or status bar.
+            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_device_status'):
+                self.orientation_panel.update_device_status(bool(value))
+            elif hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_device_status'):
+                self.connection_panel.update_device_status(bool(value))
+            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_device_status'):
                 self.status_bar.update_device_status(bool(value))
         elif status_type == 'filter_type':
             # Filter type change acknowledgment from fusion worker
@@ -523,8 +528,10 @@ class TabbedGUIWorker(QMainWindow):
                 if hasattr(self.calibration_panel, 'clear_calibration_state'):
                     self.calibration_panel.clear_calibration_state()
                 
-                # Reset message rate in status bar when serial stops
-                if hasattr(self.status_bar, 'update_message_rate'):
+                # Reset message rate in the embedded status area when serial stops
+                if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_message_rate'):
+                    self.connection_panel.update_message_rate(0.0)
+                elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_message_rate'):
                     self.status_bar.update_message_rate(0.0)
         elif status_type == 'serial_data':
             # Update serial panel with data activity

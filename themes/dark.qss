@@ -56,6 +56,43 @@ QPushButton[status="disabled"] {
     color: #888888;
 }
 
+/* Statused buttons: map semantic 'status' property to colored backgrounds */
+QPushButton[status="enabled"] {
+    background-color: #28a745;
+    border: 1px solid #1e7e34;
+    color: #ffffff;
+}
+QPushButton[status="enabled"]:hover {
+    background-color: #218838;
+}
+QPushButton[status="enabled"]:pressed {
+    background-color: #1c7430;
+}
+
+QPushButton[status="warning"] {
+    background-color: #ffc107;
+    border: 1px solid #e0a800;
+    color: #222222;
+}
+QPushButton[status="warning"]:hover {
+    background-color: #ffca2c;
+}
+QPushButton[status="warning"]:pressed {
+    background-color: #e0a800;
+}
+
+QPushButton[status="error"] {
+    background-color: #dc3545;
+    border: 1px solid #c82333;
+    color: #ffffff;
+}
+QPushButton[status="error"]:hover {
+    background-color: #c82333;
+}
+QPushButton[status="error"]:pressed {
+    background-color: #b21f2d;
+}
+
 /* Labels */
 QLabel {
     color: #ffffff;

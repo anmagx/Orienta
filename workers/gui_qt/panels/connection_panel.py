@@ -64,6 +64,10 @@ class ConnectionPanelQt(BasePanelQt):
         self._udp_btn_text = "Start UDP"
         self._udp_status_text = "UDP Disabled"
 
+        # Rate text placeholders (shown inside buttons)
+        self._serial_rate_text = "0.0 msg/s"
+        self._udp_rate_text = "0.0 msg/s"
+
         super().__init__(parent, "Connection", message_callback=message_callback)
 
     def setup_ui(self):
@@ -149,31 +153,35 @@ class ConnectionPanelQt(BasePanelQt):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(12)
 
-        # Serial status + button
-        self.status_label = QLabel("Stopped")
-        self.status_label.setProperty("status", "disabled")
-        self.status_label.setAlignment(Qt.AlignCenter)
+        # Serial button (will display start/stop and host its status)
         self.toggle_button = QPushButton("Start Serial")
-        self.toggle_button.setFixedWidth(120)
+        # Make the button more prominent and allow it to expand to the right column width
+        self.toggle_button.setMinimumHeight(40)
+        self.toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Start in a neutral visual state (button remains pressable)
+        self.toggle_button.setProperty('status', '')
         self.toggle_button.clicked.connect(self.toggle_serial)
-        right_layout.addWidget(self.status_label)
+        # add a stretch so the controls are vertically centered
+        right_layout.addStretch()
         right_layout.addWidget(self.toggle_button)
 
         # Divider between serial and UDP controls (short)
         mid_div = QFrame()
         mid_div.setFrameShape(QFrame.HLine)
         mid_div.setFrameShadow(QFrame.Sunken)
+        mid_div.setFixedHeight(2)
         right_layout.addWidget(mid_div)
 
-        # UDP status + button
-        self.udp_status_label = QLabel(self._udp_status_text)
-        self.udp_status_label.setProperty("status", "disabled")
-        self.udp_status_label.setAlignment(Qt.AlignCenter)
+        # UDP button (hosts its status inside)
         self.udp_toggle_btn = QPushButton(self._udp_btn_text)
-        self.udp_toggle_btn.setFixedWidth(120)
+        self.udp_toggle_btn.setMinimumHeight(40)
+        self.udp_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Neutral initial visual state so button appears pressable
+        self.udp_toggle_btn.setProperty('status', '')
         self.udp_toggle_btn.clicked.connect(self.toggle_udp)
-        right_layout.addWidget(self.udp_status_label)
         right_layout.addWidget(self.udp_toggle_btn)
+        # bottom stretch to keep buttons centered
+        right_layout.addStretch()
 
         # Make left and right take equal horizontal space
         outer.addWidget(left_widget, 1)
@@ -189,9 +197,16 @@ class ConnectionPanelQt(BasePanelQt):
         outer.addWidget(right_widget, 1)
 
         main_layout.addWidget(controls_frame, 0, 0)
-        # Make the panel slimmer in height
-        controls_frame.setFixedHeight(92)
+        # Adjust panel height to accommodate larger buttons while keeping it reasonably slim
+        controls_frame.setFixedHeight(120)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # Ensure buttons reflect initial rate texts
+        try:
+            self._refresh_serial_button_text()
+            self._refresh_udp_button_text()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Serial handling (identical logic to former SerialPanelQt)
@@ -231,15 +246,18 @@ class ConnectionPanelQt(BasePanelQt):
         self._is_running = True
         self._connection_status = "starting"
         self.toggle_button.setText("Stop Serial")
+        self.toggle_button.setProperty('status', 'warning')
+        self.toggle_button.style().polish(self.toggle_button)
+        # Ensure rate text remains visible when changing base text
+        try:
+            self._refresh_serial_button_text()
+        except Exception:
+            pass
 
         self.port_combo.setEnabled(False)
         self.baud_combo.setEnabled(False)
 
-        self.status_label.setText(f"Starting {port} @ {baud}...")
-        self.status_label.setProperty("status", "warning")
-        self.status_label.style().polish(self.status_label)
         self.log_message(f"Start requested on {port} @ {baud}")
-
     def _stop_serial(self):
         """Stop serial communication."""
         if not safe_queue_put(
@@ -253,13 +271,17 @@ class ConnectionPanelQt(BasePanelQt):
         self._is_running = False
         self._connection_status = "stopped"
         self.toggle_button.setText("Start Serial")
+        # Neutral visual state so button stays visibly pressable when stopped
+        self.toggle_button.setProperty('status', '')
+        self.toggle_button.style().polish(self.toggle_button)
+        try:
+            self._refresh_serial_button_text()
+        except Exception:
+            pass
 
         self.port_combo.setEnabled(True)
         self.baud_combo.setEnabled(True)
 
-        self.status_label.setText("Stopped")
-        self.status_label.setProperty("status", "disabled")
-        self.status_label.style().polish(self.status_label)
         self._data_activity_timer.stop()
         self.log_message("Stop requested")
 
@@ -282,17 +304,22 @@ class ConnectionPanelQt(BasePanelQt):
         baud = self.baud_combo.currentText()
 
         if status == "connected":
-            self.status_label.setText("Waiting for data...")
-            self.status_label.setProperty("status", "warning")  # Orange until fusion is active
-            self.status_label.style().polish(self.status_label)
+            # Show waiting state on the button until fusion is active
+            self.toggle_button.setProperty('status', 'warning')
+            self.toggle_button.style().polish(self.toggle_button)
         elif status == "error":
             # Re-enable port and baud selection on error so user can try different settings
             self.port_combo.setEnabled(True)
             self.baud_combo.setEnabled(True)
 
-            self.status_label.setText(f"Error on {port} @ {baud}")
-            self.status_label.setProperty("status", "error")
-            self.status_label.style().polish(self.status_label)
+            # Reflect error on the button
+            self.toggle_button.setText("Start Serial")
+            self.toggle_button.setProperty('status', 'error')
+            self.toggle_button.style().polish(self.toggle_button)
+            try:
+                self._refresh_serial_button_text()
+            except Exception:
+                pass
             self._data_activity_timer.stop()
 
     def update_data_activity(self):
@@ -305,11 +332,9 @@ class ConnectionPanelQt(BasePanelQt):
 
         # Only show green when both connected AND fusion is processing
         if self._fusion_processing:
-            port = self.port_combo.currentText()
-            baud = self.baud_combo.currentText()
-            self.status_label.setText(f"Running on {port} @ {baud}")
-            self.status_label.setProperty("status", "enabled")
-            self.status_label.style().polish(self.status_label)
+            # Show enabled/green state on the button when fusion is active
+            self.toggle_button.setProperty('status', 'enabled')
+            self.toggle_button.style().polish(self.toggle_button)
 
         # Reset timeout timer (5 seconds without data = back to waiting)
         self._data_activity_timer.start(5000)
@@ -319,9 +344,9 @@ class ConnectionPanelQt(BasePanelQt):
         if not self._is_running or self._connection_status != "connected":
             return
 
-        self.status_label.setText("Waiting for data...")
-        self.status_label.setProperty("status", "warning")
-        self.status_label.style().polish(self.status_label)
+        # When data times out, show waiting state on the button
+        self.toggle_button.setProperty('status', 'warning')
+        self.toggle_button.style().polish(self.toggle_button)
 
     def update_fusion_status(self, is_active):
         """Update fusion processing status from statusQueue."""
@@ -329,14 +354,11 @@ class ConnectionPanelQt(BasePanelQt):
 
         if self._is_running and self._connection_status == "connected":
             if is_active:
-                port = self.port_combo.currentText()
-                baud = self.baud_combo.currentText()
-                self.status_label.setText(f"Running on {port} @ {baud}")
-                self.status_label.setProperty("status", "enabled")
+                # Show enabled on button
+                self.toggle_button.setProperty('status', 'enabled')
             else:
-                self.status_label.setText("Waiting for data...")
-                self.status_label.setProperty("status", "warning")
-            self.status_label.style().polish(self.status_label)
+                self.toggle_button.setProperty('status', 'warning')
+            self.toggle_button.style().polish(self.toggle_button)
 
     # ------------------------------------------------------------------
     # UDP handling (identical logic to former NetworkPanelQt)
@@ -363,6 +385,12 @@ class ConnectionPanelQt(BasePanelQt):
         """Enable UDP transmission."""
         self._udp_btn_text = "Stop UDP"
         self.udp_toggle_btn.setText(self._udp_btn_text)
+        self.udp_toggle_btn.setProperty('status', 'enabled')
+        self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
+        try:
+            self._refresh_udp_button_text()
+        except Exception:
+            pass
 
         self.udp_ip_entry.setEnabled(False)
         self.udp_port_entry.setEnabled(False)
@@ -391,9 +419,9 @@ class ConnectionPanelQt(BasePanelQt):
             return
 
         self._udp_status_text = f"UDP Enabled -> {ip}:{port}"
-        self.udp_status_label.setText(self._udp_status_text)
-        self.udp_status_label.setProperty("status", "enabled")
-        self.udp_status_label.style().polish(self.udp_status_label)
+        # reflect status on the UDP button
+        self.udp_toggle_btn.setProperty('status', 'enabled')
+        self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
 
         self.log_message(f"UDP enabled -> {ip}:{port}")
 
@@ -401,6 +429,9 @@ class ConnectionPanelQt(BasePanelQt):
         """Disable UDP transmission."""
         self._udp_btn_text = "Start UDP"
         self.udp_toggle_btn.setText(self._udp_btn_text)
+        # Neutral visual state so button stays visibly pressable when stopped
+        self.udp_toggle_btn.setProperty('status', '')
+        self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
 
         self.udp_ip_entry.setEnabled(True)
         self.udp_port_entry.setEnabled(True)
@@ -414,10 +445,6 @@ class ConnectionPanelQt(BasePanelQt):
             return
 
         self._udp_status_text = "UDP Disabled"
-        self.udp_status_label.setText(self._udp_status_text)
-        self.udp_status_label.setProperty("status", "disabled")
-        self.udp_status_label.style().polish(self.udp_status_label)
-
         self.log_message("UDP disabled")
 
     def set_udp_config(self, ip, port):
@@ -536,3 +563,77 @@ class ConnectionPanelQt(BasePanelQt):
                     )
                 except Exception:
                     pass
+
+    # -------------------------
+    # Status-area helpers
+    # -------------------------
+    def _refresh_serial_button_text(self):
+        """Refresh the serial button text to include current rate."""
+        try:
+            base = self.toggle_button.text().split(' - ')[0].split('\n')[0]
+            self.toggle_button.setText(f"{base} - {self._serial_rate_text}")
+        except Exception:
+            pass
+
+    def _refresh_udp_button_text(self):
+        """Refresh the UDP button text to include current rate."""
+        try:
+            base = self.udp_toggle_btn.text().split(' - ')[0].split('\n')[0]
+            self.udp_toggle_btn.setText(f"{base} - {self._udp_rate_text}")
+        except Exception:
+            pass
+
+    def update_message_rate(self, rate):
+        """
+        Update the message rate display (shown inside Start/Stop Serial button).
+
+        Args:
+            rate: Messages per second (float)
+        """
+        try:
+            self._serial_rate_text = f"{float(rate):.1f} msg/s"
+            self._refresh_serial_button_text()
+        except Exception:
+            pass
+
+    def update_send_rate(self, rate):
+        """
+        Update the UDP send rate display (shown inside Start/Stop UDP button).
+
+        Args:
+            rate: Packets per second (float)
+        """
+        try:
+            self._udp_rate_text = f"{float(rate):.1f} msg/s"
+            self._refresh_udp_button_text()
+        except Exception:
+            pass
+
+    def update_all(self, msg_rate=None, send_rate=None):
+        """
+        Update multiple metrics at once.
+        """
+        if msg_rate is not None:
+            self.update_message_rate(msg_rate)
+        if send_rate is not None:
+            self.update_send_rate(send_rate)
+
+    def reset_status(self):
+        """Reset message/send rates to zero (used when serial stops)."""
+        try:
+            self._serial_rate_text = "0.0 msg/s"
+            self._udp_rate_text = "0.0 msg/s"
+            self._refresh_serial_button_text()
+            self._refresh_udp_button_text()
+        except Exception:
+            pass
+
+    def get_status_values(self):
+        """Return the current status values as a dict."""
+        try:
+            return {
+                'msg_rate': self._serial_rate_text,
+                'send_rate': self._udp_rate_text
+            }
+        except Exception:
+            return {'msg_rate': None, 'send_rate': None}
