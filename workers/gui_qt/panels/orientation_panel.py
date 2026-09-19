@@ -2072,60 +2072,6 @@ class OrientationPanelQt(QGroupBox):
                         self.message_callback(f"Initial roll drift angle set to {self.drift_angle_roll_value:.1f}°")
         except Exception:
             pass
-        try:
-            angle = float(angle)
-            angle = max(0.0, min(25.0, angle))
-            angle = round(angle * 10.0) / 10.0
-            self.drift_angle_yaw_value = angle
-            try:
-                self.drift_angle_yaw_label.setText(f"{angle:.1f}°")
-                self.drift_yaw_slider.setValue(int(angle * 10))
-            except Exception:
-                pass
-            if self.control_queue:
-                from util.error_utils import safe_queue_put
-                from config.config import QUEUE_PUT_TIMEOUT
-                safe_queue_put(self.control_queue, ('set_center_threshold_yaw', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
-        except Exception:
-            pass
-
-    def set_drift_angle_pitch(self, angle):
-        try:
-            angle = float(angle)
-            angle = max(0.0, min(25.0, angle))
-            angle = round(angle * 10.0) / 10.0
-            self.drift_angle_pitch_value = angle
-            try:
-                self.drift_angle_pitch_label.setText(f"{angle:.1f}°")
-                self.drift_pitch_slider.setValue(int(angle * 10))
-            except Exception:
-                pass
-            if self.control_queue:
-                from util.error_utils import safe_queue_put
-                from config.config import QUEUE_PUT_TIMEOUT
-                safe_queue_put(self.control_queue, ('set_center_threshold_pitch', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
-        except Exception:
-            pass
-
-    def set_drift_angle_roll(self, angle):
-        try:
-            angle = float(angle)
-            angle = max(0.0, min(25.0, angle))
-            angle = round(angle * 10.0) / 10.0
-            self.drift_angle_roll_value = angle
-            try:
-                self.drift_angle_roll_label.setText(f"{angle:.1f}°")
-                self.drift_roll_slider.setValue(int(angle * 10))
-            except Exception:
-                pass
-            if self.control_queue:
-                from util.error_utils import safe_queue_put
-                from config.config import QUEUE_PUT_TIMEOUT
-                safe_queue_put(self.control_queue, ('set_center_threshold_roll', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
-        except Exception:
-            pass
-
-
     
     def get_prefs(self):
         """

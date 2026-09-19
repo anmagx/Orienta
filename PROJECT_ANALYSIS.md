@@ -142,44 +142,6 @@ persists machine-local settings in ignored `config/config.cfg`, written
 atomically by `PreferencesManager`. It contains serial, network, orientation,
 calibration, and GUI sections. Themes are application stylesheets in `themes/`.
 
-## Stale artifacts from the recent refactor
-
-The GUI and fusion worker were heavily refactored recently (calibration UI
-merged into the orientation panel, filter selection removed, tabbed layout
-introduced). Some leftovers were not cleaned up. Agents should not assume
-these still work, and should feel free to remove them as part of unrelated
-cleanup work if convenient:
-
-- **Dead `filter_type` status handler.** `gui_wrk.py`'s `_handle_status_update`
-  still has an `elif status_type == 'filter_type':` branch that looks up
-  `self.orientation_panel.filter_combo`. That attribute no longer exists (no
-  `QComboBox` filter selector is built anywhere in `orientation_panel.py`), and
-  `fusion_wrk.py` never emits a `'filter_type'` status. The branch is
-  unreachable dead code left over from when Euler/quaternion filter selection
-  existed.
-- **Orphaned `shortcut_helper.py`.** `workers/gui_qt/helpers/shortcut_helper.py`
-  defines its own `KeyCaptureDialog` and `ShortcutManager` using the
-  `keyboard` module directly. It is only referenced by
-  `workers/gui_qt/helpers/__init__.py`'s re-export; no panel or worker imports
-  it. Shortcut capture today happens through a *different*,
-  actively-used `KeyCaptureDialog` defined inline in `orientation_panel.py`,
-  which round-trips through the input worker's command/response queues
-  (keyboard + pygame gamepad). Treat `shortcut_helper.py` as legacy/unused.
-- **Placeholder file.** `workers/gui_qt/panels/orientation_visualization_tmp.py`
-  contains only the text `PLACEHOLDER` and is not imported anywhere (it is
-  absent from `panels/__init__.py`). It appears to be a leftover scratch file.
-- **Empty `README_v2.md`.** The repository root has a 0-byte `README_v2.md`
-  alongside the real `README.md`; it carries no content.
-- **Duplicate method definitions in `orientation_panel.py`.** `OrientationPanelQt`
-  defines `update_device_status` twice: an earlier definition (whose body
-  references drift status and an undefined `active` parameter — it takes
-  `stationary` but uses `active`, so it would raise `NameError` if ever
-  reached) is entirely shadowed by a later, correct definition that updates the
-  stationary/moving label. Because Python keeps only the last definition, the
-  first is unreachable. `set_drift_angle_pitch` and `set_drift_angle_roll` are
-  likewise each defined twice with identical bodies; the duplicates are
-  harmless but should be removed if the file is touched again.
-
 ## Refactoring constraints
 
 1. Queue payload shapes and command tuples are cross-process compatibility

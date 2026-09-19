@@ -515,14 +515,6 @@ class TabbedGUIWorker(QMainWindow):
                 self.connection_panel.update_device_status(bool(value))
             elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_device_status'):
                 self.status_bar.update_device_status(bool(value))
-        elif status_type == 'filter_type':
-            # Filter type change acknowledgment from fusion worker
-            if hasattr(self.orientation_panel, 'filter_combo'):
-                try:
-                    self.orientation_panel.filter_combo.setCurrentText(str(value))
-                except Exception:
-                    pass
-    
     def _handle_ui_status_update(self, status_type: str, value):
         """Handle UI-specific status updates from workers."""
         if status_type == 'processing':
