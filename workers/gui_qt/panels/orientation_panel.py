@@ -7,7 +7,7 @@ No controls - purely for data visualization.
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, 
                              QLabel, QSizePolicy, QWidget, QFrame, QPushButton, QDialog, QSlider, QApplication,
                              QStackedWidget, QDialogButtonBox)
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QRect, QEvent
 from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
 
 from workers.gui_qt.panels.about_panel import AboutPanel
@@ -851,6 +851,24 @@ class SquareContainer(QWidget):
         y = (self.height() - side) // 2
         self._child.setGeometry(x, y, side, side)
 
+    def refresh_child_geometry(self):
+        """Force-update the child's geometry to remain square and centered.
+
+        Useful when the child is reparented back into this container and
+        a layout pass hasn't triggered a resize event yet.
+        """
+        try:
+            side = max(0, min(self.width(), self.height()))
+            x = (self.width() - side) // 2
+            y = (self.height() - side) // 2
+            if hasattr(self, '_child') and self._child is not None:
+                try:
+                    self._child.setGeometry(x, y, side, side)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
 class OrientationPanelQt(QGroupBox):
     """PyQt5 panel for orientation display."""
@@ -909,6 +927,18 @@ class OrientationPanelQt(QGroupBox):
 
         # Recalibrate button placeholder
         self.recal_button = None
+
+        # Pop-out visualization state
+        self._viz_popped_out = False
+        self._popup_window = None
+        self._popup_square = None
+        self._placeholder_square = None
+        self._viz_layout = None
+        self._viz_index = None
+        self._viz_prev_size = None
+        self._popup_geom = None
+        # Popup opacity (1.0 == fully opaque)
+        self._popup_opacity = 1.0
 
         self._build_ui()
 
@@ -984,6 +1014,31 @@ class OrientationPanelQt(QGroupBox):
         # remains square and centered, regardless of the panel's shape.
         self.visualization_square = SquareContainer(self.visualization_widget)
         viz_layout.addWidget(self.visualization_square, stretch=1)
+
+        # Pop-out/In control below visualization
+        try:
+            btn_row = QHBoxLayout()
+            btn_row.setContentsMargins(0, 0, 0, 0)
+            btn_row.setSpacing(4)
+            self.pop_viz_button = QPushButton("Pop Out")
+            self.pop_viz_button.setToolTip("Pop the visualization out into a floating window")
+            self.pop_viz_button.clicked.connect(self._toggle_viz_popup)
+            # Make Pop Out expand horizontally and match the settings button height
+            self.pop_viz_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.pop_viz_button.setFixedHeight(28)
+            btn_row.addWidget(self.pop_viz_button, 1)
+
+            # Settings (wrench) button aligned to the right
+            self.viz_settings_button = QPushButton("⚙")
+            self.viz_settings_button.setToolTip("Visualization settings")
+            self.viz_settings_button.setFixedSize(36, 28)
+            self.viz_settings_button.setStyleSheet("font-size:14px; padding:0px;")
+            self.viz_settings_button.clicked.connect(self._open_viz_settings)
+            btn_row.addWidget(self.viz_settings_button)
+
+            viz_layout.addLayout(btn_row)
+        except Exception:
+            self.pop_viz_button = None
 
         split_layout.addWidget(viz_frame, stretch=1)
 
@@ -1289,9 +1344,9 @@ class OrientationPanelQt(QGroupBox):
                             if prefs:
                                 prefs.disengage_shortcut = key
                                 prefs.disengage_shortcut_display_name = display_name
-                                # Emit preferences_changed so TabbedGUIWorker saves immediately
+                                # Request debounced preference save via PreferencesPanel
                                 try:
-                                    prefs.preferences_changed.emit()
+                                    self._request_pref_save()
                                 except Exception:
                                     pass
                         except Exception:
@@ -1436,9 +1491,9 @@ class OrientationPanelQt(QGroupBox):
                             if prefs:
                                 prefs.reset_shortcut = key
                                 prefs.reset_shortcut_display_name = display_name
-                                # Emit preferences_changed so TabbedGUIWorker saves immediately
+                                # Request debounced preference save via PreferencesPanel
                                 try:
-                                    prefs.preferences_changed.emit()
+                                    self._request_pref_save()
                                 except Exception:
                                     pass
                         except Exception:
@@ -2197,6 +2252,430 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
+    def _create_popup_window(self):
+        """Create a frameless always-on-top window to host the visualization."""
+        try:
+            from PyQt5.QtWidgets import QWidget
+            popup = QWidget(None, Qt.Window | Qt.FramelessWindowHint | Qt.Tool)
+            # Ensure the popup respects application stylesheet (theme)
+            popup.setObjectName('visualizationPopup')
+            popup.setAttribute(Qt.WA_StyledBackground, True)
+            popup.setWindowFlags(popup.windowFlags() | Qt.WindowStaysOnTopHint)
+            popup.setAttribute(Qt.WA_TranslucentBackground, False)
+            popup.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            # Create a square container for the visualization inside popup
+            square = SquareContainer(self.visualization_widget, parent=popup)
+            layout = QVBoxLayout(popup)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(square)
+            # Position the popup. If a preferred geometry was stored use it,
+            # otherwise fall back to a sensible default in the bottom-right.
+            screen = QApplication.primaryScreen()
+            geom = screen.availableGeometry()
+            try:
+                if isinstance(self._popup_geom, QRect):
+                    w = max(64, int(self._popup_geom.width()))
+                    h = max(64, int(self._popup_geom.height()))
+                    x = int(self._popup_geom.x())
+                    y = int(self._popup_geom.y())
+                else:
+                    w = 320
+                    h = 320
+                    x = geom.right() - w - 24
+                    y = geom.bottom() - h - 24
+            except Exception:
+                w = 320
+                h = 320
+                x = geom.right() - w - 24
+                y = geom.bottom() - h - 24
+            popup.setGeometry(x, y, w, h)
+            # Apply stored opacity if available
+            try:
+                popup.setWindowOpacity(max(0.0, min(1.0, float(self._popup_opacity))))
+            except Exception:
+                pass
+            popup.show()
+            try:
+                # Record popup geometry for future size/position control
+                self._popup_geom = popup.geometry()
+            except Exception:
+                self._popup_geom = None
+            try:
+                # Install event filter so moves/resizes are recorded
+                popup.installEventFilter(self)
+            except Exception:
+                pass
+            return popup, square
+        except Exception:
+            return None, None
+
+    def _toggle_viz_popup(self):
+        """Toggle visualization between embedded and popped-out states."""
+        try:
+            if not self._viz_popped_out:
+                # Record previous visualization container size so we can restore it on pop-in
+                try:
+                    self._viz_prev_size = self.visualization_square.size()
+                except Exception:
+                    self._viz_prev_size = None
+                # Record original layout and index so we can restore later
+                try:
+                    parent = self.visualization_square.parent()
+                    self._viz_layout = parent.layout() if parent is not None else None
+                    self._viz_index = None
+                    if self._viz_layout is not None:
+                        for idx in range(self._viz_layout.count()):
+                            it = self._viz_layout.itemAt(idx)
+                            try:
+                                w = it.widget()
+                            except Exception:
+                                w = None
+                            if w is self.visualization_square:
+                                self._viz_index = idx
+                                break
+                except Exception:
+                    self._viz_layout = None
+                    self._viz_index = None
+
+                # Create placeholder to keep layout spacing
+                placeholder = QWidget()
+                placeholder.setMinimumSize(160, 160)
+                placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                # Remove the visualization_square from its layout and insert placeholder
+                try:
+                    if self._viz_layout is not None and self._viz_index is not None:
+                        item = self._viz_layout.takeAt(self._viz_index)
+                        try:
+                            if item and item.widget():
+                                item.widget().setParent(None)
+                        except Exception:
+                            pass
+                        self._viz_layout.insertWidget(self._viz_index, placeholder, stretch=1)
+                    else:
+                        try:
+                            self.visualization_square.setParent(None)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Create popup which will reparent the visualization widget into the popup's square
+                popup, square = self._create_popup_window()
+                if popup is None:
+                    # Failed to create popup: try to restore original placement
+                    try:
+                        if self._viz_layout is not None and self._viz_index is not None:
+                            # remove placeholder
+                            for i in range(self._viz_layout.count()):
+                                it = self._viz_layout.itemAt(i)
+                                if it and it.widget() is placeholder:
+                                    self._viz_layout.takeAt(i)
+                                    break
+                            self._viz_layout.insertWidget(self._viz_index, self.visualization_square, stretch=1)
+                    except Exception:
+                        pass
+                    return
+
+                # Save popup and placeholder references
+                self._popup_window = popup
+                self._popup_square = square
+                self._placeholder_square = placeholder
+
+                self.pop_viz_button.setText("Pop In")
+                self._viz_popped_out = True
+            else:
+                # Pop in: move visualization back into its original container
+                try:
+                    if self._popup_window:
+                        # Detach visualization from popup
+                        try:
+                            self.visualization_widget.setParent(None)
+                        except Exception:
+                            pass
+
+                        # Reparent visualization into the original square container
+                        try:
+                            self.visualization_widget.setParent(self.visualization_square)
+                            self.visualization_square._child = self.visualization_widget
+                        except Exception:
+                            pass
+
+                        # Replace placeholder with the original square in the recorded layout
+                        try:
+                            if self._viz_layout is not None and self._viz_index is not None:
+                                replaced = False
+                                for i in range(self._viz_layout.count()):
+                                    it = self._viz_layout.itemAt(i)
+                                    if it and it.widget() is self._placeholder_square:
+                                        self._viz_layout.takeAt(i)
+                                        self._viz_layout.insertWidget(i, self.visualization_square, stretch=1)
+                                        replaced = True
+                                        break
+                                if not replaced:
+                                    # fallback: insert at stored index
+                                    self._viz_layout.insertWidget(self._viz_index, self.visualization_square, stretch=1)
+                            else:
+                                # fallback: try to add back to a reasonable parent
+                                try:
+                                    parent = self.visualization_square.parent()
+                                    if parent is not None:
+                                        parent.layout().addWidget(self.visualization_square, stretch=1)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                        try:
+                            self._popup_window.close()
+                        except Exception:
+                            pass
+                        # Force a geometry refresh on the restored square so the
+                        # child visualization is laid out at the correct size.
+                        try:
+                            if self._viz_prev_size is not None:
+                                try:
+                                    # Apply fixed size to the square to restore previous scale
+                                    self.visualization_square.setFixedSize(self._viz_prev_size.width(), self._viz_prev_size.height())
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self.visualization_square, 'refresh_child_geometry'):
+                                QTimer.singleShot(0, self.visualization_square.refresh_child_geometry)
+                        except Exception:
+                            pass
+                        try:
+                            self.visualization_widget.update()
+                        except Exception:
+                            pass
+                        # Remove fixed size after a short delay to let layouts resume control
+                        try:
+                            def _clear_fixed():
+                                try:
+                                    self.visualization_square.setMinimumSize(0, 0)
+                                    self.visualization_square.setMaximumSize(16777215, 16777215)
+                                    self.visualization_square.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                                    try:
+                                        self.visualization_square.update()
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
+                            QTimer.singleShot(150, _clear_fixed)
+                        except Exception:
+                            pass
+                    # Clear stored popup/placeholder/layout info
+                    self._popup_window = None
+                    self._popup_square = None
+                    self._placeholder_square = None
+                    self._viz_layout = None
+                    self._viz_index = None
+                except Exception:
+                    pass
+                self.pop_viz_button.setText("Pop Out")
+                self._viz_popped_out = False
+        except Exception:
+            pass
+
+    def _open_viz_settings(self):
+        """Open a small dialog allowing the user to set popout size and position."""
+        try:
+            dlg = QDialog(self)
+            dlg.setObjectName('visualizationSettingsDialog')
+            dlg.setAttribute(Qt.WA_StyledBackground, True)
+            dlg.setWindowTitle("Visualization Settings")
+            layout = QVBoxLayout(dlg)
+
+            # Remember the original geometry so Cancel can restore it
+            orig_geom = None
+            try:
+                if self._popup_window and self._popup_geom is not None:
+                    orig_geom = QRect(self._popup_geom)
+                elif self._popup_window:
+                    orig_geom = QRect(self._popup_window.geometry())
+                elif self._popup_geom is not None:
+                    orig_geom = QRect(self._popup_geom)
+            except Exception:
+                orig_geom = None
+
+            # Size setting
+            size_row = QHBoxLayout()
+            size_row.addWidget(QLabel("Popout size:"))
+            self._size_slider = QSlider(Qt.Horizontal)
+            self._size_slider.setMinimum(200)
+            self._size_slider.setMaximum(1200)
+            current_size = 320
+            try:
+                if self._popup_window:
+                    current_size = max(64, int(self._popup_window.width()))
+                elif self._popup_geom is not None:
+                    current_size = max(64, int(self._popup_geom.width()))
+            except Exception:
+                current_size = 320
+            self._size_slider.setValue(current_size)
+            size_row.addWidget(self._size_slider, 1)
+            layout.addLayout(size_row)
+
+            # Opacity setting (0-100 mapped to 0.0-1.0)
+            opacity_row = QHBoxLayout()
+            opacity_row.addWidget(QLabel("Popout opacity:"))
+            from PyQt5.QtWidgets import QSpinBox
+            self._opacity_slider = QSlider(Qt.Horizontal)
+            self._opacity_slider.setMinimum(10)
+            self._opacity_slider.setMaximum(100)
+            try:
+                cur_op = int(max(10, min(100, int(self._popup_opacity * 100))))
+            except Exception:
+                cur_op = 100
+            self._opacity_slider.setValue(cur_op)
+            opacity_row.addWidget(self._opacity_slider, 1)
+            self._opacity_label = QLabel(f"{cur_op}%")
+            self._opacity_label.setMinimumWidth(48)
+            self._opacity_label.setAlignment(Qt.AlignCenter)
+            opacity_row.addWidget(self._opacity_label)
+            layout.addLayout(opacity_row)
+
+            # Position options
+            pos_row = QHBoxLayout()
+            pos_row.addWidget(QLabel("Position:"))
+            from PyQt5.QtWidgets import QComboBox
+            self._pos_combo = QComboBox()
+            self._pos_combo.addItems(["Top Left", "Top Right", "Bottom Left", "Bottom Right"])
+            # Try to select current popup position if available
+            try:
+                if self._popup_window and self._popup_geom is not None:
+                    screen = QApplication.primaryScreen().availableGeometry()
+                    g = self._popup_geom
+                    if g.x() < screen.center().x():
+                        # left
+                        if g.y() < screen.center().y():
+                            self._pos_combo.setCurrentIndex(0)
+                        else:
+                            self._pos_combo.setCurrentIndex(2)
+                    else:
+                        if g.y() < screen.center().y():
+                            self._pos_combo.setCurrentIndex(1)
+                        else:
+                            self._pos_combo.setCurrentIndex(3)
+            except Exception:
+                pass
+            pos_row.addWidget(self._pos_combo, 1)
+            layout.addLayout(pos_row)
+
+            # Live apply: when sliders change, update popup immediately
+            def _apply_live():
+                try:
+                    size = int(self._size_slider.value())
+                    pos_idx = int(self._pos_combo.currentIndex())
+                    screen = QApplication.primaryScreen().availableGeometry()
+                    w = size
+                    h = size
+                    margin = 24
+                    if pos_idx == 0:  # TL
+                        x = screen.left() + margin
+                        y = screen.top() + margin
+                    elif pos_idx == 1:  # TR
+                        x = screen.right() - w - margin
+                        y = screen.top() + margin
+                    elif pos_idx == 2:  # BL
+                        x = screen.left() + margin
+                        y = screen.bottom() - h - margin
+                    else:  # BR
+                        x = screen.right() - w - margin
+                        y = screen.bottom() - h - margin
+                    self._popup_geom = QRect(x, y, w, h)
+                    if self._popup_window:
+                        try:
+                            self._popup_window.setGeometry(self._popup_geom)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            def _apply_opacity_live():
+                try:
+                    val = int(self._opacity_slider.value())
+                    pct = max(10, min(100, val))
+                    self._popup_opacity = pct / 100.0
+                    try:
+                        self._opacity_label.setText(f"{pct}%")
+                    except Exception:
+                        pass
+                    if self._popup_window:
+                        try:
+                            self._popup_window.setWindowOpacity(self._popup_opacity)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            self._size_slider.valueChanged.connect(lambda _: _apply_live())
+            self._pos_combo.currentIndexChanged.connect(lambda _: _apply_live())
+            self._opacity_slider.valueChanged.connect(lambda _: _apply_opacity_live())
+
+            # When live changes occur, emit preferences_changed to persist immediately
+            try:
+                prefs = getattr(self, 'preferences_panel', None) or (getattr(self, 'calibration_panel', None) and getattr(self.calibration_panel, 'preferences_panel', None))
+                if prefs and hasattr(prefs, 'preferences_changed'):
+                    self._size_slider.valueChanged.connect(lambda _: self._request_pref_save())
+                    self._pos_combo.currentIndexChanged.connect(lambda _: self._request_pref_save())
+                    self._opacity_slider.valueChanged.connect(lambda _: self._request_pref_save())
+            except Exception:
+                pass
+
+            # Buttons: OK simply closes, Cancel restores original geometry
+            bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            layout.addWidget(bb)
+            def _on_ok():
+                try:
+                    # Already applied live; just accept
+                    dlg.accept()
+                except Exception:
+                    dlg.accept()
+
+            def _on_cancel():
+                try:
+                    # Restore previous geometry if popup exists
+                    if orig_geom is not None:
+                        self._popup_geom = QRect(orig_geom)
+                        if self._popup_window:
+                            try:
+                                self._popup_window.setGeometry(self._popup_geom)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                dlg.reject()
+
+            bb.accepted.connect(_on_ok)
+            bb.rejected.connect(_on_cancel)
+            dlg.exec_()
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        """Capture move/resize events from the popup to keep _popup_geom current."""
+        try:
+            if obj is getattr(self, '_popup_window', None):
+                if event.type() in (QEvent.Move, QEvent.Resize):
+                    try:
+                        g = self._popup_window.geometry()
+                        self._popup_geom = QRect(g)
+                        # Emit preferences_changed via PreferencesPanel if available
+                        prefs = getattr(self, 'preferences_panel', None)
+                        if prefs and hasattr(prefs, 'preferences_changed'):
+                            try:
+                                self._request_pref_save()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
     def _update_euler_view(self):
         """Show Euler angles only while fusion is processing and no calibration runs."""
         try:
@@ -2874,6 +3353,30 @@ class OrientationPanelQt(QGroupBox):
                 'disengage_shortcut_display_name': getattr(self, 'disengage_shortcut_display_name', 'None'),
                 'disengage_toggle_mode': getattr(self, 'disengage_toggle_mode', False)
             }
+
+            # Persist popup geometry and opacity so popout restores between runs
+            try:
+                if isinstance(self._popup_geom, QRect):
+                    prefs['popup_x'] = int(self._popup_geom.x())
+                    prefs['popup_y'] = int(self._popup_geom.y())
+                    prefs['popup_w'] = int(self._popup_geom.width())
+                    prefs['popup_h'] = int(self._popup_geom.height())
+                elif self._popup_window is not None:
+                    try:
+                        g = self._popup_window.geometry()
+                        prefs['popup_x'] = int(g.x())
+                        prefs['popup_y'] = int(g.y())
+                        prefs['popup_w'] = int(g.width())
+                        prefs['popup_h'] = int(g.height())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            try:
+                prefs['popup_opacity'] = float(getattr(self, '_popup_opacity', 1.0))
+            except Exception:
+                prefs['popup_opacity'] = 1.0
             return prefs
         except Exception:
             return {}
@@ -2938,6 +3441,45 @@ class OrientationPanelQt(QGroupBox):
                 toggle_mode = toggle_mode.lower() in ('true', '1', 'yes')
             try:
                 self.set_disengage_toggle_mode(bool(toggle_mode))
+            except Exception:
+                pass
+
+            # Restore popup geometry and opacity if present
+            try:
+                # Opacity might be stored as float or string
+                if 'popup_opacity' in prefs and prefs.get('popup_opacity') is not None:
+                    try:
+                        op = prefs.get('popup_opacity')
+                        if isinstance(op, str):
+                            op = float(op)
+                        else:
+                            op = float(op)
+                        # clamp between 0.1 and 1.0 to avoid invisible popups
+                        op = max(0.1, min(1.0, op))
+                        self._popup_opacity = op
+                    except Exception:
+                        pass
+
+                # Geometry may be stored as four separate numeric keys
+                if ('popup_x' in prefs and 'popup_y' in prefs and
+                        'popup_w' in prefs and 'popup_h' in prefs):
+                    try:
+                        x = int(prefs.get('popup_x'))
+                        y = int(prefs.get('popup_y'))
+                        w = int(prefs.get('popup_w'))
+                        h = int(prefs.get('popup_h'))
+                        # Basic validation
+                        if w <= 0 or h <= 0:
+                            raise ValueError('invalid size')
+                        self._popup_geom = QRect(x, y, w, h)
+                        # If popup already exists, apply immediately
+                        if getattr(self, '_popup_window', None):
+                            try:
+                                self._popup_window.setGeometry(self._popup_geom)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
         except Exception:
@@ -3378,5 +3920,47 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
 
+            # Debug: show whether prefs contain popup geometry/opactiy after connection
+            try:
+                p = getattr(preferences_panel, 'prefs_manager', None)
+                if p:
+                    allp = p.load()
+                    print(f"[OrientationPanel] connected prefs sections: {list(allp.keys())}")
+                    ori = allp.get('orientation', {})
+                    if isinstance(ori, dict) and ('popup_x' in ori or 'popup_opacity' in ori):
+                        print(f"[OrientationPanel] orientation prefs loaded: popup_x={ori.get('popup_x')}, popup_opacity={ori.get('popup_opacity')}")
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
+        # End connect_preferences_panel
+
+    def _request_pref_save(self):
+        """Request a debounced preferences save via the connected PreferencesPanel.
+
+        This will call `PreferencesPanel._trigger_preference_save()` when
+        available (debounced), otherwise fall back to emitting
+        `preferences_changed` immediately.
+        """
+        try:
+            prefs = getattr(self, 'preferences_panel', None)
+            if not prefs and getattr(self, 'calibration_panel', None):
+                # calibration_panel may expose a preferences_panel reference
+                prefs = getattr(self.calibration_panel, 'preferences_panel', None)
+            if prefs:
+                if hasattr(prefs, '_trigger_preference_save'):
+                    try:
+                        prefs._trigger_preference_save()
+                        return
+                    except Exception:
+                        pass
+                if hasattr(prefs, 'preferences_changed'):
+                    try:
+                        prefs.preferences_changed.emit()
+                        return
+                    except Exception:
+                        pass
         except Exception:
             pass

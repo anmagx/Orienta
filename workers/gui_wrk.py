@@ -708,6 +708,7 @@ class TabbedGUIWorker(QMainWindow):
         try:
             prefs_manager = PreferencesManager()
             prefs = prefs_manager.load()
+            print(f"[GUI] load_preferences: sections={list(prefs.keys())}")
             
             # Handle both dict and string formats for preferences
             if isinstance(prefs, str):
@@ -723,10 +724,23 @@ class TabbedGUIWorker(QMainWindow):
                 self.connection_panel.set_prefs(prefs)
             
             if hasattr(self.orientation_panel, 'set_prefs') and 'orientation' in prefs:
+                print("[GUI] Applying orientation prefs")
                 self.orientation_panel.set_prefs(prefs['orientation'])
             
+            # Avoid applying calibration prefs if calibration_panel is the same
+            # instance as orientation_panel to prevent overwriting values twice.
             if hasattr(self.calibration_panel, 'set_prefs') and 'calibration' in prefs:
-                self.calibration_panel.set_prefs(prefs['calibration'])
+                try:
+                    if self.calibration_panel is self.orientation_panel:
+                        # orientation prefs already applied above; skip duplicate
+                        pass
+                    else:
+                        self.calibration_panel.set_prefs(prefs['calibration'])
+                except Exception:
+                    try:
+                        self.calibration_panel.set_prefs(prefs['calibration'])
+                    except Exception:
+                        pass
             
             if hasattr(self, 'diagnostics_panel') and hasattr(self.diagnostics_panel, 'set_prefs') and 'diagnostics' in prefs:
                 self.diagnostics_panel.set_prefs(prefs['diagnostics'])

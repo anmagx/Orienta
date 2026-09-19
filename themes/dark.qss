@@ -311,6 +311,14 @@ QWidget#preferencesContainer {
     border: none;
 }
 
+/* Visualization popup and settings dialog */
+QWidget#visualizationPopup, QDialog#visualizationSettingsDialog {
+    background-color: #3c3c3c;
+    color: #ffffff;
+    border: 1px solid #555555;
+    border-radius: 4px;
+}
+
 /* Semantic status colors */
 QLabel[status="disabled"] {
     color: #888888;
