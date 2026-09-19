@@ -931,6 +931,15 @@ class OrientationPanelQt(QGroupBox):
     
     def _build_ui(self):
         """Build the orientation panel UI."""
+        try:
+            print("[OrientationPanel] _build_ui start")
+            try:
+                with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                    _f.write('_build_ui start\n')
+            except Exception:
+                pass
+        except Exception:
+            pass
         # Main layout - single column for data displays only
         main_layout = QVBoxLayout()
         # Add modest vertical padding inside the panel to match other panels
@@ -1625,14 +1634,217 @@ class OrientationPanelQt(QGroupBox):
 
         split_layout.addWidget(values_frame, stretch=1)
 
-        # Add the split layout to the main layout
-        main_layout.addLayout(split_layout)
-
-        # Connect sliders to handlers
+        # Wrap the top area (visualization + controls) in its own frame so
+        # the sliders below are a separate, non-overlapping section.
         try:
-            self.drift_yaw_slider.valueChanged.connect(self._on_drift_yaw_angle_change)
+            top_frame = QFrame()
+            top_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            top_layout = QVBoxLayout(top_frame)
+            top_layout.setContentsMargins(0, 0, 0, 0)
+            top_layout.setSpacing(0)
+            top_layout.addLayout(split_layout)
+            # Give the top area the primary stretch so it doesn't starve
+            # the sliders area of vertical space. Sliders will be added
+            # below with a smaller stretch so they remain visible.
+            main_layout.addWidget(top_frame, 1)
+            try:
+                print("[OrientationPanel] added top_frame to main_layout")
+            except Exception:
+                pass
         except Exception:
-            pass
+            # Fallback to adding the layout directly if widget wrapping fails
+            main_layout.addLayout(split_layout)
+
+        # NOTE: slider widgets are created later in this method; connections
+        # are established immediately after each slider is instantiated.
+
+        # Horizontal divider separating main panel from sliders
+        # (Divider now inserted as part of the sliders block below; removed duplicate here)
+
+        # --- Input response monitoring ---
+        try:
+            # Create a timer that polls the input_response_queue (if assigned) and
+            # dispatches shortcut events to local handlers. This mirrors the old
+            # CalibrationPanel behavior so KeyCaptureDialog can pause/resume it.
+            self.input_response_timer = QTimer()
+            self.input_response_timer.timeout.connect(self._process_input_responses)
+            # Start the timer; handler will no-op if queue is not provided yet.
+            self.input_response_timer.start(50)
+        except Exception:
+            self.input_response_timer = None
+
+        # --- Drift angle sliders spanning full width ---
+        try:
+            print("[OrientationPanel] entering sliders construction block")
+            try:
+                with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                    _f.write('entering sliders construction block\n')
+            except Exception:
+                pass
+            sliders_frame = QFrame()
+            sliders_layout = QVBoxLayout(sliders_frame)
+            sliders_layout.setContentsMargins(4, 4, 4, 4)
+            sliders_layout.setSpacing(6)
+
+            # Header
+            header = QLabel("Drift Correction Angles")
+            header.setAlignment(Qt.AlignCenter)
+            header.setStyleSheet("font-weight: bold; margin-bottom: 4px;")
+            sliders_layout.addWidget(header)
+
+            # Yaw
+            yaw_row = QHBoxLayout()
+            yaw_label = QLabel("Yaw:")
+            yaw_label.setMinimumWidth(40)
+            yaw_row.addWidget(yaw_label)
+            self.drift_yaw_slider = QSlider(Qt.Horizontal)
+            self.drift_yaw_slider.setMinimum(0)
+            self.drift_yaw_slider.setMaximum(250)
+            self.drift_yaw_slider.setValue(int(self.drift_angle_yaw_value * 10))
+            try:
+                print(f"[OrientationPanel] created drift_yaw_slider: {self.drift_yaw_slider}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write('created drift_yaw_slider\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Connect slider to handler so changes update viz/state
+            try:
+                self.drift_yaw_slider.valueChanged.connect(self._on_drift_yaw_angle_change)
+            except Exception:
+                pass
+            yaw_row.addWidget(self.drift_yaw_slider, 1)
+            self.drift_angle_yaw_label = QLabel(f"{self.drift_angle_yaw_value:.1f}°")
+            self.drift_angle_yaw_label.setMinimumWidth(40)
+            self.drift_angle_yaw_label.setAlignment(Qt.AlignCenter)
+            yaw_row.addWidget(self.drift_angle_yaw_label)
+            sliders_layout.addLayout(yaw_row)
+
+            # Pitch
+            pitch_row = QHBoxLayout()
+            pitch_label = QLabel("Pitch:")
+            pitch_label.setMinimumWidth(40)
+            pitch_row.addWidget(pitch_label)
+            self.drift_pitch_slider = QSlider(Qt.Horizontal)
+            self.drift_pitch_slider.setMinimum(0)
+            self.drift_pitch_slider.setMaximum(250)
+            self.drift_pitch_slider.setValue(int(self.drift_angle_pitch_value * 10))
+            try:
+                print(f"[OrientationPanel] created drift_pitch_slider: {self.drift_pitch_slider}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write('created drift_pitch_slider\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
+                self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
+            except Exception:
+                pass
+            pitch_row.addWidget(self.drift_pitch_slider, 1)
+            self.drift_angle_pitch_label = QLabel(f"{self.drift_angle_pitch_value:.1f}°")
+            self.drift_angle_pitch_label.setMinimumWidth(40)
+            self.drift_angle_pitch_label.setAlignment(Qt.AlignCenter)
+            pitch_row.addWidget(self.drift_angle_pitch_label)
+            sliders_layout.addLayout(pitch_row)
+
+            # Roll
+            roll_row = QHBoxLayout()
+            roll_label = QLabel("Roll:")
+            roll_label.setMinimumWidth(40)
+            roll_row.addWidget(roll_label)
+            self.drift_roll_slider = QSlider(Qt.Horizontal)
+            self.drift_roll_slider.setMinimum(0)
+            self.drift_roll_slider.setMaximum(250)
+            self.drift_roll_slider.setValue(int(self.drift_angle_roll_value * 10))
+            try:
+                print(f"[OrientationPanel] created drift_roll_slider: {self.drift_roll_slider}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write('created drift_roll_slider\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
+                self.drift_roll_slider.valueChanged.connect(self._on_drift_roll_angle_change)
+            except Exception:
+                pass
+            roll_row.addWidget(self.drift_roll_slider, 1)
+            self.drift_angle_roll_label = QLabel(f"{self.drift_angle_roll_value:.1f}°")
+            self.drift_angle_roll_label.setMinimumWidth(40)
+            self.drift_angle_roll_label.setAlignment(Qt.AlignCenter)
+            roll_row.addWidget(self.drift_angle_roll_label)
+            sliders_layout.addLayout(roll_row)
+
+            # Insert a horizontal divider immediately above the sliders so
+            # they visually separate from the top visualization/controls area.
+            try:
+                sliders_div = QFrame()
+                sliders_div.setFrameShape(QFrame.HLine)
+                sliders_div.setFrameShadow(QFrame.Sunken)
+                sliders_div.setFixedHeight(1)
+                sliders_div.setStyleSheet("background-color: rgba(120,120,120,0.25);")
+                main_layout.addWidget(sliders_div)
+            except Exception:
+                pass
+
+            # Ensure sliders area cannot be collapsed by surrounding layouts.
+            # Use Preferred vertical policy so the layout can allocate space,
+            # and set a sensible minimum height so sliders remain visible.
+            try:
+                sliders_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                # Prefer a minimum height so the sliders area can shrink when
+                # space is constrained while still remaining visible.
+                sliders_frame.setMinimumHeight(120)
+            except Exception:
+                pass
+
+            # Add sliders area with no stretch so it keeps a modest fixed
+            # allocation below the top_frame rather than being expanded.
+            try:
+                main_layout.addWidget(sliders_frame, 0)
+            except Exception:
+                main_layout.addWidget(sliders_frame)
+
+            # Debug: print existence and size hints immediately and again
+            # after a short delay so we can observe allocation post-layout.
+            try:
+                def _debug_print_slider_geometries():
+                    try:
+                        sf_geo = sliders_frame.geometry() if hasattr(sliders_frame, 'geometry') else None
+                        sf_hint = sliders_frame.sizeHint() if hasattr(sliders_frame, 'sizeHint') else None
+                        yaw_exists = hasattr(self, 'drift_yaw_slider') and self.drift_yaw_slider is not None
+                        pitch_exists = hasattr(self, 'drift_pitch_slider') and self.drift_pitch_slider is not None
+                        roll_exists = hasattr(self, 'drift_roll_slider') and self.drift_roll_slider is not None
+                        yaw_hint = self.drift_yaw_slider.sizeHint() if yaw_exists else None
+                        pitch_hint = self.drift_pitch_slider.sizeHint() if pitch_exists else None
+                        roll_hint = self.drift_roll_slider.sizeHint() if roll_exists else None
+                        min_h = sliders_frame.minimumHeight() if hasattr(sliders_frame, 'minimumHeight') else None
+                        print(f"[OrientationPanel] sliders_frame.geo={sf_geo}, hint={sf_hint}, minH={min_h}, yaw_exists={yaw_exists}, yaw_hint={yaw_hint}, pitch_exists={pitch_exists}, pitch_hint={pitch_hint}, roll_exists={roll_exists}, roll_hint={roll_hint}")
+                    except Exception as e:
+                        print(f"[OrientationPanel] debug geometry error: {e}")
+
+                # Immediate (post-construction) data
+                _debug_print_slider_geometries()
+
+                # Delayed check after layout pass
+                QTimer.singleShot(250, _debug_print_slider_geometries)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"[OrientationPanel] exception constructing sliders: {e}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write(f'exception constructing sliders: {e}\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     def _open_preferences_window(self):
         """
@@ -1905,108 +2117,7 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
 
-        # Horizontal divider separating main panel from sliders
-        try:
-            sliders_div = QFrame()
-            sliders_div.setFrameShape(QFrame.HLine)
-            sliders_div.setFrameShadow(QFrame.Sunken)
-            sliders_div.setFixedHeight(1)
-            sliders_div.setStyleSheet("background-color: rgba(120,120,120,0.25);")
-            main_layout.addWidget(sliders_div)
-        except Exception:
-            pass
-
-        # --- Input response monitoring ---
-        try:
-            # Create a timer that polls the input_response_queue (if assigned) and
-            # dispatches shortcut events to local handlers. This mirrors the old
-            # CalibrationPanel behavior so KeyCaptureDialog can pause/resume it.
-            self.input_response_timer = QTimer()
-            self.input_response_timer.timeout.connect(self._process_input_responses)
-            # Start the timer; handler will no-op if queue is not provided yet.
-            self.input_response_timer.start(50)
-        except Exception:
-            self.input_response_timer = None
-
-        # End of UI build
-
-        # --- Drift angle sliders spanning full width ---
-        try:
-            sliders_frame = QFrame()
-            sliders_layout = QVBoxLayout(sliders_frame)
-            sliders_layout.setContentsMargins(6, 6, 6, 6)
-            sliders_layout.setSpacing(8)
-
-            # Header
-            header = QLabel("Drift Correction Angles")
-            header.setAlignment(Qt.AlignCenter)
-            header.setStyleSheet("font-weight: bold; margin-bottom: 4px;")
-            sliders_layout.addWidget(header)
-
-            # Yaw
-            yaw_row = QHBoxLayout()
-            yaw_label = QLabel("Yaw:")
-            yaw_label.setMinimumWidth(40)
-            yaw_row.addWidget(yaw_label)
-            self.drift_yaw_slider = QSlider(Qt.Horizontal)
-            self.drift_yaw_slider.setMinimum(0)
-            self.drift_yaw_slider.setMaximum(250)
-            self.drift_yaw_slider.setValue(int(self.drift_angle_yaw_value * 10))
-            # Connect slider to handler so changes update viz/state
-            try:
-                self.drift_yaw_slider.valueChanged.connect(self._on_drift_yaw_angle_change)
-            except Exception:
-                pass
-            yaw_row.addWidget(self.drift_yaw_slider, 1)
-            self.drift_angle_yaw_label = QLabel(f"{self.drift_angle_yaw_value:.1f}°")
-            self.drift_angle_yaw_label.setMinimumWidth(40)
-            self.drift_angle_yaw_label.setAlignment(Qt.AlignCenter)
-            yaw_row.addWidget(self.drift_angle_yaw_label)
-            sliders_layout.addLayout(yaw_row)
-
-            # Pitch
-            pitch_row = QHBoxLayout()
-            pitch_label = QLabel("Pitch:")
-            pitch_label.setMinimumWidth(40)
-            pitch_row.addWidget(pitch_label)
-            self.drift_pitch_slider = QSlider(Qt.Horizontal)
-            self.drift_pitch_slider.setMinimum(0)
-            self.drift_pitch_slider.setMaximum(250)
-            self.drift_pitch_slider.setValue(int(self.drift_angle_pitch_value * 10))
-            try:
-                self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
-            except Exception:
-                pass
-            pitch_row.addWidget(self.drift_pitch_slider, 1)
-            self.drift_angle_pitch_label = QLabel(f"{self.drift_angle_pitch_value:.1f}°")
-            self.drift_angle_pitch_label.setMinimumWidth(40)
-            self.drift_angle_pitch_label.setAlignment(Qt.AlignCenter)
-            pitch_row.addWidget(self.drift_angle_pitch_label)
-            sliders_layout.addLayout(pitch_row)
-
-            # Roll
-            roll_row = QHBoxLayout()
-            roll_label = QLabel("Roll:")
-            roll_label.setMinimumWidth(40)
-            roll_row.addWidget(roll_label)
-            self.drift_roll_slider = QSlider(Qt.Horizontal)
-            self.drift_roll_slider.setMinimum(0)
-            self.drift_roll_slider.setMaximum(250)
-            self.drift_roll_slider.setValue(int(self.drift_angle_roll_value * 10))
-            try:
-                self.drift_roll_slider.valueChanged.connect(self._on_drift_roll_angle_change)
-            except Exception:
-                pass
-            roll_row.addWidget(self.drift_roll_slider, 1)
-            self.drift_angle_roll_label = QLabel(f"{self.drift_angle_roll_value:.1f}°")
-            self.drift_angle_roll_label.setMinimumWidth(40)
-            self.drift_angle_roll_label.setAlignment(Qt.AlignCenter)
-            roll_row.addWidget(self.drift_angle_roll_label)
-            sliders_layout.addLayout(roll_row)
-
-            main_layout.addWidget(sliders_frame)
-        except Exception:
-            pass
+        # Sliders are constructed during _build_ui; removed duplicate block here.
 
     def _build_euler_displays(self, parent_layout):
         """Build Euler angle (Yaw, Pitch, Roll) display row."""
