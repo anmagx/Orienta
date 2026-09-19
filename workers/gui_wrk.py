@@ -29,7 +29,7 @@ from workers.gui_qt.panels.orientation_panel import OrientationPanelQt
 from workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from workers.gui_qt.panels.about_panel import AboutPanel
 from workers.gui_qt.panels.diagnostics_panel import DiagnosticsPanelQt
-from workers.gui_qt.panels.hold_panel import HoldPanelQt
+from workers.gui_qt.panels.orientation_panel import HoldPanelQt
 
 from workers.gui_qt.managers.preferences_manager import PreferencesManager
 from workers.gui_qt.helpers.icon_helper import set_window_icon

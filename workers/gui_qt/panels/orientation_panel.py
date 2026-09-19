@@ -5,9 +5,170 @@ Display-only panel showing Euler angles (Yaw, Pitch, Roll).
 No controls - purely for data visualization.
 """
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, 
-                             QLabel, QSizePolicy, QWidget, QFrame, QPushButton, QDialog, QSlider, QApplication)
+                             QLabel, QSizePolicy, QWidget, QFrame, QPushButton, QDialog, QSlider, QApplication,
+                             QStackedWidget)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
+
+
+# HoldPanelQt: previously in hold_panel.py — moved here so the panel file
+# can be removed. This class provides the same animated "hold still" banner
+# used both as the top-of-window indicator and (via a smaller instance)
+# inside the Orientation panel when live data isn't available.
+class HoldPanelQt(QWidget):
+    """Panel for displaying HOLD STILL indicator at the top of the application."""
+    
+    def __init__(self, parent=None, text=None, height=30):
+        """
+        Initialize the Hold Still Panel.
+        
+        Args:
+            parent: Parent PyQt widget
+            text: Optional custom text ('\n' is rendered as a line break)
+            height: Fixed height of the panel in pixels
+        """
+        super().__init__(parent)
+        
+        # Animation state tracking (scrolling highlight)
+        self._blink_timer = QTimer()
+        self._blink_timer.timeout.connect(self._on_blink_timer)
+        self._scroll_index = 0
+        self._is_scrolling = False  # Track if animation is active
+        self._direction = 1
+        self._base_text = text if text else "- HOLD STILL & UPRIGHT -"
+        self._highlight_width = 5
+        self._fixed_height = int(height)
+        
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Setup the hold still panel UI."""
+        # Main layout - horizontal to center the text
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(8, 4, 8, 4)  # Small padding
+        main_layout.setSpacing(0)
+        
+        # Add stretch before text to center it
+        main_layout.addStretch()
+        
+        # HOLD STILL label (we'll render per-character HTML for animation)
+        self.hold_still_label = QLabel(self._base_text)
+        self.hold_still_label.setAlignment(Qt.AlignCenter)
+        
+        # Style the text
+        font = self.hold_still_label.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 2)  # Larger text for top-level visibility
+        self.hold_still_label.setFont(font)
+        
+        # Initially subtle (static gray text)
+        self._set_normal_style()
+        
+        main_layout.addWidget(self.hold_still_label)
+        
+        # Add stretch after text to center it
+        main_layout.addStretch()
+        
+        # Set fixed height for consistent layout
+        self.setFixedHeight(self._fixed_height)
+        
+    def _set_normal_style(self):
+        """Set normal (non-blinking) style."""
+        # When not animating we can use a simple stylesheet
+        self.hold_still_label.setStyleSheet("color: #666666;")  # Subtle gray
+        
+    def _set_yellow_style(self):
+        """Set yellow (blinking) style."""
+        self.hold_still_label.setStyleSheet("color: #FFD700; font-weight: bold;")  # Bright gold/yellow
+        
+    def _on_blink_timer(self):
+        """Handle timer ticks and advance the scrolling highlight (bounce side-to-side)."""
+        if not self._is_scrolling:
+            return
+
+        n = len(self._base_text)
+        width = min(self._highlight_width, n)
+        # If text is too short for movement, just render highlight once
+        if n <= width:
+            self._scroll_index = 0
+            self._update_scrolling_text()
+            return
+
+        max_index = n - width
+        # Move and bounce at edges
+        self._scroll_index += self._direction
+        if self._scroll_index >= max_index:
+            self._scroll_index = max_index
+            self._direction = -1
+        elif self._scroll_index <= 0:
+            self._scroll_index = 0
+            self._direction = 1
+
+        self._update_scrolling_text()
+
+    def _escape_char(self, ch: str) -> str:
+        if ch == '\n':
+            return '<br>'
+        if ch == ' ':
+            return '&nbsp;'
+        if ch == '&':
+            return '&amp;'
+        if ch == '<':
+            return '&lt;'
+        if ch == '>':
+            return '&gt;'
+        return ch
+
+    def _update_scrolling_text(self):
+        """Render the label text as HTML with a single-character highlight that scrolls."""
+        parts = []
+        highlight_color = '#FFD700'
+        normal_color = '#666666'
+        n = len(self._base_text)
+        width = min(self._highlight_width, n)
+        # Build per-character spans so spacing and ampersands are preserved
+        start = self._scroll_index
+        end = start + width
+        for i, ch in enumerate(self._base_text):
+            esc = self._escape_char(ch)
+            if start <= i < end:
+                parts.append(f"<span style=\"color: {highlight_color}; font-weight: bold;\">{esc}</span>")
+            else:
+                parts.append(f"<span style=\"color: {normal_color};\">{esc}</span>")
+
+        # Use rich text; QLabel will render it. Keep font set via setFont.
+        html = ''.join(parts)
+        self.hold_still_label.setText(html)
+    
+    def start_blinking(self):
+        """Start the scrolling-color animation (keeps old API name)."""
+        if self._is_scrolling:
+            return  # Already running
+
+        self._is_scrolling = True
+        self._scroll_index = 0
+        self._direction = 1
+        # Faster update and 5-char wide highlight
+        self._blink_timer.start(15)  # advance every 15ms
+        # Immediately render current state
+        self._update_scrolling_text()
+        
+    def stop_blinking(self):
+        """Stop the scrolling-color animation and reset to normal text."""
+        if not self._is_scrolling:
+            return
+
+        self._is_scrolling = False
+        self._blink_timer.stop()
+        self._scroll_index = 0
+        # Reset to simple plain text to avoid leftover HTML styling
+        self.hold_still_label.setText(self._base_text)
+        self._set_normal_style()
+        
+    def is_blinking(self):
+        """Return whether the panel is currently blinking."""
+        return self._is_scrolling
+
 
 # Two-line button implemented by subclassing QPushButton so QSS targeting
 # QPushButton still applies. It draws the button background using the
@@ -705,6 +866,12 @@ class OrientationPanelQt(QGroupBox):
         # Track whether fusion worker is actively processing data; start False
         self._processing_active = False
 
+        # Track whether gyro calibration is currently running
+        self._calibrating = False
+
+        # Track serial connection state reported by GUI worker ('connected', 'stopped', 'error', etc.)
+        self._serial_state = None
+
         # Euler angle display labels
         self.yaw_value_label = None
         self.pitch_value_label = None
@@ -930,7 +1097,28 @@ class OrientationPanelQt(QGroupBox):
             euler_grid.setColumnStretch(2, 1)
         except Exception:
             pass
-        values_layout.addLayout(euler_grid, Qt.AlignHCenter)
+        # The euler grid shares its space with a "hold still" indicator that is
+        # shown whenever no live orientation data is available (fusion inactive
+        # or gyro calibration running).
+        self._euler_page = QWidget()
+        euler_page_layout = QVBoxLayout(self._euler_page)
+        euler_page_layout.setContentsMargins(0, 0, 0, 0)
+        euler_page_layout.setSpacing(0)
+        euler_page_layout.addLayout(euler_grid)
+
+        self.hold_indicator = HoldPanelQt(text="- HOLD STILL & UPRIGHT -", height=56)
+        self._hold_page = QWidget()
+        hold_page_layout = QVBoxLayout(self._hold_page)
+        hold_page_layout.setContentsMargins(0, 0, 0, 0)
+        hold_page_layout.setSpacing(0)
+        hold_page_layout.addStretch()
+        hold_page_layout.addWidget(self.hold_indicator)
+        hold_page_layout.addStretch()
+
+        self.euler_stack = QStackedWidget()
+        self.euler_stack.addWidget(self._euler_page)
+        self.euler_stack.addWidget(self._hold_page)
+        values_layout.addWidget(self.euler_stack, 4)
 
         # Insert a flexible spacer below the euler grid so the grid block is
         # vertically centered between the top and bottom dividers
@@ -1496,6 +1684,46 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
+    def _update_euler_view(self):
+        """Show Euler angles only while fusion is processing and no calibration runs."""
+        try:
+            stack = getattr(self, 'euler_stack', None)
+            if stack is None:
+                return
+
+            show_angles = (bool(getattr(self, '_processing_active', False))
+                           and not bool(getattr(self, '_calibrating', False)))
+            hold = getattr(self, 'hold_indicator', None)
+
+            if show_angles:
+                if hold is not None:
+                    try:
+                        hold.stop_blinking()
+                    except Exception:
+                        pass
+                stack.setCurrentWidget(self._euler_page)
+            else:
+                # Show hold page; only blink when calibration is running or when
+                # serial is connected but the fusion loop isn't processing data.
+                stack.setCurrentWidget(self._hold_page)
+                try:
+                    should_blink = bool(getattr(self, '_calibrating', False)) or (
+                        (getattr(self, '_serial_state', None) == 'connected') and not bool(getattr(self, '_processing_active', False))
+                    )
+                except Exception:
+                    should_blink = bool(getattr(self, '_calibrating', False))
+
+                if hold is not None:
+                    try:
+                        if should_blink:
+                            hold.start_blinking()
+                        else:
+                            hold.stop_blinking()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def update_drift_status(self, active):
         """
         Update drift correction status and visualization.
@@ -1575,6 +1803,47 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
+        # Calibration blocks live angle output; reflect that in the Euler area
+        self._calibrating = bool(calibrating)
+        self._update_euler_view()
+
+    def update_serial_connection_status(self, value):
+        """
+        Compatibility method called by GUI worker to inform about serial connection
+        lifecycle changes. Expected values: 'connected', 'stopped', 'disconnected', 'error', etc.
+        The hold indicator should blink when serial is connected but no fusion data
+        is being processed (i.e. waiting for the device to begin sending samples).
+        """
+        try:
+            # Normalize to string where possible
+            state = None
+            if isinstance(value, str):
+                state = value.lower().strip()
+            elif isinstance(value, bool):
+                state = 'connected' if value else 'stopped'
+            elif value is None:
+                state = None
+            else:
+                try:
+                    state = str(value).lower()
+                except Exception:
+                    state = None
+
+            self._serial_state = state
+        except Exception:
+            # Defensive fallback
+            try:
+                self._serial_state = str(value)
+            except Exception:
+                self._serial_state = None
+        finally:
+            # Refresh the Euler/hold display based on the new serial state
+            try:
+                self._update_euler_view()
+            except Exception:
+                pass
+
+
     def update_processing_status(self, value):
         """
         Update UI elements based on whether the fusion worker is actively processing data.
@@ -1603,10 +1872,12 @@ class OrientationPanelQt(QGroupBox):
 
             # If state hasn't changed, do nothing
             if getattr(self, '_processing_active', None) == active:
+                self._update_euler_view()
                 return
 
             # Remember state
             self._processing_active = active
+            self._update_euler_view()
 
             # Log state change
             try:

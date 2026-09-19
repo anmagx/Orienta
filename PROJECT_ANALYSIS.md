@@ -125,6 +125,9 @@ reports serial message rate, UDP send rate, and device stationary/moving
 state. A persistent `HoldPanelQt` banner above the tab widget blinks
 "HOLD STILL & UPRIGHT" while serial is connected but the fusion loop has not
 yet begun processing data (e.g. during startup or before calibration).
+The orientation panel reuses `HoldPanelQt` in the Yaw/Pitch/Roll area: the
+numeric angles are replaced by the same animated hold indicator whenever the
+fusion worker is not processing data or a gyro calibration is running.
 
 The former standalone calibration panel was merged into `orientation_panel.py`
 (`OrientationPanelQt`), which now owns calibration status, drift-angle
