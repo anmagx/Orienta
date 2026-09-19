@@ -56,7 +56,6 @@ QUEUE_DROP_COUNT_THRESHOLD = 10  # Log warning after this many drops
 QUEUE_PUT_TIMEOUT = 0.001  # seconds - very fast timeout for real-time performance
 QUEUE_GET_TIMEOUT = 0.5  # seconds
 WORKER_JOIN_TIMEOUT = 2.0  # seconds to wait for worker shutdown
-STALE_DETECTION_TIMEOUT = 2.0  # seconds before considering detection stale
 
 # GUI component timeouts
 THRESH_DEBOUNCE_MS = 150  # milliseconds - debounce slider changes in GUI panels
@@ -121,25 +120,6 @@ GUI_POLL_INTERVAL_MS = 100  # milliseconds
 MAX_TEXT_BUFFER_LINES = 500  # lines to keep in message/serial displays
 FPS_REPORT_INTERVAL = 1.0  # seconds between FPS updates
 THRESH_DEBOUNCE_MS = 150  # milliseconds to debounce threshold slider
-
-# ============================================================================
-# Camera / Preview
-# ============================================================================
-PREVIEW_WIDTH = 320
-PREVIEW_HEIGHT = 240
-JPEG_QUALITY = 70
-LOWPASS_ALPHA = 0.35  # smoothing alpha for camera position outputs
-POSITION_CLAMP_MIN = -30.0
-POSITION_CLAMP_MAX = 30.0
-DEFAULT_CAMERA_WIDTH = 640
-DEFAULT_CAMERA_HEIGHT = 480
-DEFAULT_DETECTION_THRESHOLD = 200  # brightness threshold (0-255)
-CAPTURE_RETRY_DELAY = 0.05  # seconds to wait when camera read fails
-CAMERA_OPEN_TIMEOUT = 2.0  # seconds to wait when opening camera device
-MIN_BLOB_AREA = 30  # minimum contour area in pixels for detection
-
-# Position tracking toggle: when False, X/Y/Z remain 0.0 in fused output
-POSITION_TRACKING_ENABLED = False
 
 # Orientation visualization
 VISUALIZATION_RANGE = 15.0  # degrees: +/- range for pitch/yaw axes

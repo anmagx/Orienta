@@ -21,17 +21,15 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QIcon
 
-from workers.gui_qt.panels.serial_panel import SerialPanelQt
-from workers.gui_qt.panels.network_panel import NetworkPanelQt
+from workers.gui_qt.panels.connection_panel import ConnectionPanelQt
 from workers.gui_qt.panels.message_panel import MessagePanelQt
 from workers.gui_qt.panels.orientation_panel import OrientationPanelQt
-from workers.gui_qt.panels.calibration_panel import CalibrationPanelQt
-from workers.gui_qt.panels.status_bar import StatusBarQt
+# CalibrationPanelQt removed; orientation_panel now hosts calibration UI/logic
+# StatusBar moved into ConnectionPanel; StatusBarQt import no longer needed
 from workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from workers.gui_qt.panels.about_panel import AboutPanel
 from workers.gui_qt.panels.diagnostics_panel import DiagnosticsPanelQt
 from workers.gui_qt.panels.hold_panel import HoldPanelQt
-from workers.gui_qt.panels.camera_panel import CameraPanelQt
 
 from workers.gui_qt.managers.preferences_manager import PreferencesManager
 from workers.gui_qt.helpers.icon_helper import set_window_icon
@@ -56,7 +54,6 @@ class TabbedGUIWorker(QMainWindow):
     def __init__(self, serial_control_queue, fusion_control_queue,
                  udp_control_queue, status_queue, ui_status_queue, message_queue,
                  serial_display_queue=None, euler_display_queue=None,
-                 camera_control_queue=None, translation_display_queue=None, camera_preview_queue=None,
                  log_queue=None, stop_event=None, on_stop_callback=None,
                  input_command_queue=None, input_response_queue=None, enable_diagnostics=False):
         """
@@ -71,7 +68,6 @@ class TabbedGUIWorker(QMainWindow):
             message_queue: Queue for receiving messages
             serial_display_queue: Queue for raw serial data display
             euler_display_queue: Queue for orientation angles
-            translation_display_queue: Queue for position data  
             log_queue: Queue for log messages
             stop_event: Threading event for shutdown coordination
             on_stop_callback: Callback when GUI is closed
@@ -89,10 +85,6 @@ class TabbedGUIWorker(QMainWindow):
         self.message_queue = message_queue
         self.serial_display_queue = serial_display_queue
         self.euler_display_queue = euler_display_queue
-        # Camera-related queues
-        self.camera_control_queue = camera_control_queue
-        self.translation_display_queue = translation_display_queue
-        self.camera_preview_queue = camera_preview_queue
         self.log_queue = log_queue
         self.stop_event = stop_event
         self.on_stop_callback = on_stop_callback
@@ -149,9 +141,7 @@ class TabbedGUIWorker(QMainWindow):
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
         main_layout.addWidget(self.tab_widget)
         
-        # Create tabs (Camera tab placed between Orientation and Diagnostics)
         self.create_orientation_tab()
-        self.create_camera_tab()
         
         # Diagnostics tab only shown in developer mode
         if self.enable_diagnostics:
@@ -161,9 +151,8 @@ class TabbedGUIWorker(QMainWindow):
         self.create_preferences_tab()
         self.create_about_tab()
         
-        # Status bar at bottom
-        self.status_bar = StatusBarQt(self)
-        main_layout.addWidget(self.status_bar)
+        # Status bar has been moved into the Connection panel at the bottom of the Orientation tab
+        # (No global status bar needed here.)
     
     def create_orientation_tab(self):
         """Create the Orientation Tracking tab."""
@@ -171,27 +160,6 @@ class TabbedGUIWorker(QMainWindow):
         layout = QVBoxLayout(orientation_widget)
         layout.setSpacing(6)
         layout.setContentsMargins(8, 8, 8, 8)
-        
-        # Serial Panel (always visible)
-        self.serial_panel = SerialPanelQt(
-            orientation_widget,
-            self.serial_control_queue,
-            self._log_message,
-            padding=6,
-            on_stop=None  # Don't link serial stop to app shutdown
-        )
-        layout.addWidget(self.serial_panel)
-        
-        # Calibration Panel (compact)
-        self.calibration_panel = CalibrationPanelQt(
-            orientation_widget,
-            self.fusion_control_queue,
-            self._log_message,
-            padding=6,
-            input_command_queue=self.input_command_queue,
-            input_response_queue=self.input_response_queue
-        )
-        layout.addWidget(self.calibration_panel)
         
         # Orientation Panel (main focus)
         self.orientation_panel = OrientationPanelQt(
@@ -201,19 +169,27 @@ class TabbedGUIWorker(QMainWindow):
             padding=6
         )
         layout.addWidget(self.orientation_panel)
-        
-        # Connect calibration panel to orientation panel for drift angle visualization
-        self.orientation_panel.connect_calibration_panel(self.calibration_panel)
-        
-        # Network Panel (compact)
-        self.network_panel = NetworkPanelQt(
+
+        # Assign input queues to orientation panel so it can manage shortcuts/capture
+        try:
+            self.orientation_panel.input_command_queue = self.input_command_queue
+            self.orientation_panel.input_response_queue = self.input_response_queue
+            # For backward compatibility set calibration_panel reference to orientation_panel
+            self.calibration_panel = self.orientation_panel
+        except Exception:
+            self.calibration_panel = None
+
+        # Connection panel moved to the bottom of the tab for easier access
+        self.connection_panel = ConnectionPanelQt(
             orientation_widget,
+            self.serial_control_queue,
             self.udp_control_queue,
             self._log_message,
-            padding=6
+            padding=6,
+            on_serial_stop=None
         )
-        layout.addWidget(self.network_panel)
-        
+        layout.addWidget(self.connection_panel)
+
         # Add tab
         self.tab_widget.addTab(orientation_widget, "🧭 Orientation Tracking")
     
@@ -238,36 +214,6 @@ class TabbedGUIWorker(QMainWindow):
         
         # Store tab index to check visibility later for performance optimization
         self.diagnostics_tab_index = tab_index
-
-    def create_camera_tab(self):
-        """Create the Camera Tracking tab."""
-        camera_widget = QWidget()
-        layout = QVBoxLayout(camera_widget)
-        layout.setSpacing(6)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        # Camera Panel with control queue and preview handling
-        # Note: `translation_display_queue` and `camera_preview_queue` may be None
-        # if not provided; TabbedGUIWorker will set attributes earlier in __init__.
-        self.camera_panel = CameraPanelQt(
-            camera_widget,
-            control_queue=getattr(self, 'camera_control_queue', None),
-            message_callback=self._log_message,
-            preview_queue=getattr(self, 'camera_preview_queue', None),
-            padding=6
-        )
-        layout.addWidget(self.camera_panel)
-
-        # Allow calibration panel to control/latch camera origin and update camera UI.
-        try:
-            if hasattr(self, 'calibration_panel'):
-                # provide a direct reference and control queue so reset can affect camera panel
-                self.calibration_panel.camera_panel = self.camera_panel
-                self.calibration_panel.camera_control_queue = getattr(self, 'camera_control_queue', None)
-        except Exception:
-            pass
-
-        self.tab_widget.addTab(camera_widget, "🎥 Camera")
 
     def create_messages_tab(self):
         """Create the Messages tab with serial monitor and application logs."""
@@ -376,9 +322,7 @@ class TabbedGUIWorker(QMainWindow):
                 while euler_count < 100 and not self.euler_display_queue.empty():
                     try:
                         euler_data = self.euler_display_queue.get_nowait()
-                        if isinstance(euler_data, (list, tuple)) and len(euler_data) >= 6:
-                            latest_euler = euler_data
-                        elif isinstance(euler_data, (list, tuple)) and len(euler_data) >= 3:
+                        if isinstance(euler_data, (list, tuple)) and len(euler_data) >= 3:
                             latest_euler = euler_data
                         euler_count += 1
                     except:
@@ -386,10 +330,9 @@ class TabbedGUIWorker(QMainWindow):
                 
                 # Update display with most recent data only
                 if latest_euler:
-                    if len(latest_euler) >= 6:
-                        # Data format from fusion worker: [yaw, pitch, roll, x, y, z]
+                    if len(latest_euler) >= 3:
+                        # Data format from fusion worker: [yaw, pitch, roll]
                         yaw, pitch, roll = latest_euler[0], latest_euler[1], latest_euler[2]
-                        x, y, z = latest_euler[3], latest_euler[4], latest_euler[5]
                         
                         # Update orientation display immediately for real-time response
                         if hasattr(self.orientation_panel, 'update_euler'):
@@ -401,73 +344,6 @@ class TabbedGUIWorker(QMainWindow):
                             hasattr(self.diagnostics_panel, 'update_euler')):
                             self.diagnostics_panel.update_euler(yaw, pitch, roll)
                         
-                        # Update position display immediately
-                        if hasattr(self.orientation_panel, 'update_position'):
-                            self.orientation_panel.update_position(x, y, z)
-
-                        # Camera translation updates (position from camera worker)
-                        if hasattr(self, 'translation_display_queue') and self.translation_display_queue:
-                            try:
-                                cam_count = 0
-                                latest_cam = None
-                                while cam_count < 50 and not self.translation_display_queue.empty():
-                                    try:
-                                        item = self.translation_display_queue.get_nowait()
-                                        latest_cam = item
-                                        cam_count += 1
-                                    except:
-                                        break
-                                if latest_cam is not None and hasattr(self, 'camera_panel'):
-                                    # Handle pixel messages from camera worker
-                                    try:
-                                        if isinstance(latest_cam, (list, tuple)) and len(latest_cam) >= 1 and isinstance(latest_cam[0], str):
-                                            if latest_cam[0] == '_CAM_DATA_' and len(latest_cam) >= 6:
-                                                try:
-                                                    sx, sy, sz, px, py = latest_cam[1], latest_cam[2], latest_cam[3], latest_cam[4], latest_cam[5]
-                                                    if hasattr(self, 'camera_panel'):
-                                                        try:
-                                                            # Update mapped position and pixel coords
-                                                            if hasattr(self.camera_panel, 'update_position'):
-                                                                try:
-                                                                    self.camera_panel.update_position(sx, sy, sz)
-                                                                except Exception:
-                                                                    pass
-                                                            if hasattr(self.camera_panel, 'update_pixel_position'):
-                                                                try:
-                                                                    self.camera_panel.update_pixel_position(px, py)
-                                                                except Exception:
-                                                                    pass
-                                                        except Exception:
-                                                            pass
-                                                except Exception:
-                                                    pass
-                                            elif isinstance(latest_cam, (list, tuple)) and len(latest_cam) >= 3:
-                                                x, y, z = latest_cam[0], latest_cam[1], latest_cam[2]
-                                                try:
-                                                    self.camera_panel.update_position(x, y, z)
-                                                except Exception:
-                                                    pass
-                                        elif isinstance(latest_cam, (list, tuple)) and len(latest_cam) >= 3:
-                                            x, y, z = latest_cam[0], latest_cam[1], latest_cam[2]
-                                            try:
-                                                self.camera_panel.update_position(x, y, z)
-                                            except Exception:
-                                                pass
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                    elif len(latest_euler) >= 3:
-                        # Fallback for orientation-only data
-                        yaw, pitch, roll = latest_euler[0], latest_euler[1], latest_euler[2]
-                        if hasattr(self.orientation_panel, 'update_euler'):
-                            self.orientation_panel.update_euler(yaw, pitch, roll)
-                        
-                        # Update diagnostics panel with orientation data (only if tab is active)
-                        if (hasattr(self, 'diagnostics_tab_index') and 
-                            self.tab_widget.currentIndex() == self.diagnostics_tab_index and
-                            hasattr(self.diagnostics_panel, 'update_euler')):
-                            self.diagnostics_panel.update_euler(yaw, pitch, roll)
             
             # Process status updates (check if queue exists and not None)
             if self.status_queue:
@@ -489,21 +365,8 @@ class TabbedGUIWorker(QMainWindow):
                                     # Data format: [yaw, pitch, roll] - emit in correct order
                                     yaw, pitch, roll = euler[0], euler[1], euler[2]
                                     self.signals.orientation_update.emit(roll, pitch, yaw)
-                            elif 'position' in item:
-                                # Position updates removed with camera functionality
-                                pass
                             elif 'drift_status' in item:
                                 self.signals.drift_status_update.emit(item['drift_status'])
-                            elif 'preview_data' in item:
-                                    # Camera preview data (forward to camera panel)
-                                    try:
-                                        if hasattr(self, 'camera_panel') and isinstance(item['preview_data'], (bytes, bytearray)):
-                                            try:
-                                                self.camera_panel.update_preview(item['preview_data'])
-                                            except Exception:
-                                                pass
-                                    except Exception:
-                                        pass
                         elif isinstance(item, str):
                             # Simple string status
                             self.signals.status_update.emit('general', item)
@@ -562,8 +425,6 @@ class TabbedGUIWorker(QMainWindow):
             hasattr(self.diagnostics_panel, 'update_euler')):
             self.diagnostics_panel.update_euler(yaw, pitch, roll)
     
-    # Position update functionality removed
-    
     def _update_drift_status(self, status):
         """Update drift status display."""
         if hasattr(self.orientation_panel, 'update_drift_status'):
@@ -575,25 +436,23 @@ class TabbedGUIWorker(QMainWindow):
                 active = 'active' in str(status).lower() or 'true' in str(status).lower()
             self.orientation_panel.update_drift_status(active)
     
-    # Camera preview functionality removed
-    
     def _handle_status_update(self, status_type: str, value):
         """Handle specific status updates from workers."""
         if status_type == 'processing':
             # Update both serial panel and calibration panel with fusion processing status
             is_active = (value == 'active')
-            if hasattr(self.serial_panel, 'update_fusion_status'):
-                self.serial_panel.update_fusion_status(is_active)
+            if hasattr(self.connection_panel, 'update_fusion_status'):
+                self.connection_panel.update_fusion_status(is_active)
             if hasattr(self.calibration_panel, 'update_processing_status'):
                 self.calibration_panel.update_processing_status(value)
         elif status_type == 'serial_connection':
             # Update serial panel with connection status
-            if hasattr(self.serial_panel, 'update_connection_status'):
-                self.serial_panel.update_connection_status(value)
+            if hasattr(self.connection_panel, 'update_connection_status'):
+                self.connection_panel.update_connection_status(value)
         elif status_type == 'serial_data':
             # Update serial panel with data activity
-            if hasattr(self.serial_panel, 'update_data_activity') and value:
-                self.serial_panel.update_data_activity()
+            if hasattr(self.connection_panel, 'update_data_activity') and value:
+                self.connection_panel.update_data_activity()
         elif status_type == 'gyro_calibrated':
             if hasattr(self.calibration_panel, 'update_calibration_status'):
                 self.calibration_panel.update_calibration_status(bool(value))
@@ -609,19 +468,24 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self.orientation_panel, 'update_drift_status'):
                 self.orientation_panel.update_drift_status(bool(value))
         elif status_type == 'msg_rate':
-            if hasattr(self.status_bar, 'update_message_rate'):
+            # Prefer connection panel's embedded status area; fall back if needed
+            if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_message_rate'):
+                self.connection_panel.update_message_rate(float(value))
+            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_message_rate'):
                 self.status_bar.update_message_rate(float(value))
         elif status_type == 'send_rate':
-            if hasattr(self.status_bar, 'update_send_rate'):
+            if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_send_rate'):
+                self.connection_panel.update_send_rate(float(value))
+            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_send_rate'):
                 self.status_bar.update_send_rate(float(value))
-        elif status_type == 'cam_fps':
-            if hasattr(self.status_bar, 'update_camera_fps'):
-                try:
-                    self.status_bar.update_camera_fps(float(value))
-                except Exception:
-                    pass
         elif status_type == 'stationary':
-            if hasattr(self.status_bar, 'update_device_status'):
+            # Prefer showing device movement status in the orientation panel now that
+            # the indicator lives there. Fall back to connection panel or status bar.
+            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_device_status'):
+                self.orientation_panel.update_device_status(bool(value))
+            elif hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_device_status'):
+                self.connection_panel.update_device_status(bool(value))
+            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_device_status'):
                 self.status_bar.update_device_status(bool(value))
         elif status_type == 'filter_type':
             # Filter type change acknowledgment from fusion worker
@@ -636,18 +500,34 @@ class TabbedGUIWorker(QMainWindow):
         if status_type == 'processing':
             # Update both serial panel and calibration panel with fusion processing status
             is_active = (value == 'active')
-            if hasattr(self.serial_panel, 'update_fusion_status'):
-                self.serial_panel.update_fusion_status(is_active)
+            try:
+                print(f"[GUI] _handle_status_update processing -> value={value!r}, is_active={is_active}, calibration_panel_exists={hasattr(self,'calibration_panel')}, calibration_panel_instance={type(self.calibration_panel) if hasattr(self,'calibration_panel') and self.calibration_panel else self.calibration_panel}")
+            except Exception:
+                pass
+            if hasattr(self.connection_panel, 'update_fusion_status'):
+                try:
+                    self.connection_panel.update_fusion_status(is_active)
+                except Exception:
+                    pass
             if hasattr(self.calibration_panel, 'update_processing_status'):
-                self.calibration_panel.update_processing_status(value)
+                try:
+                    self.calibration_panel.update_processing_status(value)
+                except Exception as e:
+                    try:
+                        print(f"[GUI] calibration_panel.update_processing_status raised: {e}")
+                    except Exception:
+                        pass
             
             # Control hold panel blinking based on fusion processing status
             if hasattr(self.hold_panel, 'stop_blinking') and is_active:
-                self.hold_panel.stop_blinking()  # Stop blinking when fusion is active
+                try:
+                    self.hold_panel.stop_blinking()  # Stop blinking when fusion is active
+                except Exception:
+                    pass
         elif status_type == 'serial_connection':
             # Update serial panel with connection status
-            if hasattr(self.serial_panel, 'update_connection_status'):
-                self.serial_panel.update_connection_status(value)
+            if hasattr(self.connection_panel, 'update_connection_status'):
+                self.connection_panel.update_connection_status(value)
             
             # Update calibration panel with serial connection status
             if hasattr(self.calibration_panel, 'update_serial_connection_status'):
@@ -664,30 +544,15 @@ class TabbedGUIWorker(QMainWindow):
                 if hasattr(self.calibration_panel, 'clear_calibration_state'):
                     self.calibration_panel.clear_calibration_state()
                 
-                # Reset message rate in status bar when serial stops
-                if hasattr(self.status_bar, 'update_message_rate'):
+                # Reset message rate in the embedded status area when serial stops
+                if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_message_rate'):
+                    self.connection_panel.update_message_rate(0.0)
+                elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_message_rate'):
                     self.status_bar.update_message_rate(0.0)
-        elif status_type == 'camera_crashed':
-            # value is exitcode; disable camera panel controls and notify user
-            try:
-                if hasattr(self, 'camera_panel'):
-                    try:
-                        self.camera_panel.preview_btn.setEnabled(False)
-                        self.camera_panel.track_btn.setEnabled(False)
-                        self.camera_panel.preview_label.setText('Camera unavailable')
-                    except Exception:
-                        pass
-                # also emit a status update to message panel
-                try:
-                    self.signals.status_update.emit('camera', f'Camera worker crashed (code {value})')
-                except Exception:
-                    pass
-            except Exception:
-                pass
         elif status_type == 'serial_data':
             # Update serial panel with data activity
-            if hasattr(self.serial_panel, 'update_data_activity') and value:
-                self.serial_panel.update_data_activity()
+            if hasattr(self.connection_panel, 'update_data_activity') and value:
+                self.connection_panel.update_data_activity()
         # Add other UI status types as needed
     
     def update_gui_elements(self):
@@ -709,27 +574,6 @@ class TabbedGUIWorker(QMainWindow):
                 if serial_count > 0 and hasattr(self.message_panel, 'update_displays'):
                     self.message_panel.update_displays()
             
-            # Camera preview queue handling (non-real-time, small queue)
-            if hasattr(self, 'camera_preview_queue') and self.camera_preview_queue:
-                try:
-                    latest = None
-                    cnt = 0
-                    while cnt < 8 and not self.camera_preview_queue.empty():
-                        try:
-                            item = self.camera_preview_queue.get_nowait()
-                            latest = item
-                            cnt += 1
-                        except:
-                            break
-                    if latest is not None and hasattr(self, 'camera_panel'):
-                        # preview items are (jpg_bytes, timestamp)
-                        jpg = latest[0] if isinstance(latest, (list, tuple)) and len(latest) > 0 else latest
-                        try:
-                            self.camera_panel.update_preview(jpg)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
             # Note: Euler/orientation updates moved to process_queues() for real-time performance
                         
         except Exception as e:
@@ -792,11 +636,8 @@ class TabbedGUIWorker(QMainWindow):
                 return
             
             # Apply preferences to each panel
-            if hasattr(self.serial_panel, 'set_prefs') and 'serial' in prefs:
-                self.serial_panel.set_prefs(prefs['serial'])
-            
-            if hasattr(self.network_panel, 'set_prefs') and 'network' in prefs:
-                self.network_panel.set_prefs(prefs['network'])
+            if hasattr(self.connection_panel, 'set_prefs') and ('serial' in prefs or 'network' in prefs):
+                self.connection_panel.set_prefs(prefs)
             
             if hasattr(self.orientation_panel, 'set_prefs') and 'orientation' in prefs:
                 self.orientation_panel.set_prefs(prefs['orientation'])
@@ -807,13 +648,6 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self, 'diagnostics_panel') and hasattr(self.diagnostics_panel, 'set_prefs') and 'diagnostics' in prefs:
                 self.diagnostics_panel.set_prefs(prefs['diagnostics'])
 
-            # Camera panel preferences (if present)
-            if hasattr(self, 'camera_panel') and 'camera' in prefs and hasattr(self.camera_panel, 'set_prefs'):
-                try:
-                    self.camera_panel.set_prefs(prefs['camera'])
-                except Exception:
-                    pass
-            
             # Load preferences for the preferences panel itself
             if hasattr(self.preferences_panel, 'load_preferences'):
                 self.preferences_panel.load_preferences()
@@ -915,11 +749,8 @@ class TabbedGUIWorker(QMainWindow):
             # Collect preferences from all panels
             prefs = {}
             
-            if hasattr(self.serial_panel, 'get_prefs'):
-                prefs['serial'] = self.serial_panel.get_prefs()
-            
-            if hasattr(self.network_panel, 'get_prefs'):
-                prefs['network'] = self.network_panel.get_prefs()
+            if hasattr(self.connection_panel, 'get_prefs'):
+                prefs.update(self.connection_panel.get_prefs())
             
             if hasattr(self.orientation_panel, 'get_prefs'):
                 prefs['orientation'] = self.orientation_panel.get_prefs()
@@ -929,13 +760,6 @@ class TabbedGUIWorker(QMainWindow):
             
             if hasattr(self, 'diagnostics_panel') and hasattr(self.diagnostics_panel, 'get_prefs'):
                 prefs['diagnostics'] = self.diagnostics_panel.get_prefs()
-            
-            # Camera panel preferences
-            if hasattr(self, 'camera_panel') and hasattr(self.camera_panel, 'get_prefs'):
-                try:
-                    prefs['camera'] = self.camera_panel.get_prefs()
-                except Exception:
-                    pass
             
             # Get shortcut preferences from preferences panel
             if hasattr(self.preferences_panel, 'get_shortcut_preferences'):
@@ -970,7 +794,6 @@ class TabbedGUIWorker(QMainWindow):
 def start_gui_worker(serial_control_queue, fusion_control_queue,
                      udp_control_queue, status_queue, ui_status_queue, message_queue,
                      serial_display_queue=None, euler_display_queue=None,
-                     camera_control_queue=None, translation_display_queue=None, camera_preview_queue=None,
                  log_queue=None, stop_event=None, on_stop_callback=None,
                  input_command_queue=None, input_response_queue=None, enable_diagnostics=False):
     """
@@ -1034,9 +857,6 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
         message_queue=message_queue,
         serial_display_queue=serial_display_queue,
         euler_display_queue=euler_display_queue,
-        camera_control_queue=camera_control_queue,
-        translation_display_queue=translation_display_queue,
-        camera_preview_queue=camera_preview_queue,
         log_queue=log_queue,
         stop_event=stop_event,
         on_stop_callback=on_stop_callback,
@@ -1058,13 +878,12 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
 
 def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event, 
                eulerDisplayQueue, controlQueue, serialControlQueue, 
-               udpControlQueue, logQueue, uiStatusQueue, cameraControlQueue, translationDisplayQueue, cameraPreviewQueue, inputCommandQueue, inputResponseQueue, enable_diagnostics=False):
+               udpControlQueue, logQueue, uiStatusQueue, inputCommandQueue, inputResponseQueue, enable_diagnostics=False):
     """
     Compatibility wrapper for the process manager.
     
     This function maintains the same interface as the original launcher
     to ensure compatibility with the existing process manager.
-    Camera functionality has been removed.
     """
     start_gui_worker(
         serial_control_queue=serialControlQueue,
@@ -1075,9 +894,6 @@ def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event,
         message_queue=messageQueue,
         serial_display_queue=serialDisplayQueue,
         euler_display_queue=eulerDisplayQueue,
-        camera_control_queue=cameraControlQueue,
-        translation_display_queue=translationDisplayQueue,
-        camera_preview_queue=cameraPreviewQueue,
         log_queue=logQueue,
         stop_event=stop_event,
         input_command_queue=inputCommandQueue,

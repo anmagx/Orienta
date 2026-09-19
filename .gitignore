@@ -61,7 +61,6 @@ config/config.cfg
 htmlcov/
 .tox/
 .nox/
-pseyepy/
 demonstration.md
 
 # Jupyter Notebook
