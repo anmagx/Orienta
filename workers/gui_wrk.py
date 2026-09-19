@@ -132,10 +132,6 @@ class TabbedGUIWorker(QMainWindow):
         main_layout.setSpacing(4)
         main_layout.setContentsMargins(8, 8, 8, 8)
         
-        # Add HOLD STILL panel at the very top
-        self.hold_panel = HoldPanelQt(central_widget)
-        main_layout.addWidget(self.hold_panel)
-        
         # Create tab widget
         self.tab_widget = QTabWidget()
         # Connect tab selection to enable/disable diagnostics for performance
@@ -487,11 +483,7 @@ class TabbedGUIWorker(QMainWindow):
         elif status_type == 'gyro_calibrating':
             if hasattr(self.calibration_panel, 'update_calibrating_status'):
                 self.calibration_panel.update_calibrating_status(bool(value))
-            # Control hold panel blinking during gyro calibration
-            if hasattr(self.hold_panel, 'start_blinking') and bool(value):
-                self.hold_panel.start_blinking()
-            elif hasattr(self.hold_panel, 'stop_blinking') and not bool(value):
-                self.hold_panel.stop_blinking()
+            # Calibration state is handled by the orientation panel's embedded indicator.
         elif status_type == 'drift_correction':
             if hasattr(self.orientation_panel, 'update_drift_status'):
                 self.orientation_panel.update_drift_status(bool(value))
@@ -569,12 +561,7 @@ class TabbedGUIWorker(QMainWindow):
                     except Exception:
                         pass
 
-            # Control hold panel blinking based on fusion processing status
-            if hasattr(self.hold_panel, 'stop_blinking') and is_active:
-                try:
-                    self.hold_panel.stop_blinking()  # Stop blinking when fusion is active
-                except Exception:
-                    pass
+            # Embedded orientation panel handles its own hold indicator; nothing to do here.
         elif status_type == 'serial_connection':
             # Update serial panel with connection status
             if hasattr(self.connection_panel, 'update_connection_status'):
@@ -584,11 +571,10 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self.calibration_panel, 'update_serial_connection_status'):
                 self.calibration_panel.update_serial_connection_status(value)
             
-            # Control hold panel blinking based on connection status
-            if hasattr(self.hold_panel, 'start_blinking') and value == 'connected':
-                self.hold_panel.start_blinking()  # Start blinking when connected but waiting for data
-            elif hasattr(self.hold_panel, 'stop_blinking') and value in ['stopped', 'error']:
-                self.hold_panel.stop_blinking()  # Stop blinking when disconnected or error
+            # Serial connection state is forwarded to the orientation panel via
+            # update_serial_connection_status (called below on calibration_panel
+            # for backward compatibility). The embedded indicator will decide
+            # whether to blink or not.
             
             # When serial is disconnected/stopped, clear calibration state and reset status bar
             if value in ['stopped', 'disconnected', 'error']:
