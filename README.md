@@ -4,18 +4,15 @@
 
 Orienta is an OpenTrack-compatible 3DOF head-tracking application for Windows.
 It reads accelerometer and gyroscope data from a serial-connected IMU, estimates
-yaw, pitch, and roll with a complementary filter, and sends orientation over UDP.
+yaw, pitch, and roll with a complementary filter, and sends orientation over UDP into opentrack.
 
 ## Features
 
-- Real-time serial IMU acquisition.
-- Euler and quaternion complementary-filter implementations.
-- Gyro-bias and level calibration.
-- Configurable stationary drift correction.
-- Configurable axis inversion and keyboard/gamepad shortcuts.
-- UDP output compatible with OpenTrack.
+- Real-time serial IMU acquisition with support for a wide range of sensors
+- Quaternion-based complementary-filter implementation
+- Gyro-bias calibration and correction
+- Smooth autocentering when stationary and near center
 - PyQt5 interface with light and dark themes.
-- Optional diagnostics plots.
 
 ## Installation
 
@@ -35,8 +32,8 @@ python orienta.py
 
 ### Software
 
-- Windows
-- Python 3.8 through 3.13
+- Windows Operating System
+- Python 3.8 through 3.14
 - NumPy
 - PySerial
 - PyQt5
@@ -45,12 +42,12 @@ python orienta.py
 
 ### Hardware and serial format
 
-Any device that emits seven numeric CSV values on a serial port is supported.
+Any device that emits numeric CSV values on a serial port is supported.
 The bundled firmware is an Arduino Nano example using a FastIMU-supported
 MPU6500.
 
 ```text
-time_seconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
+time_milliseconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
 ```
 
 Accelerometer values are expected in g units and gyroscope values in degrees
@@ -58,6 +55,8 @@ per second. Configure the serial port and baud rate in the application to
 match the device.
 
 ## Usage
+
+You will obviously need to find a way to mount your sensor on your head. In the example I use a 3D-printed case for the sensor itself and the arduino nano that both clip to my headset. Many, if not most IMUs will want to be mounted a specific up-direction to give accurate accelerometer readings - tilted on the side will probably not work, but flipped 180° is fine. The app allows for flipping axis in the preferences section. 
 
 1. Flash the supplied Arduino sketch, or connect a compatible IMU source.
 2. Select its serial port and baud rate, then start the serial reader.
