@@ -6,7 +6,7 @@ No controls - purely for data visualization.
 """
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, 
                              QLabel, QSizePolicy, QWidget, QFrame, QPushButton, QDialog, QSlider, QApplication,
-                             QStackedWidget)
+                             QStackedWidget, QDialogButtonBox)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
 
@@ -177,6 +177,11 @@ class HoldPanelQt(QWidget):
 from PyQt5.QtWidgets import QStyleOptionButton, QPushButton
 from PyQt5.QtGui import QPainter, QFont, QFontMetrics
 from PyQt5.QtCore import QRect, QSize
+
+# PreferencesPanel is shown in a separate dialog when the user presses the
+# Preferences button. Import here so the dialog can create or reuse an
+# existing PreferencesPanel instance.
+from .preferences_panel import PreferencesPanel
 
 class TwoLineButton(QPushButton):
     def __init__(self, main_text: str = "", sub_text: str = "", parent=None):
@@ -1484,6 +1489,25 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             self.recal_button = None
 
+        # Preferences button (always active)
+        try:
+            self.preferences_button = QPushButton("Preferences...")
+            try:
+                self.preferences_button.setFixedHeight(getattr(self, 'recal_button', self.preferences_button).sizeHint().height())
+            except Exception:
+                pass
+            self.preferences_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            # Always enabled
+            try:
+                self.preferences_button.setEnabled(True)
+                self.preferences_button.setProperty('status', '')
+            except Exception:
+                pass
+            self.preferences_button.clicked.connect(self._open_preferences_window)
+            values_layout.addWidget(self.preferences_button)
+        except Exception:
+            self.preferences_button = None
+
         split_layout.addWidget(values_frame, stretch=1)
 
         # Add the split layout to the main layout
@@ -1494,6 +1518,85 @@ class OrientationPanelQt(QGroupBox):
             self.drift_yaw_slider.valueChanged.connect(self._on_drift_yaw_angle_change)
         except Exception:
             pass
+
+    def _open_preferences_window(self):
+        """
+        Open a dialog containing the PreferencesPanel. If a preferences panel
+        instance was previously created by the main GUI (in the Preferences tab),
+        reuse that instance by reparenting it into the dialog and removing its
+        tab from the main TabbedGUIWorker. Otherwise create a new PreferencesPanel
+        instance and show it in the dialog.
+        """
+        try:
+            parent_window = None
+            try:
+                parent_window = self.window()
+            except Exception:
+                parent_window = None
+
+            dialog = QDialog(parent_window if parent_window is not None else self)
+            dialog.setWindowTitle("Preferences")
+            dialog.setModal(False)
+            dlg_layout = QVBoxLayout(dialog)
+            dlg_layout.setContentsMargins(6, 6, 6, 6)
+
+            prefs_widget = None
+            # If a preferences_panel exists (created by GUI worker), prefer to reuse it
+            prefs = getattr(self, 'preferences_panel', None)
+            if prefs is not None:
+                try:
+                    # Remove from any existing parent/layout by reparenting
+                    prefs.setParent(dialog)
+                    prefs_widget = prefs
+                except Exception:
+                    prefs_widget = None
+
+            if prefs_widget is None:
+                try:
+                    # Create a new PreferencesPanel using available queues/managers
+                    prefs_widget = PreferencesPanel(dialog)
+                except Exception:
+                    prefs_widget = None
+
+            if prefs_widget is not None:
+                dlg_layout.addWidget(prefs_widget)
+                # Connect to calibration panel if available
+                try:
+                    if hasattr(self, 'calibration_panel') and self.calibration_panel and hasattr(prefs_widget, 'connect_calibration_panel'):
+                        prefs_widget.connect_calibration_panel(self.calibration_panel)
+                except Exception:
+                    pass
+
+                # If parent_window can save/apply theme, wire signals back
+                try:
+                    if parent_window is not None:
+                        if hasattr(parent_window, '_apply_theme') and hasattr(prefs_widget, 'theme_changed'):
+                            prefs_widget.theme_changed.connect(parent_window._apply_theme)
+                        if hasattr(parent_window, 'save_preferences') and hasattr(prefs_widget, 'preferences_changed'):
+                            prefs_widget.preferences_changed.connect(parent_window.save_preferences)
+                except Exception:
+                    pass
+
+            # Add close button
+            try:
+                bb = QDialogButtonBox(QDialogButtonBox.Close)
+                bb.rejected.connect(dialog.reject)
+                dlg_layout.addWidget(bb)
+            except Exception:
+                pass
+
+            # Show dialog non-modally
+            try:
+                dialog.resize(640, 480)
+                dialog.show()
+            except Exception:
+                dialog.exec_()
+        except Exception as e:
+            try:
+                print(f"[OrientationPanel] Failed to open preferences window: {e}")
+            except Exception:
+                pass
+
         try:
             self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
         except Exception:
