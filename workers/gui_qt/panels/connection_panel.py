@@ -473,22 +473,34 @@ class ConnectionPanelQt(BasePanelQt):
                 pass
 
     def update_connection_status(self, status: str):
-        """Update connection status from serial worker."""
-        if not self._is_running:
-            return
+        """Update connection status from serial worker.
 
+        This method must update the UI even if the panel's internal _is_running
+        flag is False; sometimes the serial worker can stop externally and the
+        GUI needs to reflect that state immediately. Handle 'stopped',
+        'connected', and 'error' explicitly.
+        """
+        # Always reflect the latest reported connection status
         self._connection_status = status
-        port = self.port_combo.currentText()
-        baud = self.baud_combo.currentText()
+        port = self.port_combo.currentText() if hasattr(self, 'port_combo') else None
+        baud = self.baud_combo.currentText() if hasattr(self, 'baud_combo') else None
 
         if status == "connected":
+            # Mark as running if not already
+            self._is_running = True
             # Show waiting state on the button until fusion is active
             self.toggle_button.setProperty('status', 'warning')
             self.toggle_button.style().polish(self.toggle_button)
         elif status == "error":
+            # Treat error as a stopped state from the UI perspective
+            self._is_running = False
+
             # Re-enable port and baud selection on error so user can try different settings
-            self.port_combo.setEnabled(True)
-            self.baud_combo.setEnabled(True)
+            try:
+                self.port_combo.setEnabled(True)
+                self.baud_combo.setEnabled(True)
+            except Exception:
+                pass
 
             # Reflect error on the button
             try:
@@ -501,13 +513,56 @@ class ConnectionPanelQt(BasePanelQt):
                     self.toggle_button.setText("Start Serial")
                 except Exception:
                     pass
-            self.toggle_button.setProperty('status', 'error')
-            self.toggle_button.style().polish(self.toggle_button)
+            try:
+                self.toggle_button.setProperty('status', 'error')
+                self.toggle_button.style().polish(self.toggle_button)
+            except Exception:
+                pass
             try:
                 self._refresh_serial_button_text()
             except Exception:
                 pass
-            self._data_activity_timer.stop()
+            try:
+                self._data_activity_timer.stop()
+            except Exception:
+                pass
+        elif status == "stopped":
+            # External stop: ensure UI resets to stopped state immediately
+            self._is_running = False
+            try:
+                if hasattr(self.toggle_button, 'setParts'):
+                    self.toggle_button.setParts("Start Serial", self._serial_rate_text)
+                else:
+                    self.toggle_button.setText("Start Serial")
+            except Exception:
+                try:
+                    self.toggle_button.setText("Start Serial")
+                except Exception:
+                    pass
+            try:
+                self.toggle_button.setProperty('status', '')
+                self.toggle_button.style().polish(self.toggle_button)
+            except Exception:
+                pass
+            try:
+                self.port_combo.setEnabled(True)
+                self.baud_combo.setEnabled(True)
+            except Exception:
+                pass
+            try:
+                self._data_activity_timer.stop()
+            except Exception:
+                pass
+            try:
+                self.reset_status()
+            except Exception:
+                pass
+        else:
+            # Unknown status: just store it and attempt a safe UI refresh
+            try:
+                self.toggle_button.style().polish(self.toggle_button)
+            except Exception:
+                pass
 
     def update_data_activity(self):
         """Called when data is received - indicates active connection."""

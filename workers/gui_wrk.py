@@ -46,6 +46,7 @@ class TabbedGUISignals(QObject):
     status_update = pyqtSignal(str, str)  # section, message
     orientation_update = pyqtSignal(float, float, float)  # roll, pitch, yaw
     drift_status_update = pyqtSignal(str)  # status
+    processing_changed = pyqtSignal(bool)  # fusion processing active/inactive
 
 
 class TabbedGUIWorker(QMainWindow):
@@ -174,6 +175,11 @@ class TabbedGUIWorker(QMainWindow):
         try:
             self.orientation_panel.input_command_queue = self.input_command_queue
             self.orientation_panel.input_response_queue = self.input_response_queue
+            # Connect processing_changed signal so panels react via Qt signals
+            try:
+                self.signals.processing_changed.connect(self.orientation_panel.update_processing_status)
+            except Exception:
+                pass
             # For backward compatibility set calibration_panel reference to orientation_panel
             self.calibration_panel = self.orientation_panel
         except Exception:
@@ -442,9 +448,31 @@ class TabbedGUIWorker(QMainWindow):
             # Update both serial panel and calibration panel with fusion processing status
             is_active = (value == 'active')
             if hasattr(self.connection_panel, 'update_fusion_status'):
-                self.connection_panel.update_fusion_status(is_active)
+                try:
+                    self.connection_panel.update_fusion_status(is_active)
+                except Exception:
+                    pass
             if hasattr(self.calibration_panel, 'update_processing_status'):
-                self.calibration_panel.update_processing_status(value)
+                try:
+                    self.calibration_panel.update_processing_status(value)
+                except Exception as e:
+                    try:
+                        print(f"[GUI] calibration_panel.update_processing_status raised: {e}")
+                    except Exception:
+                        pass
+
+            # Emit a central Qt signal for processing state so panels can react via signals
+            try:
+                self.signals.processing_changed.emit(is_active)
+            except Exception:
+                pass
+
+            # Also update the main orientation panel directly as a compatibility fallback
+            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_processing_status'):
+                try:
+                    self.orientation_panel.update_processing_status(value)
+                except Exception:
+                    pass
         elif status_type == 'serial_connection':
             # Update serial panel with connection status
             if hasattr(self.connection_panel, 'update_connection_status'):
@@ -517,7 +545,38 @@ class TabbedGUIWorker(QMainWindow):
                         print(f"[GUI] calibration_panel.update_processing_status raised: {e}")
                     except Exception:
                         pass
-            
+
+            # Emit a central Qt signal for processing state so panels can react via signals
+            try:
+                self.signals.processing_changed.emit(is_active)
+            except Exception:
+                pass
+
+            # Also update the main orientation panel directly as a compatibility fallback
+            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_processing_status'):
+                try:
+                    self.orientation_panel.update_processing_status(value)
+                except Exception:
+                    pass
+
+            # When processing becomes inactive, also clear drift and device indicators immediately
+            if not is_active:
+                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_drift_status'):
+                    try:
+                        self.orientation_panel.update_drift_status(False)
+                    except Exception:
+                        pass
+                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_device_status'):
+                    try:
+                        self.orientation_panel.update_device_status(False)
+                    except Exception:
+                        pass
+                if hasattr(self, 'calibration_panel') and hasattr(self.calibration_panel, 'update_drift_status'):
+                    try:
+                        self.calibration_panel.update_drift_status(False)
+                    except Exception:
+                        pass
+
             # Control hold panel blinking based on fusion processing status
             if hasattr(self.hold_panel, 'stop_blinking') and is_active:
                 try:
@@ -543,7 +602,36 @@ class TabbedGUIWorker(QMainWindow):
             if value in ['stopped', 'disconnected', 'error']:
                 if hasattr(self.calibration_panel, 'clear_calibration_state'):
                     self.calibration_panel.clear_calibration_state()
-                
+
+                # Immediately mark processing inactive so orientation controls disable without delay
+                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_processing_status'):
+                    try:
+                        self.orientation_panel.update_processing_status('inactive')
+                    except Exception:
+                        pass
+                if hasattr(self, 'calibration_panel') and hasattr(self.calibration_panel, 'update_processing_status'):
+                    try:
+                        self.calibration_panel.update_processing_status('inactive')
+                    except Exception:
+                        pass
+
+                # Also clear drift correction and device movement indicators immediately
+                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_drift_status'):
+                    try:
+                        self.orientation_panel.update_drift_status(False)
+                    except Exception:
+                        pass
+                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_device_status'):
+                    try:
+                        self.orientation_panel.update_device_status(False)
+                    except Exception:
+                        pass
+                if hasattr(self, 'calibration_panel') and hasattr(self.calibration_panel, 'update_drift_status'):
+                    try:
+                        self.calibration_panel.update_drift_status(False)
+                    except Exception:
+                        pass
+
                 # Reset message rate in the embedded status area when serial stops
                 if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_message_rate'):
                     self.connection_panel.update_message_rate(0.0)

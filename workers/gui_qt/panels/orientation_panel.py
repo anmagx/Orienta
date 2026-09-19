@@ -752,6 +752,7 @@ class OrientationPanelQt(QGroupBox):
             t.start(100)
         except Exception:
             QTimer.singleShot(100, self._send_initial_drift_angle)
+
     
     def _build_ui(self):
         """Build the orientation panel UI."""
@@ -968,6 +969,16 @@ class OrientationPanelQt(QGroupBox):
             pass
         # Make button span full width of right column; allow vertical resizing preference
         self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Default to inactive until fusion worker reports processing active
+        try:
+            self.disengage_btn.setEnabled(False)
+            self.disengage_btn.setProperty('status', 'disabled')
+            try:
+                self.disengage_btn.style().polish(self.disengage_btn)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         # Connect to calibration panel handlers if panel already connected
         try:
@@ -1136,6 +1147,17 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
+        # Default to inactive until fusion worker reports processing active
+        try:
+            self.reset_button.setEnabled(False)
+            self.reset_button.setProperty('status', 'disabled')
+            try:
+                self.reset_button.style().polish(self.reset_button)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         # Add the reset button directly; shortcut name will be shown on a second line in the button text when set
         try:
             self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -1153,7 +1175,12 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
             self.reset_shortcut_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            reset_row.addWidget(self.reset_shortcut_btn)
+            # Shortcut button remains enabled at all times; user can set shortcuts even if
+            # fusion processing is inactive. Keep default enabled state and standard styling.
+            try:
+                reset_row.addWidget(self.reset_shortcut_btn)
+            except Exception:
+                pass
 
             def _on_set_reset_shortcut():
                 try:
@@ -1241,6 +1268,16 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
             self.recal_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            # Default to inactive until fusion worker reports processing active
+            try:
+                self.recal_button.setEnabled(False)
+                self.recal_button.setProperty('status', 'disabled')
+                try:
+                    self.recal_button.style().polish(self.recal_button)
+                except Exception:
+                    pass
+            except Exception:
+                pass
             # Connect to calibration panel handler if available
             try:
                 if hasattr(self, 'calibration_panel') and self.calibration_panel and hasattr(self.calibration_panel, '_on_recalibrate'):
@@ -1544,6 +1581,8 @@ class OrientationPanelQt(QGroupBox):
 
         When processing is inactive the Disengage, Reset and Recalibrate buttons (and
         their shortcut-set buttons) are disabled and visually muted.
+        This method is idempotent: repeated calls with the same boolean state are
+        ignored to avoid duplicate work and noisy logging.
         """
         try:
             # Normalize incoming value to a boolean 'active'
@@ -1551,128 +1590,155 @@ class OrientationPanelQt(QGroupBox):
             if isinstance(value, bool):
                 active = value
             elif isinstance(value, str):
-                active = value.lower() == 'active' or 'active' in value.lower()
-            else:
-                try:
-                    active = bool(value)
-                except Exception:
+                v = value.lower().strip()
+                if v in ('active', 'true', '1', 'on'):
+                    active = True
+                elif v in ('inactive', 'false', '0', 'off'):
                     active = False
+                else:
+                    # Fallback: interpret non-empty strings as True
+                    active = bool(v)
+            else:
+                active = bool(value)
+
+            # If state hasn't changed, do nothing
+            if getattr(self, '_processing_active', None) == active:
+                return
 
             # Remember state
-            try:
-                self._processing_active = active
-            except Exception:
-                pass
+            self._processing_active = active
 
-            # Debug
+            # Log state change
             try:
                 print(f"[OrientationPanel] update_processing_status called -> active={active}")
             except Exception:
                 pass
 
-            widget_names = (
-                'disengage_btn', 'disengage_shortcut_btn',
-                'reset_button', 'reset_shortcut_btn',
-                'recal_button'
-            )
+            widget_names = ('disengage_btn', 'reset_button', 'recal_button')
 
             for name in widget_names:
+                w = getattr(self, name, None)
+                if w is None:
+                    continue
+
                 try:
-                    w = getattr(self, name, None)
-                    if w is None:
-                        continue
-                    try:
-                        w.setEnabled(active)
-                    except Exception:
-                        pass
+                    if not active:
+                        # Ensure disabled appearance and behavior
+                        w.setEnabled(False)
+                        w.setProperty('status', 'disabled')
+                        prev_tip = w.toolTip() or ''
+                        w.setToolTip((prev_tip + ' (inactive: waiting for data)').strip())
+                        w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                        w.setFocusPolicy(Qt.NoFocus)
 
-                    try:
-                        if not active:
-                            w.setProperty('status', 'disabled')
+                        try:
+                            from PyQt5.QtWidgets import QGraphicsOpacityEffect
+                            eff = QGraphicsOpacityEffect()
+                            eff.setOpacity(0.45)
+                            w._inactive_opacity_effect = eff
+                            w.setGraphicsEffect(eff)
+                        except Exception:
+                            # If style or widgets not available in tests, ignore
+                            pass
+                    else:
+                        # Active -> restore normal appearance
+                        w.setEnabled(True)
+                        w.setProperty('status', '')
+                        w.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+                        w.setFocusPolicy(Qt.StrongFocus)
+                        if hasattr(w, '_inactive_opacity_effect'):
                             try:
-                                prev_tip = w.toolTip() or ''
-                                w.setToolTip((prev_tip + ' (inactive: waiting for data)').strip())
+                                w.setGraphicsEffect(None)
                             except Exception:
                                 pass
                             try:
-                                w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                                del w._inactive_opacity_effect
                             except Exception:
                                 pass
-                            try:
-                                w.setFocusPolicy(Qt.NoFocus)
-                            except Exception:
-                                pass
-                            try:
-                                from PyQt5.QtWidgets import QGraphicsOpacityEffect
-                                eff = QGraphicsOpacityEffect()
-                                eff.setOpacity(0.45)
-                                w._inactive_opacity_effect = eff
-                                w.setGraphicsEffect(eff)
-                            except Exception:
-                                pass
-                        else:
-                            w.setProperty('status', '')
-                            try:
-                                w.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-                            except Exception:
-                                pass
-                            try:
-                                w.setFocusPolicy(Qt.StrongFocus)
-                            except Exception:
-                                pass
-                            try:
-                                if hasattr(w, '_inactive_opacity_effect'):
-                                    w.setGraphicsEffect(None)
-                                    delattr(w, '_inactive_opacity_effect')
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
 
+                    # Refresh widget style where possible
                     try:
                         w.style().polish(w)
                         w.update()
                     except Exception:
                         pass
                 except Exception:
+                    # Defensive: if any one widget fails, continue with others
                     pass
         except Exception:
+            # Defensive catch-all to avoid crashing the UI
             pass
 
-    def update_device_status(self, stationary: bool):
+    def clear_calibration_state(self):
         """
-        Update drift correction status and visualization.
+        Discard any locally-stored calibration data and reset calibration UI.
 
-        Args:
-            active: Boolean indicating if drift correction is active
+        Called when the serial connection is stopped or an external event requires
+        clearing calibration state so the UI does not display stale values.
         """
+        # Keep the function defensive but simpler to avoid nested try/except matching issues.
         try:
-            # Update visualization state
+            # Reset calibration indicator
+            if getattr(self, 'calib_status_label', None):
+                try:
+                    self.calib_status_label.setText("Gyro: Not calibrated")
+                    self.calib_status_label.setProperty('status', 'error')
+                    try:
+                        self.calib_status_label.style().polish(self.calib_status_label)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # Reset stored drift angles to defaults
             try:
-                if hasattr(self, 'visualization_widget') and self.visualization_widget:
-                    self.visualization_widget.update_drift_correction(active)
+                from config.config import DEFAULT_CENTER_THRESHOLD
+                self.drift_angle_yaw_value = DEFAULT_CENTER_THRESHOLD
+                self.drift_angle_pitch_value = DEFAULT_CENTER_THRESHOLD
+                self.drift_angle_roll_value = DEFAULT_CENTER_THRESHOLD
+            except Exception:
+                # If config import fails, fall back to existing values or zeros
+                self.drift_angle_yaw_value = getattr(self, 'drift_angle_yaw_value', 0.0)
+                self.drift_angle_pitch_value = getattr(self, 'drift_angle_pitch_value', 0.0)
+                self.drift_angle_roll_value = getattr(self, 'drift_angle_roll_value', 0.0)
+
+            # Update UI controls if present
+            try:
+                if hasattr(self, 'drift_angle_yaw_label') and self.drift_angle_yaw_label:
+                    self.drift_angle_yaw_label.setText(f"{self.drift_angle_yaw_value:.1f}°")
+                if hasattr(self, 'drift_yaw_slider') and self.drift_yaw_slider:
+                    self.drift_yaw_slider.setValue(int(self.drift_angle_yaw_value * 10))
+                if hasattr(self, 'drift_angle_pitch_label') and self.drift_angle_pitch_label:
+                    self.drift_angle_pitch_label.setText(f"{self.drift_angle_pitch_value:.1f}°")
+                if hasattr(self, 'drift_pitch_slider') and self.drift_pitch_slider:
+                    self.drift_pitch_slider.setValue(int(self.drift_angle_pitch_value * 10))
+                if hasattr(self, 'drift_angle_roll_label') and self.drift_angle_roll_label:
+                    self.drift_angle_roll_label.setText(f"{self.drift_angle_roll_value:.1f}°")
+                if hasattr(self, 'drift_roll_slider') and self.drift_roll_slider:
+                    self.drift_roll_slider.setValue(int(self.drift_angle_roll_value * 10))
             except Exception:
                 pass
 
-            # Update own drift status label
-            if hasattr(self, 'drift_status_label') and self.drift_status_label:
-                if active:
-                    self.drift_status_label.setText("Drift Correction Active")
-                    self.drift_status_label.setProperty("status", "enabled")
-                else:
-                    self.drift_status_label.setText("Drift Correction Inactive")
-                    self.drift_status_label.setProperty("status", "error")
-                try:
-                    self.drift_status_label.style().polish(self.drift_status_label)
-                except Exception:
-                    pass
-
-            # Also notify calibration panel if present so it can update internal state
-            if hasattr(self, 'calibration_panel') and self.calibration_panel:
-                try:
-                    self.calibration_panel._processing_active = getattr(self.calibration_panel, '_processing_active', False)
-                except Exception:
-                    pass
+            # Mirror cleared values and stored drifts to attached calibration panel if present
+            try:
+                self.stored_drift_yaw = self.drift_angle_yaw_value
+                self.stored_drift_pitch = self.drift_angle_pitch_value
+                self.stored_drift_roll = self.drift_angle_roll_value
+                cal = getattr(self, 'calibration_panel', None)
+                if cal is not None:
+                    if hasattr(cal, 'drift_angle_yaw_value'):
+                        cal.drift_angle_yaw_value = self.drift_angle_yaw_value
+                    if hasattr(cal, 'drift_angle_pitch_value'):
+                        cal.drift_angle_pitch_value = self.drift_angle_pitch_value
+                    if hasattr(cal, 'drift_angle_roll_value'):
+                        cal.drift_angle_roll_value = self.drift_angle_roll_value
+                    if hasattr(cal, 'clear_calibration_state'):
+                        try:
+                            cal.clear_calibration_state()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         except Exception:
             pass
 
