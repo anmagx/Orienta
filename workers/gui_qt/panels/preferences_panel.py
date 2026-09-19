@@ -433,15 +433,15 @@ class PreferencesPanel(QWidget):
         # Set container as scroll area widget and add it to the main layout
         scroll_area.setWidget(container)
         main_layout.addWidget(scroll_area, 1)
-        # Bottom fixed row with Reset and Apply buttons
+        # Bottom fixed row with Reset and Close buttons
         bottom_btn_layout = QHBoxLayout()
         bottom_btn_layout.addStretch()
         self.reset_btn = QPushButton("Reset to Defaults")
         self.reset_btn.clicked.connect(self._reset_to_defaults)
-        self.apply_btn = QPushButton("Apply")
-        self.apply_btn.clicked.connect(self._apply_preferences)
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self._on_close_clicked)
         bottom_btn_layout.addWidget(self.reset_btn)
-        bottom_btn_layout.addWidget(self.apply_btn)
+        bottom_btn_layout.addWidget(self.close_btn)
         main_layout.addLayout(bottom_btn_layout)
         self.setLayout(main_layout)
 
@@ -478,6 +478,25 @@ class PreferencesPanel(QWidget):
         # Clear loading flag after initial load is complete
         self._loading = False
 
+    def _on_close_clicked(self):
+        """Handle Close button - close containing dialog or top-level window."""
+        try:
+            win = self.window()
+            if win:
+                # Prefer dialog accept for QDialog to ensure proper dialog lifecycle
+                try:
+                    if hasattr(win, 'accept'):
+                        win.accept()
+                    else:
+                        win.close()
+                except Exception:
+                    try:
+                        win.close()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _safe_set_reset_shortcut(self, cal_panel, key, display_name):
         """Safely call calibration panel's _set_reset_shortcut without raising if deleted."""
         try:
@@ -499,23 +518,6 @@ class PreferencesPanel(QWidget):
             if not getattr(self, '_loading', False):
                 self.preferences_changed.emit()  # Notify parent to save all preferences
     
-    def _apply_preferences(self):
-        """Apply current preference settings."""
-        if THEMES_ENABLED and hasattr(self, 'theme_combo'):
-            theme_name = self.theme_combo.currentText()
-            self.prefs_manager.set_theme(theme_name)
-            self.theme_changed.emit(theme_name)
-        
-        # Visual feedback
-        self.apply_btn.setText("Applied!")
-        self.apply_btn.setEnabled(False)
-        
-        # Reset button text after delay
-        from PyQt5.QtCore import QTimer
-        QTimer.singleShot(1500, lambda: (
-            self.apply_btn.setText("Apply"),
-            self.apply_btn.setEnabled(True)
-        ))
     
     def _on_alpha_pitch_changed(self, value):
         """Handle pitch alpha slider change with debouncing."""
@@ -705,55 +707,70 @@ class PreferencesPanel(QWidget):
     def _on_invert_yaw_changed(self, state):
         """Handle yaw inversion checkbox change."""
         self.invert_yaw = (state == 2)  # Qt.Checked == 2
-        
-        # Send command to fusion worker for live update
-        if hasattr(self.calibration_panel, 'control_queue'):
-            try:
-                control_queue = self.calibration_panel.control_queue
+
+        # Send command to fusion worker for live update if available
+        try:
+            cal = getattr(self, 'calibration_panel', None)
+            if cal and hasattr(cal, 'control_queue'):
+                control_queue = cal.control_queue
                 if control_queue and not control_queue.full():
                     safe_queue_put(control_queue, ('set_invert_yaw', self.invert_yaw), timeout=QUEUE_PUT_TIMEOUT)
-            except Exception as e:
-                print(f"[Preferences] Failed to send yaw inversion command: {e}")
-        
-        # Also update visualization immediately
-        if self.calibration_panel:
-            self.calibration_panel.set_invert_yaw(self.invert_yaw)
+        except Exception as e:
+            print(f"[Preferences] Failed to send yaw inversion command: {e}")
+
+        # Also update visualization immediately if supported
+        try:
+            if cal and hasattr(cal, 'set_invert_yaw'):
+                cal.set_invert_yaw(self.invert_yaw)
+        except Exception as e:
+            print(f"[Preferences] Failed to update calibration visualization for yaw inversion: {e}")
+
         self._trigger_preference_save()
     
     def _on_invert_pitch_changed(self, state):
         """Handle pitch inversion checkbox change."""
         self.invert_pitch = (state == 2)  # Qt.Checked == 2
-        
-        # Send command to fusion worker for live update
-        if hasattr(self.calibration_panel, 'control_queue'):
-            try:
-                control_queue = self.calibration_panel.control_queue
+
+        # Send command to fusion worker for live update if available
+        try:
+            cal = getattr(self, 'calibration_panel', None)
+            if cal and hasattr(cal, 'control_queue'):
+                control_queue = cal.control_queue
                 if control_queue and not control_queue.full():
                     safe_queue_put(control_queue, ('set_invert_pitch', self.invert_pitch), timeout=QUEUE_PUT_TIMEOUT)
-            except Exception as e:
-                print(f"[Preferences] Failed to send pitch inversion command: {e}")
-        
-        # Also update visualization immediately
-        if self.calibration_panel:
-            self.calibration_panel.set_invert_pitch(self.invert_pitch)
+        except Exception as e:
+            print(f"[Preferences] Failed to send pitch inversion command: {e}")
+
+        # Also update visualization immediately if supported
+        try:
+            if cal and hasattr(cal, 'set_invert_pitch'):
+                cal.set_invert_pitch(self.invert_pitch)
+        except Exception as e:
+            print(f"[Preferences] Failed to update calibration visualization for pitch inversion: {e}")
+
         self._trigger_preference_save()
     
     def _on_invert_roll_changed(self, state):
         """Handle roll inversion checkbox change."""
         self.invert_roll = (state == 2)  # Qt.Checked == 2
-        
-        # Send command to fusion worker for live update
-        if hasattr(self.calibration_panel, 'control_queue'):
-            try:
-                control_queue = self.calibration_panel.control_queue
+
+        # Send command to fusion worker for live update if available
+        try:
+            cal = getattr(self, 'calibration_panel', None)
+            if cal and hasattr(cal, 'control_queue'):
+                control_queue = cal.control_queue
                 if control_queue and not control_queue.full():
                     safe_queue_put(control_queue, ('set_invert_roll', self.invert_roll), timeout=QUEUE_PUT_TIMEOUT)
-            except Exception as e:
-                print(f"[Preferences] Failed to send roll inversion command: {e}")
-        
-        # Also update visualization immediately
-        if self.calibration_panel:
-            self.calibration_panel.set_invert_roll(self.invert_roll)
+        except Exception as e:
+            print(f"[Preferences] Failed to send roll inversion command: {e}")
+
+        # Also update visualization immediately if supported
+        try:
+            if cal and hasattr(cal, 'set_invert_roll'):
+                cal.set_invert_roll(self.invert_roll)
+        except Exception as e:
+            print(f"[Preferences] Failed to update calibration visualization for roll inversion: {e}")
+
         self._trigger_preference_save()
     
     def _apply_drift_smoothing(self):

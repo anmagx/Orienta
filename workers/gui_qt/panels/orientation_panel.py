@@ -10,6 +10,8 @@ from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
 
+from workers.gui_qt.panels.about_panel import AboutPanel
+
 
 # HoldPanelQt: previously in hold_panel.py — moved here so the panel file
 # can be removed. This class provides the same animated "hold still" banner
@@ -182,6 +184,7 @@ from PyQt5.QtCore import QRect, QSize
 # Preferences button. Import here so the dialog can create or reuse an
 # existing PreferencesPanel instance.
 from .preferences_panel import PreferencesPanel
+from .message_panel import MessagePanelQt
 
 class TwoLineButton(QPushButton):
     def __init__(self, main_text: str = "", sub_text: str = "", parent=None):
@@ -981,6 +984,8 @@ class OrientationPanelQt(QGroupBox):
         divider.setFrameShadow(QFrame.Sunken)
         divider.setObjectName("sectionDivider")
         divider.setFixedWidth(1)
+        # Style to match ConnectionPanel vertical divider
+        divider.setStyleSheet("background-color: rgba(120,120,120,0.25);")
         split_layout.addWidget(divider)
 
         # Right: values list (Yaw / Pitch / Roll)
@@ -990,8 +995,8 @@ class OrientationPanelQt(QGroupBox):
         values_frame.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         values_layout = QVBoxLayout(values_frame)
         # Reduce spacing and margins to remove superfluous padding
-        values_layout.setSpacing(6)
-        values_layout.setContentsMargins(6, 6, 6, 6)
+        values_layout.setSpacing(4)
+        values_layout.setContentsMargins(4, 4, 4, 4)
 
         # Device status, gyro calibration and drift correction indicators at the top of the values column
         try:
@@ -1019,7 +1024,7 @@ class OrientationPanelQt(QGroupBox):
             divider.setFrameShadow(QFrame.Sunken)
             divider.setObjectName("statusDivider")
             divider.setFixedHeight(1)
-            divider.setStyleSheet("background-color: rgba(120,120,120,0.4);")
+            divider.setStyleSheet("background-color: rgba(120,120,120,0.25);")
             values_layout.addWidget(divider)
         except Exception:
             # Fallback: add labels without divider (same order)
@@ -1042,8 +1047,9 @@ class OrientationPanelQt(QGroupBox):
         # will be vertically centered between the top and bottom dividers.
         try:
             from PyQt5.QtWidgets import QSpacerItem, QSizePolicy as QSP
-            top_spacer = QSpacerItem(20, 20, QSP.Minimum, QSP.Expanding)
-            bottom_spacer = QSpacerItem(20, 20, QSP.Minimum, QSP.Expanding)
+            # Use smaller spacers to reduce vertical gap between dividers
+            top_spacer = QSpacerItem(20, 8, QSP.Minimum, QSP.Expanding)
+            bottom_spacer = QSpacerItem(20, 8, QSP.Minimum, QSP.Expanding)
         except Exception:
             top_spacer = None
             bottom_spacer = None
@@ -1055,7 +1061,8 @@ class OrientationPanelQt(QGroupBox):
         # Euler angles: headers on top row, values on second row (three columns)
         euler_grid = QGridLayout()
         euler_grid.setContentsMargins(0, 0, 0, 0)
-        euler_grid.setHorizontalSpacing(12)
+        # Narrow horizontal gaps between angle columns
+        euler_grid.setHorizontalSpacing(8)
         # Reduce vertical space between header row and value row
         try:
             euler_grid.setVerticalSpacing(4)
@@ -1082,17 +1089,18 @@ class OrientationPanelQt(QGroupBox):
         # Values row beneath headers
         self.yaw_value_label = QLabel("0.0°")
         self.yaw_value_label.setAlignment(Qt.AlignCenter)
-        self.yaw_value_label.setStyleSheet("font-size: 18px;")
+        # Slightly smaller font to reduce perceived size of the Euler block
+        self.yaw_value_label.setStyleSheet("font-size: 14px;")
         euler_grid.addWidget(self.yaw_value_label, 1, 0)
 
         self.pitch_value_label = QLabel("0.0°")
         self.pitch_value_label.setAlignment(Qt.AlignCenter)
-        self.pitch_value_label.setStyleSheet("font-size: 18px;")
+        self.pitch_value_label.setStyleSheet("font-size: 14px;")
         euler_grid.addWidget(self.pitch_value_label, 1, 1)
 
         self.roll_value_label = QLabel("0.0°")
         self.roll_value_label.setAlignment(Qt.AlignCenter)
-        self.roll_value_label.setStyleSheet("font-size: 18px;")
+        self.roll_value_label.setStyleSheet("font-size: 14px;")
         euler_grid.addWidget(self.roll_value_label, 1, 2)
 
         # Center the Euler grid horizontally within the values column
@@ -1111,7 +1119,7 @@ class OrientationPanelQt(QGroupBox):
         euler_page_layout.setSpacing(0)
         euler_page_layout.addLayout(euler_grid)
 
-        self.hold_indicator = HoldPanelQt(text="- HOLD STILL & UPRIGHT -", height=56)
+        self.hold_indicator = HoldPanelQt(text="- HOLD STILL & UPRIGHT -", height=40)
         self._hold_page = QWidget()
         hold_page_layout = QVBoxLayout(self._hold_page)
         hold_page_layout.setContentsMargins(0, 0, 0, 0)
@@ -1155,8 +1163,9 @@ class OrientationPanelQt(QGroupBox):
         text_width = fm.horizontalAdvance("🔴 Drift Correction DISENGAGED")
         text_height = fm.height()
         try:
-            desired_h = max(self.disengage_btn.sizeHint().height(), text_height + 16)
-            # Use fixed height based on sizeHint to avoid clipping of two-line content
+            # Match ConnectionPanel's prominent button sizing: ensure at least 40px base
+            desired_h = max(self.disengage_btn.sizeHint().height(), 40)
+            # Use fixed height similar to ConnectionPanel (desired_h + 6)
             self.disengage_btn.setFixedHeight(desired_h + 6)
         except Exception:
             pass
@@ -1219,7 +1228,7 @@ class OrientationPanelQt(QGroupBox):
             self.disengage_shortcut_btn = QPushButton("🔧")
             self.disengage_shortcut_btn.setToolTip("Set shortcut for Disengage Drift Correction")
             try:
-                desired_h = max(self.disengage_btn.sizeHint().height(), text_height + 16)
+                desired_h = max(self.disengage_btn.sizeHint().height(), 40)
                 self.disengage_shortcut_btn.setFixedHeight(desired_h + 6)
             except Exception:
                 pass
@@ -1334,7 +1343,8 @@ class OrientationPanelQt(QGroupBox):
         self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Fixed height similar to disengage button
         try:
-            desired_h = max(self.reset_button.sizeHint().height(), text_height + 16)
+            # Match ConnectionPanel button sizing: ensure at least 40px base
+            desired_h = max(self.reset_button.sizeHint().height(), 40)
             # Ensure reset button is tall enough for two-line rendering
             self.reset_button.setFixedHeight(desired_h + 6)
         except Exception:
@@ -1363,7 +1373,7 @@ class OrientationPanelQt(QGroupBox):
             self.reset_shortcut_btn = QPushButton("🔧")
             self.reset_shortcut_btn.setToolTip("Set shortcut for Reset Orientation")
             try:
-                desired_h = max(self.reset_button.sizeHint().height(), text_height + 16)
+                desired_h = max(self.reset_button.sizeHint().height(), 40)
                 self.reset_shortcut_btn.setFixedHeight(desired_h + 6)
             except Exception:
                 pass
@@ -1456,10 +1466,14 @@ class OrientationPanelQt(QGroupBox):
             self.recal_button = QPushButton("Recalibrate Yaw Drift Correction")
             # Match sizing of other buttons
             try:
-                desired_h = max(getattr(self, 'recal_button', None).sizeHint().height() if getattr(self, 'recal_button', None) else 0, text_height + 16)
+                desired_h = max(self.recal_button.sizeHint().height(), 24)
                 self.recal_button.setFixedHeight(desired_h + 6)
             except Exception:
-                pass
+                try:
+                    # Fallback: ensure minimum height
+                    self.recal_button.setMinimumHeight(34)
+                except Exception:
+                    pass
             self.recal_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             # Default to inactive until fusion worker reports processing active
             try:
@@ -1489,24 +1503,125 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             self.recal_button = None
 
-        # Preferences button (always active)
+            self.recal_button = None
+
+        # Tools row: Preferences and Monitor share available space, About (?) takes fixed shortcut width
         try:
-            self.preferences_button = QPushButton("Preferences...")
+            tools_row = QHBoxLayout()
+            tools_row.setSpacing(6)
+            tools_row.setContentsMargins(0, 0, 0, 0)
+
+            # Preferences button (always active)
             try:
-                self.preferences_button.setFixedHeight(getattr(self, 'recal_button', self.preferences_button).sizeHint().height())
+                self.preferences_button = QPushButton("Preferences...")
+                try:
+                    desired_h = max(self.preferences_button.sizeHint().height(), 24)
+                    self.preferences_button.setFixedHeight(desired_h + 6)
+                except Exception:
+                    pass
+                self.preferences_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                try:
+                    self.preferences_button.setEnabled(True)
+                    self.preferences_button.setProperty('status', '')
+                except Exception:
+                    pass
+                self.preferences_button.clicked.connect(self._open_preferences_window)
+                # Give a large stretch so this and monitor share remaining space
+                tools_row.addWidget(self.preferences_button, 100)
             except Exception:
-                pass
-            self.preferences_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            # Always enabled
+                self.preferences_button = None
+
+            # Monitor / Logs button
             try:
-                self.preferences_button.setEnabled(True)
-                self.preferences_button.setProperty('status', '')
+                self.monitor_button = QPushButton("Monitor / Logs")
+                try:
+                    desired_h = max(self.monitor_button.sizeHint().height(), 24)
+                    self.monitor_button.setFixedHeight(desired_h + 6)
+                except Exception:
+                    pass
+                self.monitor_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                try:
+                    self.monitor_button.setEnabled(True)
+                    self.monitor_button.setProperty('status', '')
+                except Exception:
+                    pass
+                self.monitor_button.clicked.connect(self._open_monitor_window)
+                tools_row.addWidget(self.monitor_button, 100)
             except Exception:
-                pass
-            self.preferences_button.clicked.connect(self._open_preferences_window)
-            values_layout.addWidget(self.preferences_button)
+                self.monitor_button = None
+
+            # About/help button (small, align with shortcut buttons)
+            try:
+                self.about_button = QPushButton("?")
+                self.about_button.setToolTip("About this application")
+                try:
+                    # Prefer actual painted width of an existing shortcut button when available,
+                    # otherwise fall back to sizeHint width or a small default.
+                    shortcut_w = None
+                    for nm in ('reset_shortcut_btn', 'disengage_shortcut_btn', 'disengage_shortcut_btn'):
+                        btn = getattr(self, nm, None)
+                        if btn is not None:
+                            try:
+                                w = btn.width()
+                                if w and w > 8:
+                                    shortcut_w = w
+                                    break
+                            except Exception:
+                                pass
+                            try:
+                                w = btn.sizeHint().width()
+                                if w and w > 8:
+                                    shortcut_w = w
+                                    break
+                            except Exception:
+                                pass
+                    if shortcut_w is None:
+                        # Fall back to sizeHint if painted width not available
+                        try:
+                            shortcut_w = self.reset_shortcut_btn.sizeHint().width() if hasattr(self, 'reset_shortcut_btn') and self.reset_shortcut_btn else 36
+                        except Exception:
+                            shortcut_w = 36
+                    # Clamp the width to a reasonable range so it doesn't overflow
+                    try:
+                        shortcut_w = int(shortcut_w)
+                        # clamp between 24 and 48
+                        if shortcut_w < 24:
+                            shortcut_w = 24
+                        elif shortcut_w > 48:
+                            shortcut_w = 40
+                    except Exception:
+                        shortcut_w = 36
+                    # Use same vertical sizing as tools
+                    desired_h = max(self.about_button.sizeHint().height(), 24)
+                    self.about_button.setFixedHeight(desired_h + 6)
+                    # Ensure a small fixed width matching shortcut buttons
+                    self.about_button.setFixedWidth(int(shortcut_w))
+                except Exception:
+                    pass
+                self.about_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self.about_button.clicked.connect(self._open_about_window)
+                # Add without stretch so it remains fixed while others expand
+                tools_row.addWidget(self.about_button, 0)
+            except Exception:
+                self.about_button = None
+
+            values_layout.addLayout(tools_row)
         except Exception:
-            self.preferences_button = None
+            # Fallback: add buttons individually
+            try:
+                if not hasattr(self, 'preferences_button') or self.preferences_button is None:
+                    self.preferences_button = QPushButton("Preferences...")
+                    self.preferences_button.clicked.connect(self._open_preferences_window)
+                    values_layout.addWidget(self.preferences_button)
+            except Exception:
+                pass
+            try:
+                if not hasattr(self, 'monitor_button') or self.monitor_button is None:
+                    self.monitor_button = QPushButton("Monitor / Logs")
+                    self.monitor_button.clicked.connect(self._open_monitor_window)
+                    values_layout.addWidget(self.monitor_button)
+            except Exception:
+                pass
 
         split_layout.addWidget(values_frame, stretch=1)
 
@@ -1577,13 +1692,6 @@ class OrientationPanelQt(QGroupBox):
                 except Exception:
                     pass
 
-            # Add close button
-            try:
-                bb = QDialogButtonBox(QDialogButtonBox.Close)
-                bb.rejected.connect(dialog.reject)
-                dlg_layout.addWidget(bb)
-            except Exception:
-                pass
 
             # Apply parent's palette/style so the dialog matches the app theme
             try:
@@ -1623,14 +1731,179 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
 
+        # Connect some leftover slider signals (best-effort)
         try:
             self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
         except Exception:
             pass
+
+        # --- Monitor / Logs dialog opener ---
+    def _open_monitor_window(self):
+        """
+        Open a dialog containing the MessagePanel. Reuse an existing MessagePanel
+        instance created by the main GUI when possible (reparenting it into the
+        dialog) so logs and serial output remain continuous. Otherwise create a
+        new MessagePanelQt instance attached to the dialog.
+        """
+        try:
+            parent_window = None
+            try:
+                parent_window = self.window()
+            except Exception:
+                parent_window = None
+
+            dialog = QDialog(parent_window if parent_window is not None else self)
+            dialog.setWindowTitle("Monitor / Logs")
+            dialog.setModal(False)
+            dlg_layout = QVBoxLayout(dialog)
+            dlg_layout.setContentsMargins(6, 6, 6, 6)
+
+            msg_widget = None
+            # Prefer any message_panel reference on this panel, calibration_panel, or parent_window
+            cand = getattr(self, 'message_panel', None)
+            if cand is None and hasattr(self, 'calibration_panel'):
+                cand = getattr(self.calibration_panel, 'message_panel', None)
+            if cand is None and parent_window is not None:
+                cand = getattr(parent_window, 'message_panel', None)
+
+            if cand is not None:
+                try:
+                    cand.setParent(dialog)
+                    msg_widget = cand
+                except Exception:
+                    msg_widget = None
+
+            if msg_widget is None:
+                try:
+                    # Create a local MessagePanel with generous history sizes
+                    msg_widget = MessagePanelQt(dialog, serial_height=12, message_height=12, max_serial_lines=500, max_message_lines=200, padding=6)
+                except Exception:
+                    msg_widget = None
+
+            if msg_widget is not None:
+                dlg_layout.addWidget(msg_widget)
+
+            # Apply parent's palette/style so the dialog matches the app theme
+            try:
+                if parent_window is not None:
+                    try:
+                        dialog.setStyleSheet(parent_window.styleSheet())
+                    except Exception:
+                        pass
+                    try:
+                        dialog.setPalette(parent_window.palette())
+                        dialog.setAutoFillBackground(True)
+                    except Exception:
+                        pass
+
+                # Resize to a sensible minimum for logs
+                try:
+                    hint = msg_widget.sizeHint() if msg_widget is not None else None
+                    w = max(800, hint.width() + 40 if hint is not None else 800)
+                    h = max(600, hint.height() + 80 if hint is not None else 600)
+                    dialog.resize(int(w), int(h))
+                except Exception:
+                    try:
+                        dialog.resize(800, 600)
+                    except Exception:
+                        pass
+
+                dialog.show()
+            except Exception:
+                try:
+                    dialog.exec_()
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                print(f"[OrientationPanel] Failed to open monitor window: {e}")
+            except Exception:
+                pass
         try:
             self.drift_roll_slider.valueChanged.connect(self._on_drift_roll_angle_change)
         except Exception:
             pass
+
+        # --- About dialog opener ---
+    def _open_about_window(self):
+        """
+        Open a dialog containing the AboutPanel. Reuse an existing AboutPanel
+        instance from the main window when possible (reparenting it into the
+        dialog) or create a fresh one if not available.
+        """
+        try:
+            parent_window = None
+            try:
+                parent_window = self.window()
+            except Exception:
+                parent_window = None
+
+            dialog = QDialog(parent_window if parent_window is not None else self)
+            dialog.setWindowTitle("About")
+            dialog.setModal(False)
+            dlg_layout = QVBoxLayout(dialog)
+            dlg_layout.setContentsMargins(6, 6, 6, 6)
+
+            about_widget = None
+            # Prefer any about_panel reference on this panel, calibration_panel, or parent_window
+            cand = getattr(self, 'about_panel', None)
+            if cand is None and hasattr(self, 'calibration_panel'):
+                cand = getattr(self.calibration_panel, 'about_panel', None)
+            if cand is None and parent_window is not None:
+                cand = getattr(parent_window, 'about_panel', None)
+
+            if cand is not None:
+                try:
+                    cand.setParent(dialog)
+                    about_widget = cand
+                except Exception:
+                    about_widget = None
+
+            if about_widget is None:
+                try:
+                    about_widget = AboutPanel(dialog)
+                except Exception:
+                    about_widget = None
+
+            if about_widget is not None:
+                dlg_layout.addWidget(about_widget)
+
+            # Apply parent's palette/style so the dialog matches the app theme
+            try:
+                if parent_window is not None:
+                    try:
+                        dialog.setStyleSheet(parent_window.styleSheet())
+                    except Exception:
+                        pass
+                    try:
+                        dialog.setPalette(parent_window.palette())
+                        dialog.setAutoFillBackground(True)
+                    except Exception:
+                        pass
+
+                # Resize to a sensible minimum for about content
+                try:
+                    hint = about_widget.sizeHint() if about_widget is not None else None
+                    w = max(500, hint.width() + 40 if hint is not None else 500)
+                    h = max(400, hint.height() + 80 if hint is not None else 400)
+                    dialog.resize(int(w), int(h))
+                except Exception:
+                    try:
+                        dialog.resize(500, 400)
+                    except Exception:
+                        pass
+
+                dialog.show()
+            except Exception:
+                try:
+                    dialog.exec_()
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                print(f"[OrientationPanel] Failed to open about window: {e}")
+            except Exception:
+                pass
 
         # Horizontal divider separating main panel from sliders
         try:
@@ -1638,7 +1911,7 @@ class OrientationPanelQt(QGroupBox):
             sliders_div.setFrameShape(QFrame.HLine)
             sliders_div.setFrameShadow(QFrame.Sunken)
             sliders_div.setFixedHeight(1)
-            sliders_div.setStyleSheet("background-color: rgba(120,120,120,0.4);")
+            sliders_div.setStyleSheet("background-color: rgba(120,120,120,0.25);")
             main_layout.addWidget(sliders_div)
         except Exception:
             pass

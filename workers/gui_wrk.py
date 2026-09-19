@@ -132,18 +132,22 @@ class TabbedGUIWorker(QMainWindow):
         main_layout.setSpacing(4)
         main_layout.setContentsMargins(8, 8, 8, 8)
         
-        # Create tab widget
-        self.tab_widget = QTabWidget()
-        # Connect tab selection to enable/disable diagnostics for performance
-        self.tab_widget.currentChanged.connect(self._on_tab_changed)
-        main_layout.addWidget(self.tab_widget)
-        
-        self.create_orientation_tab()
-        
-        # Diagnostics tab only shown in developer mode
+        # Use a single-pane layout (tabbed layout removed)
+        # The orientation panel is the main content; other panels are exposed via dialogs
+        main_layout.addStretch(0)
+
+        # Create and add the orientation widget directly
+        orientation_widget = self.create_orientation_tab()
+        if orientation_widget is not None:
+            main_layout.addWidget(orientation_widget)
+
+        # Diagnostics panel: add below orientation when enabled
         if self.enable_diagnostics:
-            self.create_diagnostics_tab()
-        
+            diagnostics_widget = self.create_diagnostics_tab()
+            if diagnostics_widget is not None:
+                main_layout.addWidget(diagnostics_widget)
+
+        # Create shared panels (no tabs): messages, preferences, about
         self.create_messages_tab()
         self.create_preferences_tab()
         self.create_about_tab()
@@ -152,7 +156,9 @@ class TabbedGUIWorker(QMainWindow):
         # (No global status bar needed here.)
     
     def create_orientation_tab(self):
-        """Create the Orientation Tracking tab."""
+        """Create the Orientation Tracking widget (replaces the old tab).
+        Returns the created widget so the caller can add it to the main layout.
+        """
         orientation_widget = QWidget()
         layout = QVBoxLayout(orientation_widget)
         layout.setSpacing(6)
@@ -181,7 +187,7 @@ class TabbedGUIWorker(QMainWindow):
         except Exception:
             self.calibration_panel = None
 
-        # Connection panel moved to the bottom of the tab for easier access
+        # Connection panel moved to the bottom of the widget for easier access
         self.connection_panel = ConnectionPanelQt(
             orientation_widget,
             self.serial_control_queue,
@@ -192,8 +198,7 @@ class TabbedGUIWorker(QMainWindow):
         )
         layout.addWidget(self.connection_panel)
 
-        # Add tab
-        self.tab_widget.addTab(orientation_widget, "🧭 Orientation Tracking")
+        return orientation_widget
     
     def create_diagnostics_tab(self):
         """Create the Diagnostics tab with real-time plotting."""
@@ -211,32 +216,31 @@ class TabbedGUIWorker(QMainWindow):
         )
         layout.addWidget(self.diagnostics_panel)
         
-        # Add tab - store index for visibility optimization
-        tab_index = self.tab_widget.addTab(diagnostics_widget, "📊 Diagnostics")
-        
-        # Store tab index to check visibility later for performance optimization
-        self.diagnostics_tab_index = tab_index
+        # Diagnostics widget will be added directly by caller (no tab)
+        return diagnostics_widget
 
     def create_messages_tab(self):
-        """Create the Messages tab with serial monitor and application logs."""
-        messages_widget = QWidget()
-        layout = QVBoxLayout(messages_widget)
-        layout.setSpacing(8)
-        layout.setContentsMargins(8, 8, 8, 8)
-        
-        # Message Panel (full-sized in its own tab)
-        self.message_panel = MessagePanelQt(
-            messages_widget,
-            serial_height=12,  # Larger in dedicated tab
-            message_height=12,  # Larger in dedicated tab
-            max_serial_lines=500,  # More history in dedicated tab
-            max_message_lines=200,  # More history in dedicated tab
-            padding=6
-        )
-        layout.addWidget(self.message_panel)
-        
-        # Add tab
-        self.tab_widget.addTab(messages_widget, "📜 Messages")
+        """Create the MessagePanel instance for logging and serial monitor.
+
+        The Messages UI is no longer shown as a dedicated tab; instead a
+        MessagePanel instance is created here for reuse by the Monitor / Logs
+        dialog (and by any other panel that expects self.message_panel).
+        """
+        try:
+            # Create a shared MessagePanel instance but do not add it as a tab.
+            # Parent is None so it can be reparented into dialogs as needed.
+            self.message_panel = MessagePanelQt(
+                None,
+                serial_height=12,
+                message_height=12,
+                max_serial_lines=500,
+                max_message_lines=200,
+                padding=6
+            )
+            print("[GUI] MessagePanel created (not added as tab)")
+        except Exception as e:
+            print(f"[GUI] Failed to create MessagePanel: {e}")
+            self.message_panel = None
     
     def create_preferences_tab(self):
         """Create the Preferences panel instance (no tab). The Preferences UI
@@ -299,9 +303,11 @@ class TabbedGUIWorker(QMainWindow):
                 print("[GUI] Diagnostics tab not selected - matplotlib updates skipped")
     
     def create_about_tab(self):
-        """Create the About tab."""
-        about_panel = AboutPanel()
-        self.tab_widget.addTab(about_panel, "About")
+        """Create the shared AboutPanel instance (no tab). The About UI is shown via dialogs."""
+        try:
+            self.about_panel = AboutPanel()
+        except Exception:
+            self.about_panel = None
     
     def _connect_signals(self):
         """Connect internal signals to update methods."""
@@ -348,11 +354,13 @@ class TabbedGUIWorker(QMainWindow):
                         if hasattr(self.orientation_panel, 'update_euler'):
                             self.orientation_panel.update_euler(yaw, pitch, roll)
                         
-                        # Update diagnostics panel with orientation data (only if tab is active)
-                        if (hasattr(self, 'diagnostics_tab_index') and 
-                            self.tab_widget.currentIndex() == self.diagnostics_tab_index and
+                        # Update diagnostics panel with orientation data if diagnostics enabled
+                        if (self.enable_diagnostics and hasattr(self, 'diagnostics_panel') and
                             hasattr(self.diagnostics_panel, 'update_euler')):
-                            self.diagnostics_panel.update_euler(yaw, pitch, roll)
+                            try:
+                                self.diagnostics_panel.update_euler(yaw, pitch, roll)
+                            except Exception:
+                                pass
                         
             
             # Process status updates (check if queue exists and not None)
@@ -430,10 +438,11 @@ class TabbedGUIWorker(QMainWindow):
         
         # Update diagnostics panel with orientation data (only if enabled and tab is active)
         if (self.enable_diagnostics and hasattr(self, 'diagnostics_panel') and
-            hasattr(self, 'diagnostics_tab_index') and 
-            self.tab_widget.currentIndex() == self.diagnostics_tab_index and
             hasattr(self.diagnostics_panel, 'update_euler')):
-            self.diagnostics_panel.update_euler(yaw, pitch, roll)
+            try:
+                self.diagnostics_panel.update_euler(yaw, pitch, roll)
+            except Exception:
+                pass
     
     def _update_drift_status(self, status):
         """Update drift status display."""
@@ -731,14 +740,6 @@ class TabbedGUIWorker(QMainWindow):
                 theme_name = self.preferences_manager.get_theme()
                 self._apply_theme(theme_name)
             
-            # Restore tab selection
-            if 'gui' in prefs and isinstance(prefs['gui'], dict) and 'selected_tab' in prefs['gui']:
-                try:
-                    tab_index = int(prefs['gui']['selected_tab'])
-                    if 0 <= tab_index < self.tab_widget.count():
-                        self.tab_widget.setCurrentIndex(tab_index)
-                except (ValueError, TypeError):
-                    pass
             
             print("[GUI] Preferences loaded")
             
@@ -851,7 +852,7 @@ class TabbedGUIWorker(QMainWindow):
             
             # Save GUI state
             prefs['gui'] = {
-                'selected_tab': str(self.tab_widget.currentIndex()),
+                'selected_tab': '0',  # No tabs: default to 0 for compatibility
                 'theme': self.theme_manager.get_current_theme()
             }
             

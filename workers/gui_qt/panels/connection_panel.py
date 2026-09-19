@@ -176,19 +176,20 @@ class ConnectionPanelQt(BasePanelQt):
         controls_frame = QFrame()
         controls_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Use consistent padding with Orientation panel
-        controls_frame.setContentsMargins(6, 4, 6, 4)
+        # Reduce internal padding to match Orientation panel
+        controls_frame.setContentsMargins(4, 6, 4, 6)
 
         # Horizontal split: left inputs, right controls
         from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout
         outer = QHBoxLayout(controls_frame)
-        outer.setContentsMargins(6, 4, 6, 4)
-        outer.setSpacing(12)
+        outer.setContentsMargins(4, 6, 4, 6)
+        outer.setSpacing(6)
 
         # Left: inputs area split into two equal columns with a vertical divider
         left_widget = QFrame()
         left_widget_layout = QHBoxLayout(left_widget)
         left_widget_layout.setContentsMargins(0, 0, 0, 0)
-        left_widget_layout.setSpacing(8)
+        left_widget_layout.setSpacing(6)
 
         # Left column: Serial inputs (vertical stack)
         left_col = QFrame()
@@ -307,7 +308,7 @@ class ConnectionPanelQt(BasePanelQt):
         right_widget = QFrame()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(12)
+        right_layout.setSpacing(6)
         # Top-align controls so buttons sit at the top of the right column
         right_layout.setAlignment(Qt.AlignTop)
 
