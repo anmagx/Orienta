@@ -239,34 +239,42 @@ class TabbedGUIWorker(QMainWindow):
         self.tab_widget.addTab(messages_widget, "📜 Messages")
     
     def create_preferences_tab(self):
-        """Create the Preferences tab."""
-        preferences_widget = QWidget()
-        layout = QVBoxLayout(preferences_widget)
-        layout.setSpacing(8)
-        layout.setContentsMargins(8, 8, 8, 8)
-        
-        # Preferences Panel
+        """Create the Preferences panel instance (no tab). The Preferences UI
+        is exposed via the Orientation panel's Preferences button. A single
+        shared PreferencesPanel instance is created here and wired to the
+        calibration panel and theme/save handlers.
+        """
+        # Preferences Panel (created without adding to the tab widget)
         self.preferences_panel = PreferencesPanel(
-            preferences_widget,
+            None,
             self.preferences_manager,
             self.input_command_queue,
             self.input_response_queue
         )
-        
+
         # Connect preferences panel to calibration panel for shortcuts
-        self.preferences_panel.connect_calibration_panel(self.calibration_panel)
-        
+        try:
+            self.preferences_panel.connect_calibration_panel(self.calibration_panel)
+        except Exception:
+            pass
+
         # Connect calibration panel to preferences panel for sample counts
-        self.calibration_panel.connect_preferences_panel(self.preferences_panel)
-        
+        try:
+            self.calibration_panel.connect_preferences_panel(self.preferences_panel)
+        except Exception:
+            pass
+
         # Connect theme change signal
-        self.preferences_panel.theme_changed.connect(self._apply_theme)
-        self.preferences_panel.preferences_changed.connect(self.save_preferences)
-        
-        layout.addWidget(self.preferences_panel, 1)
-        
-        # Add tab
-        self.tab_widget.addTab(preferences_widget, "⚙️ Preferences")
+        try:
+            self.preferences_panel.theme_changed.connect(self._apply_theme)
+        except Exception:
+            pass
+        try:
+            self.preferences_panel.preferences_changed.connect(self.save_preferences)
+        except Exception:
+            pass
+
+        # Do not add a Preferences tab anymore; preferences are shown via dialog
     
     def _apply_theme(self, theme_name):
         """Apply the selected theme to the application."""
