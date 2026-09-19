@@ -8,11 +8,107 @@ status indicators) are laid out on the right.
 """
 
 from PyQt5.QtWidgets import (QLabel, QComboBox, QLineEdit, QPushButton,
-                             QFrame, QGridLayout, QSizePolicy)
+                             QFrame, QGridLayout, QSizePolicy, QStyleOptionButton)
+from PyQt5.QtGui import QFont, QFontMetrics, QPainter
+from PyQt5.QtCore import QRect, QSize
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QIntValidator
 
 from .base_panel import BasePanelQt
+
+# TwoLineButton: replicate the same two-line QPushButton from orientation_panel
+# so the Connection panel can display a main label plus a smaller sub-line
+# (e.g. "Start Serial" above "0.0 msg/s").
+from PyQt5.QtWidgets import QPushButton
+
+class TwoLineButton(QPushButton):
+    def __init__(self, main_text: str = "", sub_text: str = "", parent=None):
+        super().__init__(main_text, parent)
+        self._main = main_text or ""
+        self._sub = sub_text or ""
+        self.setCursor(Qt.PointingHandCursor)
+
+    def setParts(self, main: str, sub: str):
+        self._main = main or ""
+        self._sub = sub or ""
+        self.setText(self._main)
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self):
+        base = super().sizeHint()
+        mainFont = QFont(self.font())
+        mainFont.setBold(True)
+        mainFm = QFontMetrics(mainFont)
+        mainH = mainFm.height()
+
+        subH = 0
+        width_sub = 0
+        if self._sub:
+            subFont = QFont(self.font())
+            subFont.setPointSize(max(subFont.pointSize() - 2, 8))
+            subFm = QFontMetrics(subFont)
+            subH = subFm.height()
+            width_sub = subFm.horizontalAdvance(self._sub)
+
+        vertical_padding = 12
+        interline_spacing = 2 if self._sub else 0
+
+        height = mainH + (subH + interline_spacing if self._sub else 0) + vertical_padding
+        width = max(base.width(), mainFm.horizontalAdvance(self._main) + 24, width_sub + 24)
+        return QSize(width, height)
+
+    def paintEvent(self, event):
+        opt = QStyleOptionButton()
+        opt.initFrom(self)
+        opt.text = ""
+        p = QPainter(self)
+        self.style().drawControl(self.style().CE_PushButton, opt, p, self)
+
+        rect = self.rect().adjusted(8, 6, -8, -6)
+        mainFont = QFont(self.font())
+        mainFont.setBold(True)
+        mainFm = QFontMetrics(mainFont)
+        mainH = mainFm.height()
+
+        try:
+            from PyQt5.QtGui import QPalette
+            if self.isEnabled():
+                main_pen = self.palette().color(QPalette.ButtonText)
+            else:
+                main_pen = self.palette().color(QPalette.Disabled, QPalette.ButtonText)
+        except Exception:
+            main_pen = QColor(0, 0, 0)
+
+        if self._sub:
+            subFont = QFont(self.font())
+            subFont.setPointSize(max(subFont.pointSize() - 2, 8))
+            subFm = QFontMetrics(subFont)
+            totalH = mainH + 2 + subFm.height()
+            y = rect.top() + max(0, (rect.height() - totalH) // 2)
+
+            p.setFont(mainFont)
+            p.setPen(main_pen)
+            p.drawText(QRect(rect.left(), y, rect.width(), mainH), int(Qt.AlignCenter), self._main)
+
+            p.setFont(subFont)
+            try:
+                if self.isEnabled():
+                    sub_pen = self.palette().color(QPalette.ButtonText)
+                else:
+                    sub_pen = self.palette().color(QPalette.Disabled, QPalette.ButtonText)
+            except Exception:
+                sub_pen = main_pen
+            y2 = y + mainH + 2
+            p.setPen(sub_pen)
+            p.drawText(QRect(rect.left(), y2, rect.width(), subFm.height()), int(Qt.AlignCenter), self._sub)
+        else:
+            p.setFont(mainFont)
+            p.setPen(main_pen)
+            p.drawText(rect, int(Qt.AlignCenter), self._main)
+
+        p.end()
+
 from config.config import (
     DEFAULT_SERIAL_PORT,
     DEFAULT_SERIAL_BAUD,
@@ -74,131 +170,194 @@ class ConnectionPanelQt(BasePanelQt):
         """Build the combined connection panel UI."""
         main_layout = QGridLayout(self)
         main_layout.setContentsMargins(4, 6, 4, 6)
-        main_layout.setSpacing(4)
+        main_layout.setSpacing(6)
 
         # Build a compact two-column layout: left = inputs, right = buttons
         controls_frame = QFrame()
         controls_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        # Reduce vertical padding so the panel is slimmer
-        controls_frame.setContentsMargins(4, 2, 4, 2)
+        # Use consistent padding with Orientation panel
+        controls_frame.setContentsMargins(6, 4, 6, 4)
 
         # Horizontal split: left inputs, right controls
         from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout
         outer = QHBoxLayout(controls_frame)
-        outer.setContentsMargins(6, 2, 6, 2)
+        outer.setContentsMargins(6, 4, 6, 4)
         outer.setSpacing(12)
 
-        # Left: inputs area (stacked rows)
+        # Left: inputs area split into two equal columns with a vertical divider
         left_widget = QFrame()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
+        left_widget_layout = QHBoxLayout(left_widget)
+        left_widget_layout.setContentsMargins(0, 0, 0, 0)
+        left_widget_layout.setSpacing(8)
 
-        # Row: Serial inputs (label above inputs)
-        serial_row = QVBoxLayout()
-        lbl_serial = QLabel("Serial Port")
+        # Left column: Serial inputs (vertical stack)
+        left_col = QFrame()
+        left_col_layout = QVBoxLayout(left_col)
+        left_col_layout.setContentsMargins(0, 0, 0, 0)
+        left_col_layout.setSpacing(6)
+
+        # Serial row
+        serial_h = QHBoxLayout()
+        serial_h.setContentsMargins(0, 0, 0, 0)
+        lbl_serial = QLabel("Serial Port:")
         lbl_serial.setToolTip("Serial port to open (e.g., COM3)")
-        serial_row.addWidget(lbl_serial)
-        serial_inputs = QHBoxLayout()
+        lbl_serial.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_serial.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        serial_h.addWidget(lbl_serial)
+        # Push the input widget to the right within the column
+        serial_h.addStretch()
+
         self.port_combo = QComboBox()
         ports = [f"COM{i}" for i in range(100)]
         self.port_combo.addItems(ports)
         self.port_combo.setCurrentText(self._port_value)
-        self.port_combo.setFixedWidth(140)
+        self.port_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.port_combo.currentTextChanged.connect(self._on_port_changed)
-        serial_inputs.addWidget(self.port_combo)
+        serial_h.addWidget(self.port_combo)
+        left_col_layout.addLayout(serial_h)
 
-        lbl_baud = QLabel("Baud")
-        lbl_baud.setContentsMargins(8, 0, 8, 0)
-        serial_inputs.addWidget(lbl_baud)
+        # Baud row
+        baud_h = QHBoxLayout()
+        baud_h.setContentsMargins(0, 0, 0, 0)
+        lbl_baud = QLabel("Baud:")
+        lbl_baud.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_baud.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        baud_h.addWidget(lbl_baud)
+        baud_h.addStretch()
+
         self.baud_combo = QComboBox()
         baud_rates = ["9600", "19200", "38400", "57600", "115200", "230400", "250000", "500000", "1000000"]
         self.baud_combo.addItems(baud_rates)
         self.baud_combo.setCurrentText(self._baud_value)
-        self.baud_combo.setFixedWidth(140)
+        self.baud_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.baud_combo.currentTextChanged.connect(self._on_baud_changed)
-        serial_inputs.addWidget(self.baud_combo)
+        baud_h.addWidget(self.baud_combo)
+        left_col_layout.addLayout(baud_h)
 
-        serial_row.addLayout(serial_inputs)
-        left_layout.addLayout(serial_row)
+        # Right column: Network inputs (vertical stack)
+        right_col = QFrame()
+        right_col_layout = QVBoxLayout(right_col)
+        right_col_layout.setContentsMargins(0, 0, 0, 0)
+        right_col_layout.setSpacing(6)
 
-        # Row: UDP inputs (label above inputs)
-        udp_row = QVBoxLayout()
-        lbl_ip = QLabel("IP")
+        # IP row
+        ip_h = QHBoxLayout()
+        ip_h.setContentsMargins(0, 0, 0, 0)
+        lbl_ip = QLabel("IP:")
         lbl_ip.setToolTip("Destination IP for UDP packets (e.g., 127.0.0.1)")
-        udp_row.addWidget(lbl_ip)
-        udp_inputs = QHBoxLayout()
+        lbl_ip.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_ip.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        ip_h.addWidget(lbl_ip)
+        ip_h.addStretch()
+
         self.udp_ip_entry = QLineEdit()
         self.udp_ip_entry.setText(self._udp_ip)
-        self.udp_ip_entry.setFixedWidth(140)
+        self.udp_ip_entry.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.udp_ip_entry.setAlignment(Qt.AlignRight)
         self.udp_ip_entry.textChanged.connect(self._on_ip_changed)
-        udp_inputs.addWidget(self.udp_ip_entry)
+        ip_h.addWidget(self.udp_ip_entry)
+        right_col_layout.addLayout(ip_h)
 
-        lbl_udp_port = QLabel("UDP Port")
-        lbl_udp_port.setContentsMargins(8, 0, 8, 0)
-        udp_inputs.addWidget(lbl_udp_port)
+        # UDP Port row
+        port_h = QHBoxLayout()
+        port_h.setContentsMargins(0, 0, 0, 0)
+        lbl_udp_port = QLabel("Port:")
+        lbl_udp_port.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_udp_port.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        port_h.addWidget(lbl_udp_port)
+        port_h.addStretch()
+
         self.udp_port_entry = QLineEdit()
         self.udp_port_entry.setText(self._udp_port)
-        self.udp_port_entry.setFixedWidth(140)
         self.udp_port_entry.setValidator(QIntValidator(1, 65535))
+        self.udp_port_entry.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.udp_port_entry.setAlignment(Qt.AlignRight)
         self.udp_port_entry.textChanged.connect(self._on_udp_port_changed)
-        udp_inputs.addWidget(self.udp_port_entry)
+        port_h.addWidget(self.udp_port_entry)
+        right_col_layout.addLayout(port_h)
 
-        udp_row.addLayout(udp_inputs)
-        left_layout.addLayout(udp_row)
+        # Normalize and align label widths so left labels and right labels line up neatly
+        try:
+            fm = QFontMetrics(lbl_serial.font())
+            labels = [lbl_serial, lbl_baud, lbl_ip, lbl_udp_port]
+            maxw = max(fm.horizontalAdvance(lbl.text()) for lbl in labels) + 8
+            for lbl in labels:
+                lbl.setFixedWidth(maxw)
+                lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        except Exception:
+            pass
+
+        # Vertical divider between the two input columns
+        vline_inputs = QFrame()
+        vline_inputs.setFrameShape(QFrame.VLine)
+        vline_inputs.setFrameShadow(QFrame.Sunken)
+        vline_inputs.setFixedWidth(1)
+        vline_inputs.setStyleSheet("background-color: rgba(120,120,120,0.25);")
+
+        # Add columns and divider to the left widget layout
+        left_widget_layout.addWidget(left_col)
+        left_widget_layout.addWidget(vline_inputs)
+        left_widget_layout.addWidget(right_col)
+
+        # Make columns share horizontal space equally
+        left_widget_layout.setStretch(0, 1)
+        left_widget_layout.setStretch(2, 1)
 
         # Right: controls area (buttons & status stacked)
         right_widget = QFrame()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(12)
+        # Top-align controls so buttons sit at the top of the right column
+        right_layout.setAlignment(Qt.AlignTop)
 
         # Serial button (will display start/stop and host its status)
-        self.toggle_button = QPushButton("Start Serial")
+        self.toggle_button = TwoLineButton("Start Serial", self._serial_rate_text)
         # Make the button more prominent and allow it to expand to the right column width
-        self.toggle_button.setMinimumHeight(40)
-        self.toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        try:
+            desired_h = max(self.toggle_button.sizeHint().height(), 40)
+            self.toggle_button.setFixedHeight(desired_h + 6)
+        except Exception:
+            self.toggle_button.setMinimumHeight(40)
+        self.toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # Start in a neutral visual state (button remains pressable)
         self.toggle_button.setProperty('status', '')
         self.toggle_button.clicked.connect(self.toggle_serial)
-        # add a stretch so the controls are vertically centered
-        right_layout.addStretch()
+        # Add the serial button at the top
         right_layout.addWidget(self.toggle_button)
 
-        # Divider between serial and UDP controls (short)
-        mid_div = QFrame()
-        mid_div.setFrameShape(QFrame.HLine)
-        mid_div.setFrameShadow(QFrame.Sunken)
-        mid_div.setFixedHeight(2)
-        right_layout.addWidget(mid_div)
-
         # UDP button (hosts its status inside)
-        self.udp_toggle_btn = QPushButton(self._udp_btn_text)
-        self.udp_toggle_btn.setMinimumHeight(40)
-        self.udp_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.udp_toggle_btn = TwoLineButton(self._udp_btn_text, self._udp_rate_text)
+        try:
+            desired_h = max(self.udp_toggle_btn.sizeHint().height(), 40)
+            self.udp_toggle_btn.setFixedHeight(desired_h + 6)
+        except Exception:
+            self.udp_toggle_btn.setMinimumHeight(40)
+        self.udp_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # Neutral initial visual state so button appears pressable
         self.udp_toggle_btn.setProperty('status', '')
         self.udp_toggle_btn.clicked.connect(self.toggle_udp)
         right_layout.addWidget(self.udp_toggle_btn)
-        # bottom stretch to keep buttons centered
+
+        # Add a bottom stretch so remaining space is left below the buttons
         right_layout.addStretch()
 
-        # Make left and right take equal horizontal space
-        outer.addWidget(left_widget, 1)
+        # Make left take two parts and right take one part (2/3 left, 1/3 right)
+        outer.addWidget(left_widget, 2)
 
-        # vertical divider between left and right
+        # vertical divider between left and right (keep as visual separator)
         vline = QFrame()
         vline.setFrameShape(QFrame.VLine)
         vline.setFrameShadow(QFrame.Sunken)
-        vline.setFixedWidth(2)
-        vline.setStyleSheet("background-color: rgba(120,120,120,0.4);")
+        vline.setFixedWidth(1)
+        vline.setStyleSheet("background-color: rgba(120,120,120,0.25);")
         outer.addWidget(vline)
 
         outer.addWidget(right_widget, 1)
 
         main_layout.addWidget(controls_frame, 0, 0)
         # Adjust panel height to accommodate larger buttons while keeping it reasonably slim
-        controls_frame.setFixedHeight(120)
+        # controls_frame.setFixedHeight(120)  # removed to allow flexible layout sizing
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Ensure buttons reflect initial rate texts
@@ -245,7 +404,17 @@ class ConnectionPanelQt(BasePanelQt):
 
         self._is_running = True
         self._connection_status = "starting"
-        self.toggle_button.setText("Stop Serial")
+        # Use two-line parts so the rate stays on the sub-line
+        try:
+            if hasattr(self.toggle_button, 'setParts'):
+                self.toggle_button.setParts("Stop Serial", self._serial_rate_text)
+            else:
+                self.toggle_button.setText("Stop Serial")
+        except Exception:
+            try:
+                self.toggle_button.setText("Stop Serial")
+            except Exception:
+                pass
         self.toggle_button.setProperty('status', 'warning')
         self.toggle_button.style().polish(self.toggle_button)
         # Ensure rate text remains visible when changing base text
@@ -270,7 +439,16 @@ class ConnectionPanelQt(BasePanelQt):
 
         self._is_running = False
         self._connection_status = "stopped"
-        self.toggle_button.setText("Start Serial")
+        try:
+            if hasattr(self.toggle_button, 'setParts'):
+                self.toggle_button.setParts("Start Serial", self._serial_rate_text)
+            else:
+                self.toggle_button.setText("Start Serial")
+        except Exception:
+            try:
+                self.toggle_button.setText("Start Serial")
+            except Exception:
+                pass
         # Neutral visual state so button stays visibly pressable when stopped
         self.toggle_button.setProperty('status', '')
         self.toggle_button.style().polish(self.toggle_button)
@@ -313,7 +491,16 @@ class ConnectionPanelQt(BasePanelQt):
             self.baud_combo.setEnabled(True)
 
             # Reflect error on the button
-            self.toggle_button.setText("Start Serial")
+            try:
+                if hasattr(self.toggle_button, 'setParts'):
+                    self.toggle_button.setParts("Start Serial", self._serial_rate_text)
+                else:
+                    self.toggle_button.setText("Start Serial")
+            except Exception:
+                try:
+                    self.toggle_button.setText("Start Serial")
+                except Exception:
+                    pass
             self.toggle_button.setProperty('status', 'error')
             self.toggle_button.style().polish(self.toggle_button)
             try:
@@ -384,7 +571,16 @@ class ConnectionPanelQt(BasePanelQt):
     def _enable_udp(self):
         """Enable UDP transmission."""
         self._udp_btn_text = "Stop UDP"
-        self.udp_toggle_btn.setText(self._udp_btn_text)
+        try:
+            if hasattr(self.udp_toggle_btn, 'setParts'):
+                self.udp_toggle_btn.setParts(self._udp_btn_text, self._udp_rate_text)
+            else:
+                self.udp_toggle_btn.setText(self._udp_btn_text)
+        except Exception:
+            try:
+                self.udp_toggle_btn.setText(self._udp_btn_text)
+            except Exception:
+                pass
         self.udp_toggle_btn.setProperty('status', 'enabled')
         self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
         try:
@@ -428,7 +624,16 @@ class ConnectionPanelQt(BasePanelQt):
     def _disable_udp(self):
         """Disable UDP transmission."""
         self._udp_btn_text = "Start UDP"
-        self.udp_toggle_btn.setText(self._udp_btn_text)
+        try:
+            if hasattr(self.udp_toggle_btn, 'setParts'):
+                self.udp_toggle_btn.setParts(self._udp_btn_text, self._udp_rate_text)
+            else:
+                self.udp_toggle_btn.setText(self._udp_btn_text)
+        except Exception:
+            try:
+                self.udp_toggle_btn.setText(self._udp_btn_text)
+            except Exception:
+                pass
         # Neutral visual state so button stays visibly pressable when stopped
         self.udp_toggle_btn.setProperty('status', '')
         self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
@@ -568,18 +773,27 @@ class ConnectionPanelQt(BasePanelQt):
     # Status-area helpers
     # -------------------------
     def _refresh_serial_button_text(self):
-        """Refresh the serial button text to include current rate."""
+        """Refresh the serial button to show current main label and the rate on the sub-line."""
         try:
-            base = self.toggle_button.text().split(' - ')[0].split('\n')[0]
-            self.toggle_button.setText(f"{base} - {self._serial_rate_text}")
+            base = getattr(self.toggle_button, '_main', self.toggle_button.text())
+            # Ensure we only keep the primary label in main and put rate in subline
+            main_label = base.split(' - ')[0].split('\n')[0]
+            if hasattr(self.toggle_button, 'setParts'):
+                self.toggle_button.setParts(main_label, self._serial_rate_text)
+            else:
+                self.toggle_button.setText(f"{main_label} - {self._serial_rate_text}")
         except Exception:
             pass
 
     def _refresh_udp_button_text(self):
-        """Refresh the UDP button text to include current rate."""
+        """Refresh the UDP button to show current main label and the rate on the sub-line."""
         try:
-            base = self.udp_toggle_btn.text().split(' - ')[0].split('\n')[0]
-            self.udp_toggle_btn.setText(f"{base} - {self._udp_rate_text}")
+            base = getattr(self.udp_toggle_btn, '_main', self.udp_toggle_btn.text())
+            main_label = base.split(' - ')[0].split('\n')[0]
+            if hasattr(self.udp_toggle_btn, 'setParts'):
+                self.udp_toggle_btn.setParts(main_label, self._udp_rate_text)
+            else:
+                self.udp_toggle_btn.setText(f"{main_label} - {self._udp_rate_text}")
         except Exception:
             pass
 

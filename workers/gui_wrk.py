@@ -500,14 +500,30 @@ class TabbedGUIWorker(QMainWindow):
         if status_type == 'processing':
             # Update both serial panel and calibration panel with fusion processing status
             is_active = (value == 'active')
+            try:
+                print(f"[GUI] _handle_status_update processing -> value={value!r}, is_active={is_active}, calibration_panel_exists={hasattr(self,'calibration_panel')}, calibration_panel_instance={type(self.calibration_panel) if hasattr(self,'calibration_panel') and self.calibration_panel else self.calibration_panel}")
+            except Exception:
+                pass
             if hasattr(self.connection_panel, 'update_fusion_status'):
-                self.connection_panel.update_fusion_status(is_active)
+                try:
+                    self.connection_panel.update_fusion_status(is_active)
+                except Exception:
+                    pass
             if hasattr(self.calibration_panel, 'update_processing_status'):
-                self.calibration_panel.update_processing_status(value)
+                try:
+                    self.calibration_panel.update_processing_status(value)
+                except Exception as e:
+                    try:
+                        print(f"[GUI] calibration_panel.update_processing_status raised: {e}")
+                    except Exception:
+                        pass
             
             # Control hold panel blinking based on fusion processing status
             if hasattr(self.hold_panel, 'stop_blinking') and is_active:
-                self.hold_panel.stop_blinking()  # Stop blinking when fusion is active
+                try:
+                    self.hold_panel.stop_blinking()  # Stop blinking when fusion is active
+                except Exception:
+                    pass
         elif status_type == 'serial_connection':
             # Update serial panel with connection status
             if hasattr(self.connection_panel, 'update_connection_status'):

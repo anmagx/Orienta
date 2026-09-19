@@ -9,6 +9,119 @@ from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
 
+# Two-line button implemented by subclassing QPushButton so QSS targeting
+# QPushButton still applies. It draws the button background using the
+# current QStyle and renders a bold main line with an optional smaller
+# secondary line beneath it (used to display shortcut names).
+from PyQt5.QtWidgets import QStyleOptionButton, QPushButton
+from PyQt5.QtGui import QPainter, QFont, QFontMetrics
+from PyQt5.QtCore import QRect, QSize
+
+class TwoLineButton(QPushButton):
+    def __init__(self, main_text: str = "", sub_text: str = "", parent=None):
+        super().__init__(main_text, parent)
+        self._main = main_text or ""
+        self._sub = sub_text or ""
+        self.setCursor(Qt.PointingHandCursor)
+        # Ensure QPushButton's default sizePolicy is preserved
+
+    def setParts(self, main: str, sub: str):
+        self._main = main or ""
+        self._sub = sub or ""
+        # Keep accessibility/plain text in text property
+        self.setText(self._main)
+        # Inform layout that size may have changed
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self):
+        """Return a size that can comfortably contain two lines plus padding.
+
+        Compute heights using the same font metrics and padding used by paintEvent
+        so the rendered text won't be clipped by the layout.
+        """
+        base = super().sizeHint()
+        # Main line metrics (bold)
+        mainFont = QFont(self.font())
+        mainFont.setBold(True)
+        mainFm = QFontMetrics(mainFont)
+        width_main = mainFm.horizontalAdvance(self._main)
+        mainH = mainFm.height()
+
+        subH = 0
+        width_sub = 0
+        if self._sub:
+            subFont = QFont(self.font())
+            subFont.setPointSize(max(subFont.pointSize() - 2, 8))
+            subFm = QFontMetrics(subFont)
+            subH = subFm.height()
+            width_sub = subFm.horizontalAdvance(self._sub)
+
+        # Padding matches paintEvent's rect.adjusted(8,6,-8,-6) -> vertical padding 6+6
+        vertical_padding = 12
+        interline_spacing = 2 if self._sub else 0
+
+        height = mainH + (subH + interline_spacing if self._sub else 0) + vertical_padding
+        width = max(base.width(), width_main + 24, width_sub + 24)
+        return QSize(width, height)
+
+    def paintEvent(self, event):
+        opt = QStyleOptionButton()
+        opt.initFrom(self)
+        # Prevent style from drawing the text so we can render two lines
+        opt.text = ""
+        p = QPainter(self)
+        # Draw the button background and frame using QStyle so theming/QSS applies
+        self.style().drawControl(self.style().CE_PushButton, opt, p, self)
+
+        # Compute drawing rect and render the two lines centered
+        rect = self.rect().adjusted(8, 6, -8, -6)
+        mainFont = QFont(self.font())
+        mainFont.setBold(True)
+        mainFm = QFontMetrics(mainFont)
+        mainH = mainFm.height()
+
+        # Choose text color based on enabled state so disabled buttons appear muted
+        try:
+            from PyQt5.QtGui import QPalette
+            if self.isEnabled():
+                main_pen = self.palette().color(QPalette.ButtonText)
+            else:
+                # Use the palette's disabled button text color for consistent theming
+                main_pen = self.palette().color(QPalette.Disabled, QPalette.ButtonText)
+        except Exception:
+            main_pen = QColor(0, 0, 0)
+
+        if self._sub:
+            subFont = QFont(self.font())
+            subFont.setPointSize(max(subFont.pointSize() - 2, 8))
+            subFm = QFontMetrics(subFont)
+            totalH = mainH + 2 + subFm.height()
+            y = rect.top() + max(0, (rect.height() - totalH) // 2)
+
+            p.setFont(mainFont)
+            p.setPen(main_pen)
+            p.drawText(QRect(rect.left(), y, rect.width(), mainH), int(Qt.AlignCenter), self._main)
+
+            p.setFont(subFont)
+            # Subline should be slightly more muted when disabled
+            try:
+                if self.isEnabled():
+                    sub_pen = self.palette().color(QPalette.ButtonText)
+                else:
+                    sub_pen = self.palette().color(QPalette.Disabled, QPalette.ButtonText)
+            except Exception:
+                sub_pen = main_pen
+            y2 = y + mainH + 2
+            p.setPen(sub_pen)
+            p.drawText(QRect(rect.left(), y2, rect.width(), subFm.height()), int(Qt.AlignCenter), self._sub)
+        else:
+            p.setFont(mainFont)
+            p.setPen(main_pen)
+            p.drawText(rect, int(Qt.AlignCenter), self._main)
+
+        p.end()
+
 import math
 import queue
 
@@ -589,6 +702,9 @@ class OrientationPanelQt(QGroupBox):
         self.control_queue = control_queue
         self.message_callback = message_callback
 
+        # Track whether fusion worker is actively processing data; start False
+        self._processing_active = False
+
         # Euler angle display labels
         self.yaw_value_label = None
         self.pitch_value_label = None
@@ -621,6 +737,12 @@ class OrientationPanelQt(QGroupBox):
 
         self._build_ui()
 
+        # Ensure interactive controls reflect 'no data' state at startup
+        try:
+            self.update_processing_status(False)
+        except Exception:
+            pass
+
         # Send initial drift angle values shortly after UI is constructed
         self._initial_drift_sent = False
         try:
@@ -645,7 +767,7 @@ class OrientationPanelQt(QGroupBox):
 
         # Build display components now arranged as a vertical split: visualization left, values right
         split_layout = QHBoxLayout()
-        split_layout.setSpacing(8)
+        split_layout.setSpacing(12)
         split_layout.setContentsMargins(0, 0, 0, 0)
 
         # Left: visualization frame
@@ -655,7 +777,7 @@ class OrientationPanelQt(QGroupBox):
         # being skewed by the frame's content size hints.
         viz_frame.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         viz_layout = QVBoxLayout(viz_frame)
-        viz_layout.setSpacing(4)
+        viz_layout.setSpacing(6)
         viz_layout.setContentsMargins(6, 4, 6, 4)
 
         # Visualization title removed (handled by panel header)
@@ -828,7 +950,7 @@ class OrientationPanelQt(QGroupBox):
 
         # Disengage drift correction button (moved from Calibration panel)
         from PyQt5.QtGui import QFontMetrics, QFont
-        self.disengage_btn = QPushButton("Disengage Drift Correction")
+        self.disengage_btn = TwoLineButton("Disengage Drift Correction", "")
         self.disengage_btn.setCheckable(True)
         self.disengage_btn.setToolTip("Hold to temporarily disable drift correction")
 
@@ -838,9 +960,14 @@ class OrientationPanelQt(QGroupBox):
         fm = QFontMetrics(bold_font)
         text_width = fm.horizontalAdvance("🔴 Drift Correction DISENGAGED")
         text_height = fm.height()
-        self.disengage_btn.setFixedHeight(text_height + 16)
-        # Make button span full width of right column
-        self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        try:
+            desired_h = max(self.disengage_btn.sizeHint().height(), text_height + 16)
+            # Use fixed height based on sizeHint to avoid clipping of two-line content
+            self.disengage_btn.setFixedHeight(desired_h + 6)
+        except Exception:
+            pass
+        # Make button span full width of right column; allow vertical resizing preference
+        self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         # Connect to calibration panel handlers if panel already connected
         try:
@@ -865,9 +992,13 @@ class OrientationPanelQt(QGroupBox):
         disengage_row = QHBoxLayout()
         disengage_row.setSpacing(6)
         disengage_row.setContentsMargins(0, 0, 0, 0)
-        # Main button expands
-        self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        disengage_row.addWidget(self.disengage_btn)
+        # Main button expands; place directly in the row (shortcut will be shown on second line)
+        try:
+            self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            disengage_row.addWidget(self.disengage_btn)
+        except Exception:
+            self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            disengage_row.addWidget(self.disengage_btn)
 
         # Ensure drift sliders reflect stored values when toggling disengage
         try:
@@ -883,7 +1014,12 @@ class OrientationPanelQt(QGroupBox):
         try:
             self.disengage_shortcut_btn = QPushButton("🔧")
             self.disengage_shortcut_btn.setToolTip("Set shortcut for Disengage Drift Correction")
-            self.disengage_shortcut_btn.setFixedHeight(text_height + 16)
+            try:
+                desired_h = max(self.disengage_btn.sizeHint().height(), text_height + 16)
+                self.disengage_shortcut_btn.setFixedHeight(desired_h + 6)
+            except Exception:
+                pass
+            # Shortcut button keeps fixed width but match vertical height
             self.disengage_shortcut_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             disengage_row.addWidget(self.disengage_shortcut_btn)
 
@@ -989,22 +1125,33 @@ class OrientationPanelQt(QGroupBox):
         reset_row.setSpacing(6)
         reset_row.setContentsMargins(0, 0, 0, 0)
 
-        self.reset_button = QPushButton("Reset Orientation")
+        self.reset_button = TwoLineButton("Reset Orientation", "")
         # Size to match width of column
         self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Fixed height similar to disengage button
         try:
-            self.reset_button.setFixedHeight(text_height + 16)
+            desired_h = max(self.reset_button.sizeHint().height(), text_height + 16)
+            # Ensure reset button is tall enough for two-line rendering
+            self.reset_button.setFixedHeight(desired_h + 6)
         except Exception:
             pass
 
-        reset_row.addWidget(self.reset_button)
+        # Add the reset button directly; shortcut name will be shown on a second line in the button text when set
+        try:
+            self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            reset_row.addWidget(self.reset_button)
+        except Exception:
+            reset_row.addWidget(self.reset_button)
 
         # Shortcut button uses the same construction and height as reset_button.
         try:
             self.reset_shortcut_btn = QPushButton("🔧")
             self.reset_shortcut_btn.setToolTip("Set shortcut for Reset Orientation")
-            self.reset_shortcut_btn.setFixedHeight(text_height + 16)
+            try:
+                desired_h = max(self.reset_button.sizeHint().height(), text_height + 16)
+                self.reset_shortcut_btn.setFixedHeight(desired_h + 6)
+            except Exception:
+                pass
             self.reset_shortcut_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             reset_row.addWidget(self.reset_shortcut_btn)
 
@@ -1067,8 +1214,11 @@ class OrientationPanelQt(QGroupBox):
         # Wire to calibration panel logic if available
         try:
             if hasattr(self, 'calibration_panel') and self.calibration_panel:
+                # Give calibration panel a reference to the reset button for UI sync,
+                # but avoid connecting the calibration handler directly to the click
+                # to prevent calibration-clearing behaviour. The local handler is
+                # the authoritative action invoked on click.
                 self.calibration_panel.reset_button = self.reset_button
-                self.reset_button.clicked.connect(self.calibration_panel._on_reset_orientation)
         except Exception:
             pass
 
@@ -1086,11 +1236,11 @@ class OrientationPanelQt(QGroupBox):
             self.recal_button = QPushButton("Recalibrate Yaw Drift Correction")
             # Match sizing of other buttons
             try:
-                self.recal_button.setFixedHeight(text_height + 16)
+                desired_h = max(getattr(self, 'recal_button', None).sizeHint().height() if getattr(self, 'recal_button', None) else 0, text_height + 16)
+                self.recal_button.setFixedHeight(desired_h + 6)
             except Exception:
                 pass
-            self.recal_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
+            self.recal_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             # Connect to calibration panel handler if available
             try:
                 if hasattr(self, 'calibration_panel') and self.calibration_panel and hasattr(self.calibration_panel, '_on_recalibrate'):
@@ -1383,6 +1533,107 @@ class OrientationPanelQt(QGroupBox):
                     pass
                 try:
                     self.calib_status_label.style().polish(self.calib_status_label)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def update_processing_status(self, value):
+        """
+        Update UI elements based on whether the fusion worker is actively processing data.
+
+        When processing is inactive the Disengage, Reset and Recalibrate buttons (and
+        their shortcut-set buttons) are disabled and visually muted.
+        """
+        try:
+            # Normalize incoming value to a boolean 'active'
+            active = False
+            if isinstance(value, bool):
+                active = value
+            elif isinstance(value, str):
+                active = value.lower() == 'active' or 'active' in value.lower()
+            else:
+                try:
+                    active = bool(value)
+                except Exception:
+                    active = False
+
+            # Remember state
+            try:
+                self._processing_active = active
+            except Exception:
+                pass
+
+            # Debug
+            try:
+                print(f"[OrientationPanel] update_processing_status called -> active={active}")
+            except Exception:
+                pass
+
+            widget_names = (
+                'disengage_btn', 'disengage_shortcut_btn',
+                'reset_button', 'reset_shortcut_btn',
+                'recal_button'
+            )
+
+            for name in widget_names:
+                try:
+                    w = getattr(self, name, None)
+                    if w is None:
+                        continue
+                    try:
+                        w.setEnabled(active)
+                    except Exception:
+                        pass
+
+                    try:
+                        if not active:
+                            w.setProperty('status', 'disabled')
+                            try:
+                                prev_tip = w.toolTip() or ''
+                                w.setToolTip((prev_tip + ' (inactive: waiting for data)').strip())
+                            except Exception:
+                                pass
+                            try:
+                                w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                            except Exception:
+                                pass
+                            try:
+                                w.setFocusPolicy(Qt.NoFocus)
+                            except Exception:
+                                pass
+                            try:
+                                from PyQt5.QtWidgets import QGraphicsOpacityEffect
+                                eff = QGraphicsOpacityEffect()
+                                eff.setOpacity(0.45)
+                                w._inactive_opacity_effect = eff
+                                w.setGraphicsEffect(eff)
+                            except Exception:
+                                pass
+                        else:
+                            w.setProperty('status', '')
+                            try:
+                                w.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+                            except Exception:
+                                pass
+                            try:
+                                w.setFocusPolicy(Qt.StrongFocus)
+                            except Exception:
+                                pass
+                            try:
+                                if hasattr(w, '_inactive_opacity_effect'):
+                                    w.setGraphicsEffect(None)
+                                    delattr(w, '_inactive_opacity_effect')
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    try:
+                        w.style().polish(w)
+                        w.update()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         except Exception:
@@ -1903,10 +2154,21 @@ class OrientationPanelQt(QGroupBox):
             self.reset_shortcut_display_name = display_name if display_name else key
             # Update UI text if button exists
             try:
+                # Show the shortcut display name on a second line within the button (smaller font)
                 if key and key != 'None' and hasattr(self, 'reset_button') and self.reset_button:
-                    self.reset_button.setText(f"Reset Orientation ({self.reset_shortcut_display_name})")
+                    try:
+                        # Use TwoLineButton API to set main and secondary lines
+                        self.reset_button.setParts("Reset Orientation", self.reset_shortcut_display_name)
+                    except Exception:
+                        try:
+                            self.reset_button.setParts("Reset Orientation", str(self.reset_shortcut_display_name))
+                        except Exception:
+                            pass
                 elif hasattr(self, 'reset_button') and self.reset_button:
-                    self.reset_button.setText("Reset Orientation")
+                    try:
+                        self.reset_button.setParts("Reset Orientation", "")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1930,10 +2192,20 @@ class OrientationPanelQt(QGroupBox):
             self.disengage_shortcut = key
             self.disengage_shortcut_display_name = display_name if display_name else key
             try:
+                # Update the button to show the shortcut on a second line
                 if key and key != 'None' and hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    self.disengage_btn.setText(f"Disengage Drift Correction ({self.disengage_shortcut_display_name})")
+                    try:
+                        self.disengage_btn.setParts("Disengage Drift Correction", self.disengage_shortcut_display_name)
+                    except Exception:
+                        try:
+                            self.disengage_btn.setParts("Disengage Drift Correction", str(self.disengage_shortcut_display_name))
+                        except Exception:
+                            pass
                 elif hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    self.disengage_btn.setText("Disengage Drift Correction")
+                    try:
+                        self.disengage_btn.setParts("Disengage Drift Correction", "")
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1985,7 +2257,7 @@ class OrientationPanelQt(QGroupBox):
             from util.error_utils import safe_queue_put
             from config.config import QUEUE_PUT_TIMEOUT
             if self.control_queue:
-                safe_queue_put(self.control_queue, 'reset', timeout=QUEUE_PUT_TIMEOUT)
+                            safe_queue_put(self.control_queue, 'reset_orientation', timeout=QUEUE_PUT_TIMEOUT)
         except Exception:
             pass
 
@@ -2031,7 +2303,7 @@ class OrientationPanelQt(QGroupBox):
                 safe_queue_put(self.control_queue, ('set_threshold', 0.0, 0.0, 0.0), timeout=QUEUE_PUT_TIMEOUT)
             try:
                 if hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    self.disengage_btn.setText("🔴 Drift Correction DISENGAGED")
+                    self.disengage_btn.setParts("🔴 Drift Correction DISENGAGED", "")
                     # Use semantic property so QSS applies the correct styling (dark/light aware)
                     try:
                         self.disengage_btn.setProperty('status', 'error')
@@ -2061,10 +2333,24 @@ class OrientationPanelQt(QGroupBox):
                 safe_queue_put(self.control_queue, ('set_threshold', getattr(self, 'stored_drift_yaw', 0.0), getattr(self, 'stored_drift_pitch', 0.0), getattr(self, 'stored_drift_roll', 0.0)), timeout=QUEUE_PUT_TIMEOUT)
             try:
                 if hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    if getattr(self, 'disengage_shortcut_display_name', None):
-                        self.disengage_btn.setText(f"Disengage Drift Correction ({self.disengage_shortcut_display_name})")
-                    else:
-                        self.disengage_btn.setText("Disengage Drift Correction")
+                    # Restore default button text: show shortcut on second line if available
+                    try:
+                        if getattr(self, 'disengage_shortcut_display_name', None):
+                            try:
+                                self.disengage_btn.setParts("Disengage Drift Correction", self.disengage_shortcut_display_name)
+                            except Exception:
+                                try:
+                                    self.disengage_btn.setParts("Disengage Drift Correction", str(self.disengage_shortcut_display_name))
+                                except Exception:
+                                    pass
+                        else:
+                            try:
+                                self.disengage_btn.setParts("Disengage Drift Correction", "")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
                     # Clear semantic status property so QSS reverts to default button styling
                     try:
                         self.disengage_btn.setProperty('status', '')
@@ -2175,9 +2461,21 @@ class OrientationPanelQt(QGroupBox):
 
         # Wire up reset button if present on this panel and calibration expects it
         try:
-            if hasattr(self, 'reset_button') and self.reset_button and hasattr(calibration_panel, '_on_reset_orientation'):
+            if hasattr(self, 'reset_button') and self.reset_button:
+                # Give calibration panel a reference to the button for its UI, but
+                # ensure the actual click handler is the orientation panel's
+                # _on_reset_orientation (which issues a 'reset' command to the
+                # control queue) so calibration is not cleared inadvertently.
                 calibration_panel.reset_button = self.reset_button
-                self.reset_button.clicked.connect(calibration_panel._on_reset_orientation)
+                try:
+                    if hasattr(self, '_on_reset_orientation'):
+                        # Connect the button to the orientation panel's handler.
+                        # Avoid binding calibration_panel._on_reset_orientation here
+                        # because that implementation may clear calibration state.
+                        self.reset_button.clicked.connect(self._on_reset_orientation)
+                except Exception:
+                    pass
+
                 # If calibration panel had stored shortcut info before wiring, update button text now
                 try:
                     rs = getattr(calibration_panel, 'reset_shortcut', None)
