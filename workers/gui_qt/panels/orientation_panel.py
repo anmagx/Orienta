@@ -1585,12 +1585,38 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
 
-            # Show dialog non-modally
+            # Apply parent's palette/style so the dialog matches the app theme
             try:
-                dialog.resize(640, 480)
+                if parent_window is not None:
+                    try:
+                        dialog.setStyleSheet(parent_window.styleSheet())
+                    except Exception:
+                        pass
+                    try:
+                        dialog.setPalette(parent_window.palette())
+                        dialog.setAutoFillBackground(True)
+                    except Exception:
+                        pass
+
+                # Resize to fit the full preferences page or use a sensible minimum
+                try:
+                    hint = prefs_widget.sizeHint() if prefs_widget is not None else None
+                    w = max(900, hint.width() + 40 if hint is not None else 900)
+                    h = max(700, hint.height() + 80 if hint is not None else 700)
+                    dialog.resize(int(w), int(h))
+                except Exception:
+                    try:
+                        dialog.resize(900, 700)
+                    except Exception:
+                        pass
+
+                # Show dialog non-modally
                 dialog.show()
             except Exception:
-                dialog.exec_()
+                try:
+                    dialog.exec_()
+                except Exception:
+                    pass
         except Exception as e:
             try:
                 print(f"[OrientationPanel] Failed to open preferences window: {e}")
