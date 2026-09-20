@@ -6,6 +6,7 @@ import numpy as np
 import time
 from queue import Empty
 import threading
+import math
 
 from config.config import (
      ACCEL_THRESHOLD,
@@ -465,6 +466,10 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
     # Track status values to only send updates when they change
     last_drift_active = None
     last_stationary = None
+
+    # Rate-limited counters for malformed/non-finite inputs to avoid log spam
+    malformed_counter = 0
+    nonfinite_euler_counter = 0
 
     try:
         while not stop_event.is_set():
@@ -1013,47 +1018,56 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                 # Format: [Yaw, Pitch, Roll]
                 euler_data = [output_yaw, output_pitch, output_roll]
 
-                # Publish to main euler queue (for UDP) - non-blocking for real-time
-                try:
-                    eulerQueue.put_nowait(euler_data)
-                except:
-                    # Drop frame if queue full rather than blocking
-                    pass
-                
-                # Send to display queue with queue health monitoring
-                if eulerDisplayQueue is not None:
+                # Validate output is finite before publishing to avoid contaminating UDP
+                if not (math.isfinite(output_yaw) and math.isfinite(output_pitch) and math.isfinite(output_roll)):
+                    nonfinite_euler_counter += 1
+                    if nonfinite_euler_counter % 50 == 0:
+                        log_error(logQueue, "Fusion Worker", f"Dropping non-finite Euler output #{nonfinite_euler_counter}: yaw={output_yaw}, pitch={output_pitch}, roll={output_roll}")
+                    # Skip publishing this frame
+                else:
+                    # Publish to main euler queue (for UDP) - non-blocking for real-time
                     try:
-                        # Check queue health and log if getting full
-                        queue_size = eulerDisplayQueue.qsize()
-                        max_size = getattr(eulerDisplayQueue, '_maxsize', 60)
-                        
-                        # Only apply sampling if queue is very full (>90%)
-                        if max_size > 0 and queue_size / max_size > 0.9:
-                            # Queue critically full - skip some frames and log warning
-                            filter._frame_counter = getattr(filter, '_frame_counter', 0) + 1
-                            if filter._frame_counter % 2 == 0:  # Send every 2nd frame
-                                eulerDisplayQueue.put_nowait(euler_data)
-                            # Log critical queue state occasionally
-                            if filter._frame_counter % 100 == 0:
-                                log_warning(logQueue, "Fusion", f"Display queue critical: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
-                        else:
-                            # Queue not full - send all frames
-                            eulerDisplayQueue.put_nowait(euler_data)
-                            # Log warning if queue getting full
-                            if max_size > 0 and queue_size / max_size > 0.7:
-                                filter._warning_counter = getattr(filter, '_warning_counter', 0) + 1
-                                if filter._warning_counter % 200 == 0:  # Log every 200 frames when >70%
-                                    log_info(logQueue, "Fusion", f"Display queue warning: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
-                    except Exception as e:
-                        # Track queue errors 
-                        filter._error_counter = getattr(filter, '_error_counter', 0) + 1
-                        if filter._error_counter % 50 == 0:  # Log every 50 errors
-                            log_error(logQueue, "Fusion", f"Display queue error #{filter._error_counter}: {e}")
+                        eulerQueue.put_nowait(euler_data)
+                    except:
+                        # Drop frame if queue full rather than blocking
                         pass
+
+                    # Send to display queue with queue health monitoring
+                    if eulerDisplayQueue is not None:
+                        try:
+                            # Check queue health and log if getting full
+                            queue_size = eulerDisplayQueue.qsize()
+                            max_size = getattr(eulerDisplayQueue, '_maxsize', 60)
+                            
+                            # Only apply sampling if queue is very full (>90%)
+                            if max_size > 0 and queue_size / max_size > 0.9:
+                                # Queue critically full - skip some frames and log warning
+                                filter._frame_counter = getattr(filter, '_frame_counter', 0) + 1
+                                if filter._frame_counter % 2 == 0:  # Send every 2nd frame
+                                    eulerDisplayQueue.put_nowait(euler_data)
+                                # Log critical queue state occasionally
+                                if filter._frame_counter % 100 == 0:
+                                    log_warning(logQueue, "Fusion", f"Display queue critical: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
+                            else:
+                                # Queue not full - send all frames
+                                eulerDisplayQueue.put_nowait(euler_data)
+                                # Log warning if queue getting full
+                                if max_size > 0 and queue_size / max_size > 0.7:
+                                    filter._warning_counter = getattr(filter, '_warning_counter', 0) + 1
+                                    if filter._warning_counter % 200 == 0:  # Log every 200 frames when >70%
+                                        log_info(logQueue, "Fusion", f"Display queue warning: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
+                        except Exception as e:
+                            # Track queue errors 
+                            filter._error_counter = getattr(filter, '_error_counter', 0) + 1
+                            if filter._error_counter % 50 == 0:  # Log every 50 errors
+                                log_error(logQueue, "Fusion", f"Display queue error #{filter._error_counter}: {e}")
+                            pass
                 
             except ValueError as e:
                 # Skip malformed/invalid lines (parse_imu_line raises ValueError)
-                # Only log occasionally to avoid spam
+                malformed_counter += 1
+                if malformed_counter % 100 == 0:
+                    log_warning(logQueue, "Fusion Worker", f"Skipping malformed IMU lines: {malformed_counter} total; last error: {e}")
                 continue
             except Exception as e:
                 log_error(logQueue, "Fusion Worker", f"Unexpected error processing data: {e}")

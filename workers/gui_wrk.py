@@ -27,7 +27,6 @@ from workers.gui_qt.panels.orientation_panel import OrientationPanelQt
 # CalibrationPanelQt removed; orientation_panel now hosts calibration UI/logic
 from workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from workers.gui_qt.panels.about_panel import AboutPanel
-from workers.gui_qt.panels.diagnostics_panel import DiagnosticsPanelQt
 from workers.gui_qt.panels.orientation_panel import HoldPanelQt
 
 from workers.gui_qt.managers.preferences_manager import PreferencesManager
@@ -56,7 +55,7 @@ class TabbedGUIWorker(QMainWindow):
                  udp_control_queue, status_queue, ui_status_queue, message_queue,
                  serial_display_queue=None, euler_display_queue=None,
                  log_queue=None, stop_event=None, on_stop_callback=None,
-                 input_command_queue=None, input_response_queue=None, enable_diagnostics=False):
+                 input_command_queue=None, input_response_queue=None):
         """
         Initialize the tabbed GUI worker.
         
@@ -93,9 +92,6 @@ class TabbedGUIWorker(QMainWindow):
         # Input worker queues
         self.input_command_queue = input_command_queue
         self.input_response_queue = input_response_queue
-        
-        # Diagnostics mode flag (developer feature)
-        self.enable_diagnostics = enable_diagnostics
         
         # Initialize managers
         self.preferences_manager = PreferencesManager()
@@ -140,12 +136,6 @@ class TabbedGUIWorker(QMainWindow):
         orientation_widget = self.create_orientation_tab()
         if orientation_widget is not None:
             main_layout.addWidget(orientation_widget)
-
-        # Diagnostics panel: add below orientation when enabled
-        if self.enable_diagnostics:
-            diagnostics_widget = self.create_diagnostics_tab()
-            if diagnostics_widget is not None:
-                main_layout.addWidget(diagnostics_widget)
 
         # Create shared panels (no tabs): messages, preferences, about
         self.create_messages_tab()
@@ -200,25 +190,6 @@ class TabbedGUIWorker(QMainWindow):
 
         return orientation_widget
     
-    def create_diagnostics_tab(self):
-        """Create the Diagnostics tab with real-time plotting."""
-        diagnostics_widget = QWidget()
-        layout = QVBoxLayout(diagnostics_widget)
-        layout.setSpacing(8)
-        layout.setContentsMargins(8, 8, 8, 8)
-        
-        # Diagnostics Panel (full-sized in its own tab)
-        self.diagnostics_panel = DiagnosticsPanelQt(
-            diagnostics_widget,
-            None,  # No control queue needed
-            self._log_message,
-            padding=6
-        )
-        layout.addWidget(self.diagnostics_panel)
-        
-        # Diagnostics widget will be added directly by caller (no tab)
-        return diagnostics_widget
-
     def create_messages_tab(self):
         """Create the MessagePanel instance for logging and serial monitor.
 
@@ -293,15 +264,6 @@ class TabbedGUIWorker(QMainWindow):
         except Exception as e:
             log_error(self.log_queue, 'GUI', f"Error applying theme {theme_name}: {e}")
     
-    def _on_tab_changed(self, index):
-        """Handle tab changes to optimize performance by skipping diagnostics updates when not visible."""
-        # Log tab changes for debugging (diagnostics updates are now visibility-checked)
-        if self.enable_diagnostics and hasattr(self, 'diagnostics_tab_index'):
-            if index == self.diagnostics_tab_index:
-                log_info(self.log_queue, 'GUI', "Diagnostics tab selected - matplotlib updates enabled")
-            else:
-                log_info(self.log_queue, 'GUI', "Diagnostics tab not selected - matplotlib updates skipped")
-    
     def create_about_tab(self):
         """Create the shared AboutPanel instance (no tab). The About UI is shown via dialogs."""
         try:
@@ -353,14 +315,6 @@ class TabbedGUIWorker(QMainWindow):
                         # Update orientation display immediately for real-time response
                         if hasattr(self.orientation_panel, 'update_euler'):
                             self.orientation_panel.update_euler(yaw, pitch, roll)
-                        
-                        # Update diagnostics panel with orientation data if diagnostics enabled
-                        if (self.enable_diagnostics and hasattr(self, 'diagnostics_panel') and
-                            hasattr(self.diagnostics_panel, 'update_euler')):
-                            try:
-                                self.diagnostics_panel.update_euler(yaw, pitch, roll)
-                            except Exception:
-                                pass
                         
             
             # Process status updates (check if queue exists and not None)
@@ -436,14 +390,6 @@ class TabbedGUIWorker(QMainWindow):
         if hasattr(self.orientation_panel, 'update_euler'):
             self.orientation_panel.update_euler(yaw, pitch, roll)
         
-        # Update diagnostics panel with orientation data (only if enabled and tab is active)
-        if (self.enable_diagnostics and hasattr(self, 'diagnostics_panel') and
-            hasattr(self.diagnostics_panel, 'update_euler')):
-            try:
-                self.diagnostics_panel.update_euler(yaw, pitch, roll)
-            except Exception:
-                pass
-    
     def _update_drift_status(self, status):
         """Update drift status display."""
         if hasattr(self.orientation_panel, 'update_drift_status'):
@@ -742,9 +688,6 @@ class TabbedGUIWorker(QMainWindow):
                     except Exception:
                         pass
             
-            if hasattr(self, 'diagnostics_panel') and hasattr(self.diagnostics_panel, 'set_prefs') and 'diagnostics' in prefs:
-                self.diagnostics_panel.set_prefs(prefs['diagnostics'])
-
             # Load preferences for the preferences panel itself
             if hasattr(self.preferences_panel, 'load_preferences'):
                 self.preferences_panel.load_preferences()
@@ -772,16 +715,6 @@ class TabbedGUIWorker(QMainWindow):
                     timer.stop()
             except Exception:
                 pass
-
-        # Stop diagnostics panel updates if present
-        try:
-            if hasattr(self, 'diagnostics_panel') and getattr(self.diagnostics_panel, 'plot_timer', None):
-                try:
-                    self.diagnostics_panel.plot_timer.stop()
-                except Exception:
-                    pass
-        except Exception:
-            pass
 
         # Cleanup calibration panel resources (threads) before saving preferences
         if hasattr(self.calibration_panel, 'cleanup'):
@@ -847,9 +780,6 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self.calibration_panel, 'get_prefs'):
                 prefs['calibration'] = self.calibration_panel.get_prefs()
             
-            if hasattr(self, 'diagnostics_panel') and hasattr(self.diagnostics_panel, 'get_prefs'):
-                prefs['diagnostics'] = self.diagnostics_panel.get_prefs()
-            
             # Get shortcut preferences from preferences panel
             if hasattr(self.preferences_panel, 'get_shortcut_preferences'):
                 shortcut_prefs = self.preferences_panel.get_shortcut_preferences()
@@ -884,7 +814,7 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
                      udp_control_queue, status_queue, ui_status_queue, message_queue,
                      serial_display_queue=None, euler_display_queue=None,
                  log_queue=None, stop_event=None, on_stop_callback=None,
-                 input_command_queue=None, input_response_queue=None, enable_diagnostics=False):
+                 input_command_queue=None, input_response_queue=None):
     """
     Start the PyQt5 GUI worker with tabbed interface.
     
@@ -950,8 +880,7 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
         stop_event=stop_event,
         on_stop_callback=on_stop_callback,
         input_command_queue=input_command_queue,
-        input_response_queue=input_response_queue,
-        enable_diagnostics=enable_diagnostics
+        input_response_queue=input_response_queue
     )
     
     # Show window
@@ -967,7 +896,7 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
 
 def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event, 
                eulerDisplayQueue, controlQueue, serialControlQueue, 
-               udpControlQueue, logQueue, uiStatusQueue, inputCommandQueue, inputResponseQueue, enable_diagnostics=False):
+               udpControlQueue, logQueue, uiStatusQueue, inputCommandQueue, inputResponseQueue):
     """
     Compatibility wrapper for the process manager.
     
@@ -987,7 +916,6 @@ def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event,
         stop_event=stop_event,
         input_command_queue=inputCommandQueue,
         input_response_queue=inputResponseQueue,
-        enable_diagnostics=enable_diagnostics,
         on_stop_callback=lambda: stop_event.set()
     )
 

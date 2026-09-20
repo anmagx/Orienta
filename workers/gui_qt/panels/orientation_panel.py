@@ -741,17 +741,83 @@ class OrientationVisualizationWidget(QWidget):
                 if 5 <= y <= height - 5:
                     painter.drawLine(5, y, width - 5, y)
         
-        # Center axes
-        painter.setPen(QPen(colors['axis'], 2))
-        painter.drawLine(center_x, 5, center_x, height - 5)  # Vertical axis
-        painter.drawLine(5, center_y, width - 5, center_y)   # Horizontal axis
-        
-        # Corner range labels (use current config value)
+        # Axis range labels placed on the axes (top/bottom center and left/right center)
         painter.setPen(QPen(colors['text'], 1))
-        painter.drawText(5, 15, f"{current_range:.0f}")
-        painter.drawText(width - 25, 15, f"{current_range:.0f}")
-        painter.drawText(5, height - 5, f"{-current_range:.0f}")
-        painter.drawText(width - 30, height - 5, f"{-current_range:.0f}")
+        fm = painter.fontMetrics()
+        pad_x = 6
+        pad_y = 2
+
+        top_text = f"{current_range:.0f}\u00B0"
+        bottom_text = f"{-current_range:.0f}\u00B0"
+        left_text = f"{-current_range:.0f}\u00B0"
+        right_text = f"{current_range:.0f}\u00B0"
+
+        # Compute text sizes (support older PyQt versions)
+        try:
+            top_w = fm.horizontalAdvance(top_text)
+            bottom_w = fm.horizontalAdvance(bottom_text)
+            left_w = fm.horizontalAdvance(left_text)
+            right_w = fm.horizontalAdvance(right_text)
+        except AttributeError:
+            top_w = fm.width(top_text)
+            bottom_w = fm.width(bottom_text)
+            left_w = fm.width(left_text)
+            right_w = fm.width(right_text)
+        txt_h = fm.height()
+
+        # Create label rectangles with padding
+        top_rect = QRect(center_x - (top_w // 2) - pad_x, 5, top_w + 2 * pad_x, txt_h + 2 * pad_y)
+        bottom_rect = QRect(center_x - (bottom_w // 2) - pad_x, height - (txt_h + 2 * pad_y) - 5, bottom_w + 2 * pad_x, txt_h + 2 * pad_y)
+        left_rect = QRect(5, center_y - (txt_h // 2) - pad_y, left_w + 2 * pad_x, txt_h + 2 * pad_y)
+        right_rect = QRect(width - (right_w + 2 * pad_x) - 5, center_y - (txt_h // 2) - pad_y, right_w + 2 * pad_x, txt_h + 2 * pad_y)
+
+        # Clamp rectangles within widget bounds
+        def _clamp_rect(r):
+            x = max(5, r.x())
+            y = max(5, r.y())
+            w_ = min(r.width(), width - 10)
+            h_ = min(r.height(), height - 10)
+            # Ensure right/bottom are within bounds
+            if x + w_ > width - 5:
+                x = width - 5 - w_
+            if y + h_ > height - 5:
+                y = height - 5 - h_
+            return QRect(x, y, w_, h_)
+
+        top_rect = _clamp_rect(top_rect)
+        bottom_rect = _clamp_rect(bottom_rect)
+        left_rect = _clamp_rect(left_rect)
+        right_rect = _clamp_rect(right_rect)
+
+        # Shorten main axes slightly so centered labels fit cleanly
+        label_margin = max(6, pad_x + 2)  # vertical margin for top/bottom labels
+        # Use a slightly smaller horizontal margin so the horizontal axis has less padding
+        horiz_margin = max(4, label_margin - 3)
+
+        top_padding = int(top_rect.bottom() + label_margin)
+        bottom_padding = int(bottom_rect.top() - label_margin)
+        left_padding = int(left_rect.right() + horiz_margin)
+        right_padding = int(right_rect.left() - horiz_margin)
+
+        # Safety clamp if widget is too small or paddings overlap
+        if top_padding >= bottom_padding - 2:
+            top_padding = 5 + label_margin
+            bottom_padding = height - 5 - label_margin
+        if left_padding >= right_padding - 2:
+            left_padding = 5 + horiz_margin
+            right_padding = width - 5 - label_margin
+
+        # Draw shortened center axes (leave space for centered labels)
+        painter.setPen(QPen(colors['axis'], 2))
+        painter.drawLine(center_x, top_padding, center_x, bottom_padding)  # Vertical axis
+        painter.drawLine(left_padding, center_y, right_padding, center_y)   # Horizontal axis
+
+        # Draw labels centered on the axes
+        painter.setPen(QPen(colors['text'], 1))
+        painter.drawText(QRect(center_x - top_w // 2, top_rect.y(), top_w, top_rect.height()), int(Qt.AlignCenter), top_text)
+        painter.drawText(QRect(center_x - bottom_w // 2, bottom_rect.y(), bottom_w, bottom_rect.height()), int(Qt.AlignCenter), bottom_text)
+        painter.drawText(QRect(left_rect.x(), center_y - txt_h // 2, left_rect.width(), left_rect.height()), int(Qt.AlignVCenter | Qt.AlignLeft), left_text)
+        painter.drawText(QRect(right_rect.x(), center_y - txt_h // 2, right_rect.width(), right_rect.height()), int(Qt.AlignVCenter | Qt.AlignRight), right_text)
     
     def _draw_orientation_indicator(self, painter, center_x, center_y, width, height):
         """
@@ -994,11 +1060,6 @@ class OrientationPanelQt(QGroupBox):
         """Build the orientation panel UI."""
         try:
             _ui_log(self, "[OrientationPanel] _build_ui start")
-            try:
-                with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
-                    _f.write('_build_ui start\n')
-            except Exception:
-                pass
         except Exception:
             pass
         # Main layout - single column for data displays only
@@ -1762,11 +1823,6 @@ class OrientationPanelQt(QGroupBox):
         # --- Drift angle sliders spanning full width ---
         try:
             _ui_log(self, "[OrientationPanel] entering sliders construction block")
-            try:
-                with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
-                    _f.write('entering sliders construction block\n')
-            except Exception:
-                pass
 
             sliders_frame = QFrame()
             sliders_layout = QVBoxLayout(sliders_frame)
@@ -1790,11 +1846,6 @@ class OrientationPanelQt(QGroupBox):
             self.drift_yaw_slider.setValue(int(self.drift_angle_yaw_value * 10))
             try:
                 _ui_log(self, f"[OrientationPanel] created drift_yaw_slider: {self.drift_yaw_slider}")
-                try:
-                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
-                        _f.write('created drift_yaw_slider\n')
-                except Exception:
-                    pass
             except Exception:
                 pass
             # Connect slider to handler so changes update viz/state
@@ -1820,11 +1871,6 @@ class OrientationPanelQt(QGroupBox):
             self.drift_pitch_slider.setValue(int(self.drift_angle_pitch_value * 10))
             try:
                 _ui_log(self, f"[OrientationPanel] created drift_pitch_slider: {self.drift_pitch_slider}")
-                try:
-                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
-                        _f.write('created drift_pitch_slider\n')
-                except Exception:
-                    pass
             except Exception:
                 pass
             try:
@@ -1849,11 +1895,6 @@ class OrientationPanelQt(QGroupBox):
             self.drift_roll_slider.setValue(int(self.drift_angle_roll_value * 10))
             try:
                 _ui_log(self, f"[OrientationPanel] created drift_roll_slider: {self.drift_roll_slider}")
-                try:
-                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
-                        _f.write('created drift_roll_slider\n')
-                except Exception:
-                    pass
             except Exception:
                 pass
             try:
@@ -1925,11 +1966,6 @@ class OrientationPanelQt(QGroupBox):
         except Exception as e:
             try:
                 _ui_log(self, f"[OrientationPanel] exception constructing sliders: {e}")
-                try:
-                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
-                        _f.write(f'exception constructing sliders: {e}\n')
-                except Exception:
-                    pass
             except Exception:
                 pass
 

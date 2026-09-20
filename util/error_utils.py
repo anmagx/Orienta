@@ -7,6 +7,7 @@ communication, parsing, and validation.
 
 from queue import Full, Empty
 from typing import Optional, Any, Tuple, List
+import math
 import logging
 
 
@@ -217,6 +218,10 @@ def parse_imu_line(line: str) -> Tuple[float, Tuple[float, float, float], Tuple[
     timestamp = values[0]
     accel = (values[1], values[2], values[3])
     gyro = (values[4], values[5], values[6])
+
+    # Reject non-finite values (NaN/Infinity via float()) early
+    if not math.isfinite(timestamp) or not all(math.isfinite(v) for v in (accel + gyro)):
+        raise ValueError(f"Invalid IMU data: contains non-finite value(s): {values}")
     
     # Sanity checks
     if timestamp < 0:
