@@ -2,9 +2,19 @@
 
 ![Orienta logo](img/orienta_logo.png)
 
-Orienta is an OpenTrack-compatible 3DOF head-tracking application for Windows.
+Orienta is a 3-DOF head-tracking application for Windows.
 It reads accelerometer and gyroscope data from a serial-connected IMU, estimates
-yaw, pitch, and roll with a complementary filter, and sends orientation over UDP into opentrack.
+yaw, pitch, and roll with a complementary filter, and sends orientation data over UDP into opentrack.
+
+## Why? 
+
+The idea is to be able to track your head movements in games. Some huge names in the business are trackIR and Tobii, but their complete kits can be quite expensive, making the cost of entry into immersive simulation games quite high. 
+
+While you can build your own kit, you would typically need an IR-sensitive camera with a high frame rate, carefully consider camera distance to head, design a clip for holding the 3 LEDs - it's possible, but can be tricky to get good results with. 
+
+The space between these options is where Orienta could work for you. While there are some shortcomings to using an IMU, the arguments for it are compelling: You can build your own for probably under 15$, are completely free of any camera or viewing angle calculations, works the same wether your room is brightly lit or pitch black, and can track your head movements at over 120hz, giving you a buttery smooth experience. 
+
+The only diy required is soldering up your sensor and your board and mounting it to your headset. Example included further below. 
 
 ## Features
 
@@ -16,8 +26,11 @@ yaw, pitch, and roll with a complementary filter, and sends orientation over UDP
 
 ## Installation
 
-`install.bat` creates a virtual environment, installs dependencies, and can
-create a desktop shortcut.
+### Install script
+
+`install.bat` creates a virtual environment, installs dependencies, and creates a desktop shortcut, if you so desire. 
+
+### Manual installation
 
 ```powershell
 git clone https://github.com/anmagx/Orienta
@@ -44,7 +57,7 @@ python orienta.py
 
 Any device that emits numeric CSV values on a serial port is supported.
 The bundled firmware is an Arduino Nano example using a FastIMU-supported
-MPU6500.
+MPU6500, configured to run at 500000 baud. The sensor data must be structured as follows:
 
 ```text
 time_milliseconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
@@ -52,7 +65,9 @@ time_milliseconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
 
 Accelerometer values are expected in g units and gyroscope values in degrees
 per second. Configure the serial port and baud rate in the application to
-match the device.
+match your device.
+
+Magnetometers are currently not supported. 
 
 ## Usage
 

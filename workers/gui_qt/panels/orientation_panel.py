@@ -11,6 +11,37 @@ from PyQt5.QtCore import Qt, QTimer, QRect, QEvent
 from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
 
 from workers.gui_qt.panels.about_panel import AboutPanel
+import logging
+
+
+def _ui_log(owner, msg: str):
+    """Log to the GUI message callback when available, otherwise fall back to logging.
+
+    owner: usually `self` from a panel or dialog that may expose `message_callback`.
+    """
+    try:
+        cb = getattr(owner, 'message_callback', None)
+        if callable(cb):
+            try:
+                cb(msg)
+                return
+            except Exception:
+                pass
+
+        owner_panel = getattr(owner, 'owner_panel', None)
+        if owner_panel and hasattr(owner_panel, 'message_callback') and callable(owner_panel.message_callback):
+            try:
+                owner_panel.message_callback(msg)
+                return
+            except Exception:
+                pass
+
+        logging.info(msg)
+    except Exception:
+        try:
+            logging.debug('Failed to deliver UI log', exc_info=True)
+        except Exception:
+            pass
 
 
 # HoldPanelQt: previously in hold_panel.py — moved here so the panel file
@@ -384,16 +415,16 @@ class KeyCaptureDialog(QDialog):
         if self.input_command_queue:
             try:
                 self.input_command_queue.put(('start_capture',))
-                print("[KeyCaptureDialog] Sent start_capture command to input worker")
+                _ui_log(self, "[KeyCaptureDialog] Sent start_capture command to input worker")
                 # Start timer to check for responses
                 self.response_timer = QTimer()
                 self.response_timer.timeout.connect(self._check_input_response)
                 self.response_timer.start(50)  # Check every 50ms
             except Exception as e:
-                print(f"[KeyCaptureDialog] Error starting capture: {e}")
+                _ui_log(self, f"[KeyCaptureDialog] Error starting capture: {e}")
                 self.status_label.setText("Input capture unavailable")
         else:
-            print("[KeyCaptureDialog] No input command queue available")
+            _ui_log(self, "[KeyCaptureDialog] No input command queue available")
             self.status_label.setText("Input capture unavailable")
     
     def _check_input_response(self):
@@ -403,18 +434,18 @@ class KeyCaptureDialog(QDialog):
             
         try:
             response = self.input_response_queue.get_nowait()
-            print(f"[KeyCaptureDialog] Received response from input worker: {response}")
+            _ui_log(self, f"[KeyCaptureDialog] Received response from input worker: {response}")
             if response and len(response) >= 3 and response[0] == 'input_captured':
                 self.captured_key = response[1]
                 self.display_name = response[2]
-                print(f"[KeyCaptureDialog] Captured input: key={self.captured_key}, display={self.display_name}")
+                _ui_log(self, f"[KeyCaptureDialog] Captured input: key={self.captured_key}, display={self.display_name}")
                 self.status_label.setText(f"Captured: {self.display_name}")
                 QApplication.processEvents()
                 QTimer.singleShot(500, self.accept)
         except queue.Empty:
             pass  # No response available
         except Exception as e:
-            print(f"[KeyCaptureDialog] Error checking response: {e}")
+            _ui_log(self, f"[KeyCaptureDialog] Error checking response: {e}")
     
     def done(self, r):
         """Single reliable cleanup point for this dialog.
@@ -435,9 +466,9 @@ class KeyCaptureDialog(QDialog):
         if r != QDialog.Accepted and self.input_command_queue:
             try:
                 self.input_command_queue.put(('stop_capture',))
-                print("[KeyCaptureDialog] Dialog cancelled - sent stop_capture command to input worker")
+                _ui_log(self, "[KeyCaptureDialog] Dialog cancelled - sent stop_capture command to input worker")
             except Exception as e:
-                print(f"[KeyCaptureDialog] Error stopping capture: {e}")
+                _ui_log(self, f"[KeyCaptureDialog] Error stopping capture: {e}")
         
         # Resume the owner panel's continuous input_response_queue polling
         # now that we're done consuming 'input_captured' responses.
@@ -962,7 +993,7 @@ class OrientationPanelQt(QGroupBox):
     def _build_ui(self):
         """Build the orientation panel UI."""
         try:
-            print("[OrientationPanel] _build_ui start")
+            _ui_log(self, "[OrientationPanel] _build_ui start")
             try:
                 with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
                     _f.write('_build_ui start\n')
@@ -1352,7 +1383,7 @@ class OrientationPanelQt(QGroupBox):
                         except Exception:
                             pass
                 except Exception as e:
-                    print(f"[OrientationPanel] Error setting disengage shortcut: {e}")
+                    _ui_log(self, f"[OrientationPanel] Error setting disengage shortcut: {e}")
 
             self.disengage_shortcut_btn.clicked.connect(_on_set_disengage_shortcut)
         except Exception:
@@ -1499,7 +1530,7 @@ class OrientationPanelQt(QGroupBox):
                         except Exception:
                             pass
                 except Exception as e:
-                    print(f"[OrientationPanel] Error setting reset shortcut: {e}")
+                    _ui_log(self, f"[OrientationPanel] Error setting reset shortcut: {e}")
 
             self.reset_shortcut_btn.clicked.connect(_on_set_reset_shortcut)
         except Exception:
@@ -1703,7 +1734,7 @@ class OrientationPanelQt(QGroupBox):
             # below with a smaller stretch so they remain visible.
             main_layout.addWidget(top_frame, 1)
             try:
-                print("[OrientationPanel] added top_frame to main_layout")
+                _ui_log(self, "[OrientationPanel] added top_frame to main_layout")
             except Exception:
                 pass
         except Exception:
@@ -1730,12 +1761,13 @@ class OrientationPanelQt(QGroupBox):
 
         # --- Drift angle sliders spanning full width ---
         try:
-            print("[OrientationPanel] entering sliders construction block")
+            _ui_log(self, "[OrientationPanel] entering sliders construction block")
             try:
                 with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
                     _f.write('entering sliders construction block\n')
             except Exception:
                 pass
+
             sliders_frame = QFrame()
             sliders_layout = QVBoxLayout(sliders_frame)
             sliders_layout.setContentsMargins(4, 4, 4, 4)
@@ -1757,7 +1789,7 @@ class OrientationPanelQt(QGroupBox):
             self.drift_yaw_slider.setMaximum(250)
             self.drift_yaw_slider.setValue(int(self.drift_angle_yaw_value * 10))
             try:
-                print(f"[OrientationPanel] created drift_yaw_slider: {self.drift_yaw_slider}")
+                _ui_log(self, f"[OrientationPanel] created drift_yaw_slider: {self.drift_yaw_slider}")
                 try:
                     with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
                         _f.write('created drift_yaw_slider\n')
@@ -1787,7 +1819,7 @@ class OrientationPanelQt(QGroupBox):
             self.drift_pitch_slider.setMaximum(250)
             self.drift_pitch_slider.setValue(int(self.drift_angle_pitch_value * 10))
             try:
-                print(f"[OrientationPanel] created drift_pitch_slider: {self.drift_pitch_slider}")
+                _ui_log(self, f"[OrientationPanel] created drift_pitch_slider: {self.drift_pitch_slider}")
                 try:
                     with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
                         _f.write('created drift_pitch_slider\n')
@@ -1816,7 +1848,7 @@ class OrientationPanelQt(QGroupBox):
             self.drift_roll_slider.setMaximum(250)
             self.drift_roll_slider.setValue(int(self.drift_angle_roll_value * 10))
             try:
-                print(f"[OrientationPanel] created drift_roll_slider: {self.drift_roll_slider}")
+                _ui_log(self, f"[OrientationPanel] created drift_roll_slider: {self.drift_roll_slider}")
                 try:
                     with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
                         _f.write('created drift_roll_slider\n')
@@ -1879,9 +1911,9 @@ class OrientationPanelQt(QGroupBox):
                         pitch_hint = self.drift_pitch_slider.sizeHint() if pitch_exists else None
                         roll_hint = self.drift_roll_slider.sizeHint() if roll_exists else None
                         min_h = sliders_frame.minimumHeight() if hasattr(sliders_frame, 'minimumHeight') else None
-                        print(f"[OrientationPanel] sliders_frame.geo={sf_geo}, hint={sf_hint}, minH={min_h}, yaw_exists={yaw_exists}, yaw_hint={yaw_hint}, pitch_exists={pitch_exists}, pitch_hint={pitch_hint}, roll_exists={roll_exists}, roll_hint={roll_hint}")
+                        _ui_log(self, f"[OrientationPanel] sliders_frame.geo={sf_geo}, hint={sf_hint}, minH={min_h}, yaw_exists={yaw_exists}, yaw_hint={yaw_hint}, pitch_exists={pitch_exists}, pitch_hint={pitch_hint}, roll_exists={roll_exists}, roll_hint={roll_hint}")
                     except Exception as e:
-                        print(f"[OrientationPanel] debug geometry error: {e}")
+                        _ui_log(self, f"[OrientationPanel] debug geometry error: {e}")
 
                 # Immediate (post-construction) data
                 _debug_print_slider_geometries()
@@ -1892,7 +1924,7 @@ class OrientationPanelQt(QGroupBox):
                 pass
         except Exception as e:
             try:
-                print(f"[OrientationPanel] exception constructing sliders: {e}")
+                _ui_log(self, f"[OrientationPanel] exception constructing sliders: {e}")
                 try:
                     with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
                         _f.write(f'exception constructing sliders: {e}\n')
@@ -1994,7 +2026,7 @@ class OrientationPanelQt(QGroupBox):
                     pass
         except Exception as e:
             try:
-                print(f"[OrientationPanel] Failed to open preferences window: {e}")
+                _ui_log(self, f"[OrientationPanel] Failed to open preferences window: {e}")
             except Exception:
                 pass
 
@@ -2083,7 +2115,7 @@ class OrientationPanelQt(QGroupBox):
                     pass
         except Exception as e:
             try:
-                print(f"[OrientationPanel] Failed to open monitor window: {e}")
+                _ui_log(self, f"[OrientationPanel] Failed to open monitor window: {e}")
             except Exception:
                 pass
         try:
@@ -2168,7 +2200,7 @@ class OrientationPanelQt(QGroupBox):
                     pass
         except Exception as e:
             try:
-                print(f"[OrientationPanel] Failed to open about window: {e}")
+                _ui_log(self, f"[OrientationPanel] Failed to open about window: {e}")
             except Exception:
                 pass
 
@@ -2873,7 +2905,7 @@ class OrientationPanelQt(QGroupBox):
 
             # Log state change
             try:
-                print(f"[OrientationPanel] update_processing_status called -> active={active}")
+                _ui_log(self, f"[OrientationPanel] update_processing_status called -> active={active}")
             except Exception:
                 pass
 
@@ -3743,11 +3775,11 @@ class OrientationPanelQt(QGroupBox):
                         # Generally handled by KeyCaptureDialog; ignore here unless no dialog
                         key = resp[1] if len(resp) > 1 else None
                         disp = resp[2] if len(resp) > 2 else None
-                        print(f"[OrientationPanel] input_captured: {key} ({disp})")
+                        _ui_log(self, f"[OrientationPanel] input_captured: {key} ({disp})")
                     elif tag == 'shortcut_pressed':
                         key = resp[1] if len(resp) > 1 else None
                         action = resp[2] if len(resp) > 2 else None
-                        print(f"[OrientationPanel] shortcut_pressed: {key} -> {action}")
+                        _ui_log(self, f"[OrientationPanel] shortcut_pressed: {key} -> {action}")
                         if action == 'reset_orientation' and hasattr(self, '_on_reset_orientation'):
                             try:
                                 self._on_reset_orientation()
@@ -3761,14 +3793,14 @@ class OrientationPanelQt(QGroupBox):
                     elif tag == 'shortcut_released':
                         key = resp[1] if len(resp) > 1 else None
                         action = resp[2] if len(resp) > 2 else None
-                        print(f"[OrientationPanel] shortcut_released: {key} -> {action}")
+                        _ui_log(self, f"[OrientationPanel] shortcut_released: {key} -> {action}")
                         if action == 'disengage_drift' and hasattr(self, '_on_disengage_released'):
                             try:
                                 self._on_disengage_released()
                             except Exception:
                                 pass
                 except Exception as e:
-                    print(f"[OrientationPanel] Error handling input response: {e}")
+                    _ui_log(self, f"[OrientationPanel] Error handling input response: {e}")
         except Exception:
             pass
 
@@ -3925,10 +3957,10 @@ class OrientationPanelQt(QGroupBox):
                 p = getattr(preferences_panel, 'prefs_manager', None)
                 if p:
                     allp = p.load()
-                    print(f"[OrientationPanel] connected prefs sections: {list(allp.keys())}")
+                    _ui_log(self, f"[OrientationPanel] connected prefs sections: {list(allp.keys())}")
                     ori = allp.get('orientation', {})
                     if isinstance(ori, dict) and ('popup_x' in ori or 'popup_opacity' in ori):
-                        print(f"[OrientationPanel] orientation prefs loaded: popup_x={ori.get('popup_x')}, popup_opacity={ori.get('popup_opacity')}")
+                        _ui_log(self, f"[OrientationPanel] orientation prefs loaded: popup_x={ori.get('popup_x')}, popup_opacity={ori.get('popup_opacity')}")
             except Exception:
                 pass
 

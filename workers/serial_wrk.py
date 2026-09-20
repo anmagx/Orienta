@@ -205,4 +205,4 @@ def run_worker(messageQueue, serialQueue, serialDisplayQueue, stop_event=None, s
         log_info(logQueue, "Serial Worker", "Serial worker interrupted during shutdown")
     finally:
         log_info(logQueue, "Serial Worker", "Serial worker stopped")
-        print("[Serial Worker] Stopped.")
+        log_info(logQueue, "Serial Worker", "Stopped.")

@@ -31,6 +31,7 @@ from config.config import (
     WORKER_RESTART_DELAY,
     MAX_WORKER_RESTART_ATTEMPTS
 )
+from util.log_utils import log_info, log_warning, log_error
 
 class ProcessHandler:
     """Manager for application worker processes and shared queues.
@@ -136,7 +137,7 @@ class ProcessHandler:
                     except Exception:
                         pass
         except Exception as e:
-            print(f"[ProcessHandler] Log writer error: {e}")
+            log_error(self.logQueue, 'ProcessHandler', f"Log writer error: {e}")
     
     def _worker_monitor(self):
         """Background thread that monitors worker processes and restarts them if they crash.
@@ -173,7 +174,7 @@ class ProcessHandler:
                     exitcode = None
                     try:
                         exitcode = dead_worker.exitcode
-                        print(f"[ProcessHandler] Worker {worker_name} exitcode: {exitcode}")
+                        log_info(self.logQueue, 'ProcessHandler', f"Worker {worker_name} exitcode: {exitcode}")
                         try:
                             self.logQueue.put_nowait(('ERROR', 'ProcessHandler', f"Worker {worker_name} exited with code {exitcode}"))
                         except Exception:
@@ -186,7 +187,7 @@ class ProcessHandler:
                     # Windows access violation exit code (decimal 3221225477 / -1073741819).
                     fatal_exit_codes = {3221225477, -1073741819}
                     if exitcode in fatal_exit_codes:
-                        print(f"[ProcessHandler] Worker {worker_name} crashed with fatal exit code {exitcode}; not restarting automatically.")
+                        log_error(self.logQueue, 'ProcessHandler', f"Worker {worker_name} crashed with fatal exit code {exitcode}; not restarting automatically.")
                         try:
                             self.logQueue.put_nowait(('ERROR', 'ProcessHandler', f"Worker {worker_name} crashed with fatal exit code {exitcode}; not restarting."))
                         except Exception:
@@ -197,15 +198,15 @@ class ProcessHandler:
 
                     if restart_count < MAX_WORKER_RESTART_ATTEMPTS:
                         try:
-                            print(f"[ProcessHandler] Worker {worker_name} crashed, restarting (attempt {restart_count + 1})...")
-                            
+                            log_warning(self.logQueue, 'ProcessHandler', f"Worker {worker_name} crashed, restarting (attempt {restart_count + 1})...")
+
                             # Get worker configuration for restart
                             if worker_name in self._worker_configs:
                                 config = self._worker_configs[worker_name]
-                                
+
                                 # Wait before restart to prevent rapid restart loops
                                 time.sleep(WORKER_RESTART_DELAY)
-                                
+
                                 # Create new worker process
                                 new_worker = Process(
                                     target=config['target'],
@@ -213,22 +214,22 @@ class ProcessHandler:
                                     name=config['name']
                                 )
                                 new_worker.start()
-                                
+
                                 # Replace dead worker in list
                                 self.workers[worker_idx] = new_worker
-                                
+
                                 # Update restart count
                                 self._worker_restart_counts[worker_name] = restart_count + 1
-                                
-                                print(f"[ProcessHandler] Worker {worker_name} restarted successfully")
-                            
+
+                                log_info(self.logQueue, 'ProcessHandler', f"Worker {worker_name} restarted successfully")
+
                         except Exception as e:
-                            print(f"[ProcessHandler] Failed to restart worker {worker_name}: {e}")
+                            log_error(self.logQueue, 'ProcessHandler', f"Failed to restart worker {worker_name}: {e}")
                     else:
-                        print(f"[ProcessHandler] Worker {worker_name} exceeded restart limit ({MAX_WORKER_RESTART_ATTEMPTS}), not restarting")
+                        log_error(self.logQueue, 'ProcessHandler', f"Worker {worker_name} exceeded restart limit ({MAX_WORKER_RESTART_ATTEMPTS}), not restarting")
                 
             except Exception as e:
-                print(f"[ProcessHandler] Worker monitor error: {e}")
+                log_error(self.logQueue, 'ProcessHandler', f"Worker monitor error: {e}")
                 # Continue monitoring despite errors
                 time.sleep(5.0)
     
@@ -240,7 +241,7 @@ class ProcessHandler:
         guarded by a lock to avoid concurrent invocations from repeated
         signals.
         """
-        print("\n[ProcessHandler] Shutdown signal received, stopping workers...")
+        log_info(self.logQueue, 'ProcessHandler', "Shutdown signal received, stopping workers...")
         # Let stop_workers handle re-entrancy via the shutdown lock
         try:
             self.stop_workers()
@@ -258,7 +259,7 @@ class ProcessHandler:
         worker modules here to avoid circular import problems at module
         import time.
         """
-        print("[ProcessHandler] Starting workers...")
+        log_info(self.logQueue, 'ProcessHandler', "Starting workers...")
         
         ## Import worker target here to avoid circular import
         from workers.gui_wrk import run_worker as run_gui_worker
@@ -362,7 +363,7 @@ class ProcessHandler:
             'name': "UDPWorker"
         }
 
-        print("[ProcessHandler] All workers started.")
+        log_info(self.logQueue, 'ProcessHandler', "All workers started.")
         
     def get_queue_health_report(self):
         """Get a comprehensive report of all queue health statistics."""
@@ -409,7 +410,7 @@ class ProcessHandler:
             
             if report['critical'] > 0 or report['warnings'] > 0:
                 status_msg = f"Queue Health: {report['critical']} critical, {report['warnings']} warnings, {report['healthy']} healthy"
-                print(f"[ProcessHandler] {status_msg}")
+                log_warning(self.logQueue, 'ProcessHandler', status_msg)
                 
                 # Log details for problem queues
                 for queue_info in report['details']:
@@ -418,9 +419,9 @@ class ProcessHandler:
                         fill_ratio = queue_info.get('fill_ratio', 0)
                         size = queue_info.get('size', 0)
                         max_size = queue_info.get('max_size', 0)
-                        print(f"[ProcessHandler]   {name}: {fill_ratio:.1%} full ({size}/{max_size})")
+                        log_warning(self.logQueue, 'ProcessHandler', f"{name}: {fill_ratio:.1%} full ({size}/{max_size})")
         except Exception as e:
-            print(f"[ProcessHandler] Queue health monitoring error: {e}")
+            log_error(self.logQueue, 'ProcessHandler', f"Queue health monitoring error: {e}")
     
     def get_queue_status_summary(self) -> str:
         """Get a quick summary string of queue health status."""
@@ -446,16 +447,16 @@ class ProcessHandler:
         # Prevent concurrent shutdown attempts
         acquired = self._shutdown_lock.acquire(blocking=False)
         if not acquired:
-            print("[ProcessHandler] stop_workers already in progress, skipping duplicate call.")
+            log_warning(self.logQueue, 'ProcessHandler', "stop_workers already in progress, skipping duplicate call.")
             return
 
         try:
             if self._stopping:
-                print("[ProcessHandler] stop already in progress, skipping.")
+                log_warning(self.logQueue, 'ProcessHandler', "stop already in progress, skipping.")
                 return
 
             self._stopping = True
-            print("[ProcessHandler] Stopping workers...")
+            log_info(self.logQueue, 'ProcessHandler', "Stopping workers...")
             
             # Stop monitoring thread first
             self._monitoring_active = False
@@ -479,14 +480,14 @@ class ProcessHandler:
                 try:
                     worker.join(timeout=WORKER_JOIN_TIMEOUT)  # Use constant
                     if worker.is_alive():
-                        print(f"[ProcessHandler] Warning: Worker {worker.name} did not terminate in time.")
+                        log_warning(self.logQueue, 'ProcessHandler', f"Worker {worker.name} did not terminate in time.")
                         try:
                             worker.kill()
                         except Exception:
                             pass
                 except Exception:
                     pass
-            print("[ProcessHandler] All workers stopped.")
+            log_info(self.logQueue, 'ProcessHandler', "All workers stopped.")
 
         finally:
             self._stopping = False

@@ -678,7 +678,7 @@ class PreferencesPanel(QWidget):
                 if control_queue and not control_queue.full():
                     safe_queue_put(control_queue, ('set_drift_curve_type', curve_type), timeout=QUEUE_PUT_TIMEOUT)
             except Exception as e:
-                print(f"[Preferences] Failed to send drift curve command: {e}")
+                    _ui_log(self, f"[Preferences] Failed to send drift curve command: {e}")
         
         self._trigger_preference_save()
     
@@ -716,14 +716,14 @@ class PreferencesPanel(QWidget):
                 if control_queue and not control_queue.full():
                     safe_queue_put(control_queue, ('set_invert_yaw', self.invert_yaw), timeout=QUEUE_PUT_TIMEOUT)
         except Exception as e:
-            print(f"[Preferences] Failed to send yaw inversion command: {e}")
+            _ui_log(self, f"[Preferences] Failed to send yaw inversion command: {e}")
 
         # Also update visualization immediately if supported
         try:
             if cal and hasattr(cal, 'set_invert_yaw'):
                 cal.set_invert_yaw(self.invert_yaw)
         except Exception as e:
-            print(f"[Preferences] Failed to update calibration visualization for yaw inversion: {e}")
+            _ui_log(self, f"[Preferences] Failed to update calibration visualization for yaw inversion: {e}")
 
         self._trigger_preference_save()
     
@@ -739,14 +739,14 @@ class PreferencesPanel(QWidget):
                 if control_queue and not control_queue.full():
                     safe_queue_put(control_queue, ('set_invert_pitch', self.invert_pitch), timeout=QUEUE_PUT_TIMEOUT)
         except Exception as e:
-            print(f"[Preferences] Failed to send pitch inversion command: {e}")
+            _ui_log(self, f"[Preferences] Failed to send pitch inversion command: {e}")
 
         # Also update visualization immediately if supported
         try:
             if cal and hasattr(cal, 'set_invert_pitch'):
                 cal.set_invert_pitch(self.invert_pitch)
         except Exception as e:
-            print(f"[Preferences] Failed to update calibration visualization for pitch inversion: {e}")
+            _ui_log(self, f"[Preferences] Failed to update calibration visualization for pitch inversion: {e}")
 
         self._trigger_preference_save()
     
@@ -762,14 +762,14 @@ class PreferencesPanel(QWidget):
                 if control_queue and not control_queue.full():
                     safe_queue_put(control_queue, ('set_invert_roll', self.invert_roll), timeout=QUEUE_PUT_TIMEOUT)
         except Exception as e:
-            print(f"[Preferences] Failed to send roll inversion command: {e}")
+            _ui_log(self, f"[Preferences] Failed to send roll inversion command: {e}")
 
         # Also update visualization immediately if supported
         try:
             if cal and hasattr(cal, 'set_invert_roll'):
                 cal.set_invert_roll(self.invert_roll)
         except Exception as e:
-            print(f"[Preferences] Failed to update calibration visualization for roll inversion: {e}")
+            _ui_log(self, f"[Preferences] Failed to update calibration visualization for roll inversion: {e}")
 
         self._trigger_preference_save()
     
@@ -1153,10 +1153,10 @@ class PreferencesPanel(QWidget):
                 safe_queue_put(self.calibration_panel.control_queue, 
                              ('set_drift_correction_strength', strength), timeout=QUEUE_PUT_TIMEOUT)
             
-            print("[Preferences] Startup settings applied")
+            _ui_log(self, "[Preferences] Startup settings applied")
                     
         except Exception as e:
-            print(f"[Preferences] Error applying startup settings: {e}")
+            _ui_log(self, f"[Preferences] Error applying startup settings: {e}")
         
         # Apply axis inversions to calibration panel visualization
         if self.calibration_panel:
@@ -1173,7 +1173,7 @@ class PreferencesPanel(QWidget):
             safe_queue_put(self.calibration_panel.control_queue, 
                          ('set_invert_roll', self.invert_roll), timeout=QUEUE_PUT_TIMEOUT)
         except Exception as e:
-            print(f"[Preferences] Error applying axis inversions to fusion worker: {e}")
+            _ui_log(self, f"[Preferences] Error applying axis inversions to fusion worker: {e}")
     
     def get_shortcut_preferences(self):
         """Get shortcut preferences for saving."""

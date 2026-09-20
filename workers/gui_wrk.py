@@ -16,7 +16,7 @@ from typing import Optional, Dict, Any
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QPushButton, QFrame, QSplitter, QSizePolicy, QStatusBar
+    QTabWidget, QPushButton, QFrame, QSplitter, QSizePolicy
 )
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QIcon
@@ -25,7 +25,6 @@ from workers.gui_qt.panels.connection_panel import ConnectionPanelQt
 from workers.gui_qt.panels.message_panel import MessagePanelQt
 from workers.gui_qt.panels.orientation_panel import OrientationPanelQt
 # CalibrationPanelQt removed; orientation_panel now hosts calibration UI/logic
-# StatusBar moved into ConnectionPanel; StatusBarQt import no longer needed
 from workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from workers.gui_qt.panels.about_panel import AboutPanel
 from workers.gui_qt.panels.diagnostics_panel import DiagnosticsPanelQt
@@ -39,6 +38,7 @@ from config.config import (
     GUI_UPDATE_INTERVAL_MS, WORKER_QUEUE_CHECK_INTERVAL_MS,
     APP_NAME, APP_VERSION
 )
+from util.log_utils import log_info, log_warning, log_error
 
 
 class TabbedGUISignals(QObject):
@@ -122,7 +122,7 @@ class TabbedGUIWorker(QMainWindow):
         try:
             set_window_icon(self)
         except Exception as e:
-            print(f"[GUI] Could not set window icon: {e}")
+            log_warning(self.log_queue, 'GUI', f"Could not set window icon: {e}")
         
         # Central widget with tab layout
         central_widget = QWidget()
@@ -237,9 +237,9 @@ class TabbedGUIWorker(QMainWindow):
                 max_message_lines=200,
                 padding=6
             )
-            print("[GUI] MessagePanel created (not added as tab)")
+            log_info(self.log_queue, 'GUI', "MessagePanel created (not added as tab)")
         except Exception as e:
-            print(f"[GUI] Failed to create MessagePanel: {e}")
+            log_error(self.log_queue, 'GUI', f"Failed to create MessagePanel: {e}")
             self.message_panel = None
     
     def create_preferences_tab(self):
@@ -289,18 +289,18 @@ class TabbedGUIWorker(QMainWindow):
             self._theme_applied = theme_name
             
             self.theme_manager.load_theme(theme_name)
-            print(f"[GUI] Applied theme: {theme_name}")
+            log_info(self.log_queue, 'GUI', f"Applied theme: {theme_name}")
         except Exception as e:
-            print(f"[GUI] Error applying theme {theme_name}: {e}")
+            log_error(self.log_queue, 'GUI', f"Error applying theme {theme_name}: {e}")
     
     def _on_tab_changed(self, index):
         """Handle tab changes to optimize performance by skipping diagnostics updates when not visible."""
         # Log tab changes for debugging (diagnostics updates are now visibility-checked)
         if self.enable_diagnostics and hasattr(self, 'diagnostics_tab_index'):
             if index == self.diagnostics_tab_index:
-                print("[GUI] Diagnostics tab selected - matplotlib updates enabled")
+                log_info(self.log_queue, 'GUI', "Diagnostics tab selected - matplotlib updates enabled")
             else:
-                print("[GUI] Diagnostics tab not selected - matplotlib updates skipped")
+                log_info(self.log_queue, 'GUI', "Diagnostics tab not selected - matplotlib updates skipped")
     
     def create_about_tab(self):
         """Create the shared AboutPanel instance (no tab). The About UI is shown via dialogs."""
@@ -429,7 +429,7 @@ class TabbedGUIWorker(QMainWindow):
         """Update the status bar with new information."""
         # For QStatusBar, we'll show the most recent message
         # You could extend this to show multiple sections if needed
-        print(f"[{section}] {message}")
+        log_info(self.log_queue, 'GUI', f"[{section}] {message}")
     
     def _update_orientation(self, roll: float, pitch: float, yaw: float):
         """Update orientation display."""
@@ -469,10 +469,10 @@ class TabbedGUIWorker(QMainWindow):
                 try:
                     self.calibration_panel.update_processing_status(value)
                 except Exception as e:
-                    try:
-                        print(f"[GUI] calibration_panel.update_processing_status raised: {e}")
-                    except Exception:
-                        pass
+                        try:
+                            log_error(self.log_queue, 'GUI', f"calibration_panel.update_processing_status raised: {e}")
+                        except Exception:
+                            pass
 
             # Emit a central Qt signal for processing state so panels can react via signals
             try:
@@ -530,7 +530,7 @@ class TabbedGUIWorker(QMainWindow):
             # Update both serial panel and calibration panel with fusion processing status
             is_active = (value == 'active')
             try:
-                print(f"[GUI] _handle_status_update processing -> value={value!r}, is_active={is_active}, calibration_panel_exists={hasattr(self,'calibration_panel')}, calibration_panel_instance={type(self.calibration_panel) if hasattr(self,'calibration_panel') and self.calibration_panel else self.calibration_panel}")
+                log_info(self.log_queue, 'GUI', f"_handle_status_update processing -> value={value!r}, is_active={is_active}, calibration_panel_exists={hasattr(self,'calibration_panel')}, calibration_panel_instance={type(self.calibration_panel) if hasattr(self,'calibration_panel') and self.calibration_panel else self.calibration_panel}")
             except Exception:
                 pass
             if hasattr(self.connection_panel, 'update_fusion_status'):
@@ -542,10 +542,10 @@ class TabbedGUIWorker(QMainWindow):
                 try:
                     self.calibration_panel.update_processing_status(value)
                 except Exception as e:
-                    try:
-                        print(f"[GUI] calibration_panel.update_processing_status raised: {e}")
-                    except Exception:
-                        pass
+                        try:
+                            log_error(self.log_queue, 'GUI', f"calibration_panel.update_processing_status raised: {e}")
+                        except Exception:
+                            pass
 
             # Emit a central Qt signal for processing state so panels can react via signals
             try:
@@ -708,15 +708,15 @@ class TabbedGUIWorker(QMainWindow):
         try:
             prefs_manager = PreferencesManager()
             prefs = prefs_manager.load()
-            print(f"[GUI] load_preferences: sections={list(prefs.keys())}")
+            log_info(self.log_queue, 'GUI', f"load_preferences: sections={list(prefs.keys())}")
             
             # Handle both dict and string formats for preferences
             if isinstance(prefs, str):
-                print(f"[GUI] Preferences returned as string, skipping load")
+                log_warning(self.log_queue, 'GUI', "Preferences returned as string, skipping load")
                 return
             
             if not isinstance(prefs, dict):
-                print(f"[GUI] Unexpected preferences format: {type(prefs)}")
+                log_warning(self.log_queue, 'GUI', f"Unexpected preferences format: {type(prefs)}")
                 return
             
             # Apply preferences to each panel
@@ -724,7 +724,7 @@ class TabbedGUIWorker(QMainWindow):
                 self.connection_panel.set_prefs(prefs)
             
             if hasattr(self.orientation_panel, 'set_prefs') and 'orientation' in prefs:
-                print("[GUI] Applying orientation prefs")
+                log_info(self.log_queue, 'GUI', "Applying orientation prefs")
                 self.orientation_panel.set_prefs(prefs['orientation'])
             
             # Avoid applying calibration prefs if calibration_panel is the same
@@ -755,14 +755,14 @@ class TabbedGUIWorker(QMainWindow):
                 self._apply_theme(theme_name)
             
             
-            print("[GUI] Preferences loaded")
+            log_info(self.log_queue, 'GUI', "Preferences loaded")
             
         except Exception as e:
-            print(f"[GUI] Error loading preferences: {e}")
+            log_error(self.log_queue, 'GUI', f"Error loading preferences: {e}")
     
     def closeEvent(self, event):
         """Handle window close event."""
-        print("[GUI] Close event received")
+        log_info(self.log_queue, 'GUI', "Close event received")
         
         # Stop running timers to prevent callbacks into deleted widgets
         for tname in ('update_timer', 'gui_timer', 'process_timer'):
@@ -874,10 +874,10 @@ class TabbedGUIWorker(QMainWindow):
             prefs_manager = PreferencesManager()
             prefs_manager.save(prefs)
             
-            print("[GUI] Preferences saved")
+            log_info(self.log_queue, 'GUI', "Preferences saved")
             
         except Exception as e:
-            print(f"[GUI] Error saving preferences: {e}")
+            log_error(self.log_queue, 'GUI', f"Error saving preferences: {e}")
 
 
 def start_gui_worker(serial_control_queue, fusion_control_queue,
@@ -915,14 +915,14 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
             app_icon = QIcon(icon_path)
             if not app_icon.isNull():
                 app.setWindowIcon(app_icon)
-                print(f"[GUI] Application icon set: {icon_path}")
+                log_info(log_queue, 'GUI', f"Application icon set: {icon_path}")
             else:
-                print(f"[GUI] Failed to load icon: {icon_path}")
+                log_warning(log_queue, 'GUI', f"Failed to load icon: {icon_path}")
         else:
-            print("[GUI] No icon file found")
+            log_warning(log_queue, 'GUI', "No icon file found")
             
     except Exception as e:
-        print(f"[GUI] Could not set application icon: {e}")
+        log_error(log_queue, 'GUI', f"Could not set application icon: {e}")
     
     # Windows-specific taskbar icon handling
     try:
@@ -932,9 +932,9 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
             # Set the app ID for proper taskbar grouping
             app_id = f"orienta.{APP_NAME}.{APP_VERSION}"
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
-            print(f"[GUI] Windows AppUserModelID set: {app_id}")
+            log_info(log_queue, 'GUI', f"Windows AppUserModelID set: {app_id}")
     except Exception as e:
-        print(f"[GUI] Could not set Windows app ID: {e}")
+        log_error(log_queue, 'GUI', f"Could not set Windows app ID: {e}")
     
     # Create main window
     main_window = TabbedGUIWorker(
@@ -957,12 +957,12 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
     # Show window
     main_window.show()
     
-    print("[GUI] Started")
+    log_info(log_queue, 'GUI', "Started")
     
     # Run event loop
     app.exec_()
     
-    print("[GUI] PyQt5 tabbed GUI stopped")
+    log_info(log_queue, 'GUI', "PyQt5 tabbed GUI stopped")
 
 
 def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event, 
@@ -994,7 +994,7 @@ def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event,
 
 if __name__ == "__main__":
     # Test the tabbed GUI independently
-    print("Testing PyQt5 Tabbed GUI...")
+    log_info(None, 'GUI', "Testing PyQt5 Tabbed GUI...")
     
     # Create mock queues
     import queue
@@ -1011,7 +1011,7 @@ if __name__ == "__main__":
     stop_event = threading.Event()
     
     def test_stop():
-        print("Test stop callback called")
+        log_info(None, 'GUI', "Test stop callback called")
         stop_event.set()
     
     # Start GUI

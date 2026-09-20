@@ -80,7 +80,11 @@ class PreferencesManager:
             
             return result
         except Exception as e:
-            print(f"[PreferencesManager] Error loading preferences: {e}")
+            try:
+                from util.log_utils import log_error
+                log_error(None, 'PreferencesManager', f"Error loading preferences: {e}")
+            except Exception:
+                pass
             return {}
     
     def save(self, preferences: Dict[str, str]) -> bool:
@@ -134,7 +138,11 @@ class PreferencesManager:
             return True
             
         except Exception as e:
-            print(f"[PreferencesManager] Error saving preferences: {e}")
+            try:
+                from util.log_utils import log_error
+                log_error(None, 'PreferencesManager', f"Error saving preferences: {e}")
+            except Exception:
+                pass
             # Clean up temp file
             try:
                 if os.path.exists(tmp_path):
