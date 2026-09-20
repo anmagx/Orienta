@@ -2,25 +2,35 @@
 
 ![Orienta logo](img/orienta_logo.png)
 
-Orienta is an OpenTrack-compatible 3DOF head-tracking application for Windows.
+Orienta is a 3-DOF head-tracking application for Windows.
 It reads accelerometer and gyroscope data from a serial-connected IMU, estimates
-yaw, pitch, and roll with a complementary filter, and sends orientation over UDP.
+yaw, pitch, and roll with a complementary filter, and sends orientation data over UDP into opentrack.
+
+## Why? 
+
+The idea is to be able to track your head movements in games. Some huge names in the business are trackIR and Tobii, but their complete kits can be quite expensive, making the cost of entry into immersive simulation games quite high. 
+
+While you can build your own kit, you would typically need an IR-sensitive camera with a high frame rate, carefully consider camera distance to head, design a clip for holding the 3 LEDs - it's possible, but can be tricky to get good results with. 
+
+The space between these options is where Orienta could work for you. While there are some shortcomings to using an IMU, the arguments for it are compelling: You can build your own for probably under 15$, are completely free of any camera or viewing angle calculations, works the same wether your room is brightly lit or pitch black, and can track your head movements at over 120hz, giving you a buttery smooth experience. 
+
+The only diy required is soldering up your sensor and your board and mounting it to your headset. Example included further below. 
 
 ## Features
 
-- Real-time serial IMU acquisition.
-- Euler and quaternion complementary-filter implementations.
-- Gyro-bias and level calibration.
-- Configurable stationary drift correction.
-- Configurable axis inversion and keyboard/gamepad shortcuts.
-- UDP output compatible with OpenTrack.
+- Real-time serial IMU acquisition with support for a wide range of sensors
+- Quaternion-based complementary-filter implementation
+- Gyro-bias calibration and correction
+- Smooth autocentering when stationary and near center
 - PyQt5 interface with light and dark themes.
-- Optional diagnostics plots.
 
 ## Installation
 
-`install.bat` creates a virtual environment, installs dependencies, and can
-create a desktop shortcut.
+### Install script
+
+`install.bat` creates a virtual environment, installs dependencies, and creates a desktop shortcut, if you so desire. 
+
+### Manual installation
 
 ```powershell
 git clone https://github.com/anmagx/Orienta
@@ -35,8 +45,8 @@ python orienta.py
 
 ### Software
 
-- Windows
-- Python 3.8 through 3.13
+- Windows Operating System
+- Python 3.8 through 3.14
 - NumPy
 - PySerial
 - PyQt5
@@ -45,19 +55,23 @@ python orienta.py
 
 ### Hardware and serial format
 
-Any device that emits seven numeric CSV values on a serial port is supported.
+Any device that emits numeric CSV values on a serial port is supported.
 The bundled firmware is an Arduino Nano example using a FastIMU-supported
-MPU6500.
+MPU6500, configured to run at 500000 baud. The sensor data must be structured as follows:
 
 ```text
-time_seconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
+time_milliseconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
 ```
 
 Accelerometer values are expected in g units and gyroscope values in degrees
 per second. Configure the serial port and baud rate in the application to
-match the device.
+match your device.
+
+Magnetometers are currently not supported. 
 
 ## Usage
+
+You will obviously need to find a way to mount your sensor on your head. In the example I use a 3D-printed case for the sensor itself and the arduino nano that both clip to my headset. Many, if not most IMUs will want to be mounted a specific up-direction to give accurate accelerometer readings - tilted on the side will probably not work, but flipped 180° is fine. The app allows for flipping axis in the preferences section. 
 
 1. Flash the supplied Arduino sketch, or connect a compatible IMU source.
 2. Select its serial port and baud rate, then start the serial reader.

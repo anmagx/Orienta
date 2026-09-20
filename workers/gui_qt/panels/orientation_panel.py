@@ -5,9 +5,203 @@ Display-only panel showing Euler angles (Yaw, Pitch, Roll).
 No controls - purely for data visualization.
 """
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, 
-                             QLabel, QSizePolicy, QWidget, QFrame, QPushButton, QDialog, QSlider, QApplication)
-from PyQt5.QtCore import Qt, QTimer
+                             QLabel, QSizePolicy, QWidget, QFrame, QPushButton, QDialog, QSlider, QApplication,
+                             QStackedWidget, QDialogButtonBox)
+from PyQt5.QtCore import Qt, QTimer, QRect, QEvent
 from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
+
+from workers.gui_qt.panels.about_panel import AboutPanel
+import logging
+
+
+def _ui_log(owner, msg: str):
+    """Log to the GUI message callback when available, otherwise fall back to logging.
+
+    owner: usually `self` from a panel or dialog that may expose `message_callback`.
+    """
+    try:
+        cb = getattr(owner, 'message_callback', None)
+        if callable(cb):
+            try:
+                cb(msg)
+                return
+            except Exception:
+                pass
+
+        owner_panel = getattr(owner, 'owner_panel', None)
+        if owner_panel and hasattr(owner_panel, 'message_callback') and callable(owner_panel.message_callback):
+            try:
+                owner_panel.message_callback(msg)
+                return
+            except Exception:
+                pass
+
+        logging.info(msg)
+    except Exception:
+        try:
+            logging.debug('Failed to deliver UI log', exc_info=True)
+        except Exception:
+            pass
+
+
+# HoldPanelQt: previously in hold_panel.py — moved here so the panel file
+# can be removed. This class provides the same animated "hold still" banner
+# used both as the top-of-window indicator and (via a smaller instance)
+# inside the Orientation panel when live data isn't available.
+class HoldPanelQt(QWidget):
+    """Panel for displaying HOLD STILL indicator at the top of the application."""
+    
+    def __init__(self, parent=None, text=None, height=30):
+        """
+        Initialize the Hold Still Panel.
+        
+        Args:
+            parent: Parent PyQt widget
+            text: Optional custom text ('\n' is rendered as a line break)
+            height: Fixed height of the panel in pixels
+        """
+        super().__init__(parent)
+        
+        # Animation state tracking (scrolling highlight)
+        self._blink_timer = QTimer()
+        self._blink_timer.timeout.connect(self._on_blink_timer)
+        self._scroll_index = 0
+        self._is_scrolling = False  # Track if animation is active
+        self._direction = 1
+        self._base_text = text if text else "- HOLD STILL & UPRIGHT -"
+        self._highlight_width = 5
+        self._fixed_height = int(height)
+        
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Setup the hold still panel UI."""
+        # Main layout - horizontal to center the text
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(8, 4, 8, 4)  # Small padding
+        main_layout.setSpacing(0)
+        
+        # Add stretch before text to center it
+        main_layout.addStretch()
+        
+        # HOLD STILL label (we'll render per-character HTML for animation)
+        self.hold_still_label = QLabel(self._base_text)
+        self.hold_still_label.setAlignment(Qt.AlignCenter)
+        
+        # Style the text
+        font = self.hold_still_label.font()
+        font.setBold(True)
+        font.setPointSize(font.pointSize() + 2)  # Larger text for top-level visibility
+        self.hold_still_label.setFont(font)
+        
+        # Initially subtle (static gray text)
+        self._set_normal_style()
+        
+        main_layout.addWidget(self.hold_still_label)
+        
+        # Add stretch after text to center it
+        main_layout.addStretch()
+        
+        # Set fixed height for consistent layout
+        self.setFixedHeight(self._fixed_height)
+        
+    def _set_normal_style(self):
+        """Set normal (non-blinking) style."""
+        # When not animating we can use a simple stylesheet
+        self.hold_still_label.setStyleSheet("color: #666666;")  # Subtle gray
+        
+    def _set_yellow_style(self):
+        """Set yellow (blinking) style."""
+        self.hold_still_label.setStyleSheet("color: #FFD700; font-weight: bold;")  # Bright gold/yellow
+        
+    def _on_blink_timer(self):
+        """Handle timer ticks and advance the scrolling highlight (bounce side-to-side)."""
+        if not self._is_scrolling:
+            return
+
+        n = len(self._base_text)
+        width = min(self._highlight_width, n)
+        # If text is too short for movement, just render highlight once
+        if n <= width:
+            self._scroll_index = 0
+            self._update_scrolling_text()
+            return
+
+        max_index = n - width
+        # Move and bounce at edges
+        self._scroll_index += self._direction
+        if self._scroll_index >= max_index:
+            self._scroll_index = max_index
+            self._direction = -1
+        elif self._scroll_index <= 0:
+            self._scroll_index = 0
+            self._direction = 1
+
+        self._update_scrolling_text()
+
+    def _escape_char(self, ch: str) -> str:
+        if ch == '\n':
+            return '<br>'
+        if ch == ' ':
+            return '&nbsp;'
+        if ch == '&':
+            return '&amp;'
+        if ch == '<':
+            return '&lt;'
+        if ch == '>':
+            return '&gt;'
+        return ch
+
+    def _update_scrolling_text(self):
+        """Render the label text as HTML with a single-character highlight that scrolls."""
+        parts = []
+        highlight_color = '#FFD700'
+        normal_color = '#666666'
+        n = len(self._base_text)
+        width = min(self._highlight_width, n)
+        # Build per-character spans so spacing and ampersands are preserved
+        start = self._scroll_index
+        end = start + width
+        for i, ch in enumerate(self._base_text):
+            esc = self._escape_char(ch)
+            if start <= i < end:
+                parts.append(f"<span style=\"color: {highlight_color}; font-weight: bold;\">{esc}</span>")
+            else:
+                parts.append(f"<span style=\"color: {normal_color};\">{esc}</span>")
+
+        # Use rich text; QLabel will render it. Keep font set via setFont.
+        html = ''.join(parts)
+        self.hold_still_label.setText(html)
+    
+    def start_blinking(self):
+        """Start the scrolling-color animation (keeps old API name)."""
+        if self._is_scrolling:
+            return  # Already running
+
+        self._is_scrolling = True
+        self._scroll_index = 0
+        self._direction = 1
+        # Faster update and 5-char wide highlight
+        self._blink_timer.start(15)  # advance every 15ms
+        # Immediately render current state
+        self._update_scrolling_text()
+        
+    def stop_blinking(self):
+        """Stop the scrolling-color animation and reset to normal text."""
+        if not self._is_scrolling:
+            return
+
+        self._is_scrolling = False
+        self._blink_timer.stop()
+        self._scroll_index = 0
+        # Reset to simple plain text to avoid leftover HTML styling
+        self.hold_still_label.setText(self._base_text)
+        self._set_normal_style()
+        
+    def is_blinking(self):
+        """Return whether the panel is currently blinking."""
+        return self._is_scrolling
+
 
 # Two-line button implemented by subclassing QPushButton so QSS targeting
 # QPushButton still applies. It draws the button background using the
@@ -16,6 +210,12 @@ from PyQt5.QtGui import QPainter, QPen, QColor, QKeySequence
 from PyQt5.QtWidgets import QStyleOptionButton, QPushButton
 from PyQt5.QtGui import QPainter, QFont, QFontMetrics
 from PyQt5.QtCore import QRect, QSize
+
+# PreferencesPanel is shown in a separate dialog when the user presses the
+# Preferences button. Import here so the dialog can create or reuse an
+# existing PreferencesPanel instance.
+from .preferences_panel import PreferencesPanel
+from .message_panel import MessagePanelQt
 
 class TwoLineButton(QPushButton):
     def __init__(self, main_text: str = "", sub_text: str = "", parent=None):
@@ -215,16 +415,16 @@ class KeyCaptureDialog(QDialog):
         if self.input_command_queue:
             try:
                 self.input_command_queue.put(('start_capture',))
-                print("[KeyCaptureDialog] Sent start_capture command to input worker")
+                _ui_log(self, "[KeyCaptureDialog] Sent start_capture command to input worker")
                 # Start timer to check for responses
                 self.response_timer = QTimer()
                 self.response_timer.timeout.connect(self._check_input_response)
                 self.response_timer.start(50)  # Check every 50ms
             except Exception as e:
-                print(f"[KeyCaptureDialog] Error starting capture: {e}")
+                _ui_log(self, f"[KeyCaptureDialog] Error starting capture: {e}")
                 self.status_label.setText("Input capture unavailable")
         else:
-            print("[KeyCaptureDialog] No input command queue available")
+            _ui_log(self, "[KeyCaptureDialog] No input command queue available")
             self.status_label.setText("Input capture unavailable")
     
     def _check_input_response(self):
@@ -234,18 +434,18 @@ class KeyCaptureDialog(QDialog):
             
         try:
             response = self.input_response_queue.get_nowait()
-            print(f"[KeyCaptureDialog] Received response from input worker: {response}")
+            _ui_log(self, f"[KeyCaptureDialog] Received response from input worker: {response}")
             if response and len(response) >= 3 and response[0] == 'input_captured':
                 self.captured_key = response[1]
                 self.display_name = response[2]
-                print(f"[KeyCaptureDialog] Captured input: key={self.captured_key}, display={self.display_name}")
+                _ui_log(self, f"[KeyCaptureDialog] Captured input: key={self.captured_key}, display={self.display_name}")
                 self.status_label.setText(f"Captured: {self.display_name}")
                 QApplication.processEvents()
                 QTimer.singleShot(500, self.accept)
         except queue.Empty:
             pass  # No response available
         except Exception as e:
-            print(f"[KeyCaptureDialog] Error checking response: {e}")
+            _ui_log(self, f"[KeyCaptureDialog] Error checking response: {e}")
     
     def done(self, r):
         """Single reliable cleanup point for this dialog.
@@ -266,9 +466,9 @@ class KeyCaptureDialog(QDialog):
         if r != QDialog.Accepted and self.input_command_queue:
             try:
                 self.input_command_queue.put(('stop_capture',))
-                print("[KeyCaptureDialog] Dialog cancelled - sent stop_capture command to input worker")
+                _ui_log(self, "[KeyCaptureDialog] Dialog cancelled - sent stop_capture command to input worker")
             except Exception as e:
-                print(f"[KeyCaptureDialog] Error stopping capture: {e}")
+                _ui_log(self, f"[KeyCaptureDialog] Error stopping capture: {e}")
         
         # Resume the owner panel's continuous input_response_queue polling
         # now that we're done consuming 'input_captured' responses.
@@ -682,6 +882,24 @@ class SquareContainer(QWidget):
         y = (self.height() - side) // 2
         self._child.setGeometry(x, y, side, side)
 
+    def refresh_child_geometry(self):
+        """Force-update the child's geometry to remain square and centered.
+
+        Useful when the child is reparented back into this container and
+        a layout pass hasn't triggered a resize event yet.
+        """
+        try:
+            side = max(0, min(self.width(), self.height()))
+            x = (self.width() - side) // 2
+            y = (self.height() - side) // 2
+            if hasattr(self, '_child') and self._child is not None:
+                try:
+                    self._child.setGeometry(x, y, side, side)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
 class OrientationPanelQt(QGroupBox):
     """PyQt5 panel for orientation display."""
@@ -704,6 +922,12 @@ class OrientationPanelQt(QGroupBox):
 
         # Track whether fusion worker is actively processing data; start False
         self._processing_active = False
+
+        # Track whether gyro calibration is currently running
+        self._calibrating = False
+
+        # Track serial connection state reported by GUI worker ('connected', 'stopped', 'error', etc.)
+        self._serial_state = None
 
         # Euler angle display labels
         self.yaw_value_label = None
@@ -735,6 +959,18 @@ class OrientationPanelQt(QGroupBox):
         # Recalibrate button placeholder
         self.recal_button = None
 
+        # Pop-out visualization state
+        self._viz_popped_out = False
+        self._popup_window = None
+        self._popup_square = None
+        self._placeholder_square = None
+        self._viz_layout = None
+        self._viz_index = None
+        self._viz_prev_size = None
+        self._popup_geom = None
+        # Popup opacity (1.0 == fully opaque)
+        self._popup_opacity = 1.0
+
         self._build_ui()
 
         # Ensure interactive controls reflect 'no data' state at startup
@@ -752,9 +988,19 @@ class OrientationPanelQt(QGroupBox):
             t.start(100)
         except Exception:
             QTimer.singleShot(100, self._send_initial_drift_angle)
+
     
     def _build_ui(self):
         """Build the orientation panel UI."""
+        try:
+            _ui_log(self, "[OrientationPanel] _build_ui start")
+            try:
+                with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                    _f.write('_build_ui start\n')
+            except Exception:
+                pass
+        except Exception:
+            pass
         # Main layout - single column for data displays only
         main_layout = QVBoxLayout()
         # Add modest vertical padding inside the panel to match other panels
@@ -800,6 +1046,31 @@ class OrientationPanelQt(QGroupBox):
         self.visualization_square = SquareContainer(self.visualization_widget)
         viz_layout.addWidget(self.visualization_square, stretch=1)
 
+        # Pop-out/In control below visualization
+        try:
+            btn_row = QHBoxLayout()
+            btn_row.setContentsMargins(0, 0, 0, 0)
+            btn_row.setSpacing(4)
+            self.pop_viz_button = QPushButton("Pop Out")
+            self.pop_viz_button.setToolTip("Pop the visualization out into a floating window")
+            self.pop_viz_button.clicked.connect(self._toggle_viz_popup)
+            # Make Pop Out expand horizontally and match the settings button height
+            self.pop_viz_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.pop_viz_button.setFixedHeight(28)
+            btn_row.addWidget(self.pop_viz_button, 1)
+
+            # Settings (wrench) button aligned to the right
+            self.viz_settings_button = QPushButton("⚙")
+            self.viz_settings_button.setToolTip("Visualization settings")
+            self.viz_settings_button.setFixedSize(36, 28)
+            self.viz_settings_button.setStyleSheet("font-size:14px; padding:0px;")
+            self.viz_settings_button.clicked.connect(self._open_viz_settings)
+            btn_row.addWidget(self.viz_settings_button)
+
+            viz_layout.addLayout(btn_row)
+        except Exception:
+            self.pop_viz_button = None
+
         split_layout.addWidget(viz_frame, stretch=1)
 
         # Vertical divider styled like calibration panel
@@ -808,6 +1079,8 @@ class OrientationPanelQt(QGroupBox):
         divider.setFrameShadow(QFrame.Sunken)
         divider.setObjectName("sectionDivider")
         divider.setFixedWidth(1)
+        # Style to match ConnectionPanel vertical divider
+        divider.setStyleSheet("background-color: rgba(120,120,120,0.25);")
         split_layout.addWidget(divider)
 
         # Right: values list (Yaw / Pitch / Roll)
@@ -817,8 +1090,8 @@ class OrientationPanelQt(QGroupBox):
         values_frame.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         values_layout = QVBoxLayout(values_frame)
         # Reduce spacing and margins to remove superfluous padding
-        values_layout.setSpacing(6)
-        values_layout.setContentsMargins(6, 6, 6, 6)
+        values_layout.setSpacing(4)
+        values_layout.setContentsMargins(4, 4, 4, 4)
 
         # Device status, gyro calibration and drift correction indicators at the top of the values column
         try:
@@ -846,7 +1119,7 @@ class OrientationPanelQt(QGroupBox):
             divider.setFrameShadow(QFrame.Sunken)
             divider.setObjectName("statusDivider")
             divider.setFixedHeight(1)
-            divider.setStyleSheet("background-color: rgba(120,120,120,0.4);")
+            divider.setStyleSheet("background-color: rgba(120,120,120,0.25);")
             values_layout.addWidget(divider)
         except Exception:
             # Fallback: add labels without divider (same order)
@@ -869,8 +1142,9 @@ class OrientationPanelQt(QGroupBox):
         # will be vertically centered between the top and bottom dividers.
         try:
             from PyQt5.QtWidgets import QSpacerItem, QSizePolicy as QSP
-            top_spacer = QSpacerItem(20, 20, QSP.Minimum, QSP.Expanding)
-            bottom_spacer = QSpacerItem(20, 20, QSP.Minimum, QSP.Expanding)
+            # Use smaller spacers to reduce vertical gap between dividers
+            top_spacer = QSpacerItem(20, 8, QSP.Minimum, QSP.Expanding)
+            bottom_spacer = QSpacerItem(20, 8, QSP.Minimum, QSP.Expanding)
         except Exception:
             top_spacer = None
             bottom_spacer = None
@@ -882,7 +1156,8 @@ class OrientationPanelQt(QGroupBox):
         # Euler angles: headers on top row, values on second row (three columns)
         euler_grid = QGridLayout()
         euler_grid.setContentsMargins(0, 0, 0, 0)
-        euler_grid.setHorizontalSpacing(12)
+        # Narrow horizontal gaps between angle columns
+        euler_grid.setHorizontalSpacing(8)
         # Reduce vertical space between header row and value row
         try:
             euler_grid.setVerticalSpacing(4)
@@ -909,17 +1184,18 @@ class OrientationPanelQt(QGroupBox):
         # Values row beneath headers
         self.yaw_value_label = QLabel("0.0°")
         self.yaw_value_label.setAlignment(Qt.AlignCenter)
-        self.yaw_value_label.setStyleSheet("font-size: 18px;")
+        # Slightly smaller font to reduce perceived size of the Euler block
+        self.yaw_value_label.setStyleSheet("font-size: 14px;")
         euler_grid.addWidget(self.yaw_value_label, 1, 0)
 
         self.pitch_value_label = QLabel("0.0°")
         self.pitch_value_label.setAlignment(Qt.AlignCenter)
-        self.pitch_value_label.setStyleSheet("font-size: 18px;")
+        self.pitch_value_label.setStyleSheet("font-size: 14px;")
         euler_grid.addWidget(self.pitch_value_label, 1, 1)
 
         self.roll_value_label = QLabel("0.0°")
         self.roll_value_label.setAlignment(Qt.AlignCenter)
-        self.roll_value_label.setStyleSheet("font-size: 18px;")
+        self.roll_value_label.setStyleSheet("font-size: 14px;")
         euler_grid.addWidget(self.roll_value_label, 1, 2)
 
         # Center the Euler grid horizontally within the values column
@@ -929,7 +1205,28 @@ class OrientationPanelQt(QGroupBox):
             euler_grid.setColumnStretch(2, 1)
         except Exception:
             pass
-        values_layout.addLayout(euler_grid, Qt.AlignHCenter)
+        # The euler grid shares its space with a "hold still" indicator that is
+        # shown whenever no live orientation data is available (fusion inactive
+        # or gyro calibration running).
+        self._euler_page = QWidget()
+        euler_page_layout = QVBoxLayout(self._euler_page)
+        euler_page_layout.setContentsMargins(0, 0, 0, 0)
+        euler_page_layout.setSpacing(0)
+        euler_page_layout.addLayout(euler_grid)
+
+        self.hold_indicator = HoldPanelQt(text="- HOLD STILL & UPRIGHT -", height=40)
+        self._hold_page = QWidget()
+        hold_page_layout = QVBoxLayout(self._hold_page)
+        hold_page_layout.setContentsMargins(0, 0, 0, 0)
+        hold_page_layout.setSpacing(0)
+        hold_page_layout.addStretch()
+        hold_page_layout.addWidget(self.hold_indicator)
+        hold_page_layout.addStretch()
+
+        self.euler_stack = QStackedWidget()
+        self.euler_stack.addWidget(self._euler_page)
+        self.euler_stack.addWidget(self._hold_page)
+        values_layout.addWidget(self.euler_stack, 4)
 
         # Insert a flexible spacer below the euler grid so the grid block is
         # vertically centered between the top and bottom dividers
@@ -961,13 +1258,24 @@ class OrientationPanelQt(QGroupBox):
         text_width = fm.horizontalAdvance("🔴 Drift Correction DISENGAGED")
         text_height = fm.height()
         try:
-            desired_h = max(self.disengage_btn.sizeHint().height(), text_height + 16)
-            # Use fixed height based on sizeHint to avoid clipping of two-line content
+            # Match ConnectionPanel's prominent button sizing: ensure at least 40px base
+            desired_h = max(self.disengage_btn.sizeHint().height(), 40)
+            # Use fixed height similar to ConnectionPanel (desired_h + 6)
             self.disengage_btn.setFixedHeight(desired_h + 6)
         except Exception:
             pass
         # Make button span full width of right column; allow vertical resizing preference
         self.disengage_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Default to inactive until fusion worker reports processing active
+        try:
+            self.disengage_btn.setEnabled(False)
+            self.disengage_btn.setProperty('status', 'disabled')
+            try:
+                self.disengage_btn.style().polish(self.disengage_btn)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         # Connect to calibration panel handlers if panel already connected
         try:
@@ -1015,7 +1323,7 @@ class OrientationPanelQt(QGroupBox):
             self.disengage_shortcut_btn = QPushButton("🔧")
             self.disengage_shortcut_btn.setToolTip("Set shortcut for Disengage Drift Correction")
             try:
-                desired_h = max(self.disengage_btn.sizeHint().height(), text_height + 16)
+                desired_h = max(self.disengage_btn.sizeHint().height(), 40)
                 self.disengage_shortcut_btn.setFixedHeight(desired_h + 6)
             except Exception:
                 pass
@@ -1067,15 +1375,15 @@ class OrientationPanelQt(QGroupBox):
                             if prefs:
                                 prefs.disengage_shortcut = key
                                 prefs.disengage_shortcut_display_name = display_name
-                                # Emit preferences_changed so TabbedGUIWorker saves immediately
+                                # Request debounced preference save via PreferencesPanel
                                 try:
-                                    prefs.preferences_changed.emit()
+                                    self._request_pref_save()
                                 except Exception:
                                     pass
                         except Exception:
                             pass
                 except Exception as e:
-                    print(f"[OrientationPanel] Error setting disengage shortcut: {e}")
+                    _ui_log(self, f"[OrientationPanel] Error setting disengage shortcut: {e}")
 
             self.disengage_shortcut_btn.clicked.connect(_on_set_disengage_shortcut)
         except Exception:
@@ -1130,9 +1438,21 @@ class OrientationPanelQt(QGroupBox):
         self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Fixed height similar to disengage button
         try:
-            desired_h = max(self.reset_button.sizeHint().height(), text_height + 16)
+            # Match ConnectionPanel button sizing: ensure at least 40px base
+            desired_h = max(self.reset_button.sizeHint().height(), 40)
             # Ensure reset button is tall enough for two-line rendering
             self.reset_button.setFixedHeight(desired_h + 6)
+        except Exception:
+            pass
+
+        # Default to inactive until fusion worker reports processing active
+        try:
+            self.reset_button.setEnabled(False)
+            self.reset_button.setProperty('status', 'disabled')
+            try:
+                self.reset_button.style().polish(self.reset_button)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1148,12 +1468,17 @@ class OrientationPanelQt(QGroupBox):
             self.reset_shortcut_btn = QPushButton("🔧")
             self.reset_shortcut_btn.setToolTip("Set shortcut for Reset Orientation")
             try:
-                desired_h = max(self.reset_button.sizeHint().height(), text_height + 16)
+                desired_h = max(self.reset_button.sizeHint().height(), 40)
                 self.reset_shortcut_btn.setFixedHeight(desired_h + 6)
             except Exception:
                 pass
             self.reset_shortcut_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            reset_row.addWidget(self.reset_shortcut_btn)
+            # Shortcut button remains enabled at all times; user can set shortcuts even if
+            # fusion processing is inactive. Keep default enabled state and standard styling.
+            try:
+                reset_row.addWidget(self.reset_shortcut_btn)
+            except Exception:
+                pass
 
             def _on_set_reset_shortcut():
                 try:
@@ -1197,15 +1522,15 @@ class OrientationPanelQt(QGroupBox):
                             if prefs:
                                 prefs.reset_shortcut = key
                                 prefs.reset_shortcut_display_name = display_name
-                                # Emit preferences_changed so TabbedGUIWorker saves immediately
+                                # Request debounced preference save via PreferencesPanel
                                 try:
-                                    prefs.preferences_changed.emit()
+                                    self._request_pref_save()
                                 except Exception:
                                     pass
                         except Exception:
                             pass
                 except Exception as e:
-                    print(f"[OrientationPanel] Error setting reset shortcut: {e}")
+                    _ui_log(self, f"[OrientationPanel] Error setting reset shortcut: {e}")
 
             self.reset_shortcut_btn.clicked.connect(_on_set_reset_shortcut)
         except Exception:
@@ -1236,11 +1561,25 @@ class OrientationPanelQt(QGroupBox):
             self.recal_button = QPushButton("Recalibrate Yaw Drift Correction")
             # Match sizing of other buttons
             try:
-                desired_h = max(getattr(self, 'recal_button', None).sizeHint().height() if getattr(self, 'recal_button', None) else 0, text_height + 16)
+                desired_h = max(self.recal_button.sizeHint().height(), 24)
                 self.recal_button.setFixedHeight(desired_h + 6)
             except Exception:
-                pass
+                try:
+                    # Fallback: ensure minimum height
+                    self.recal_button.setMinimumHeight(34)
+                except Exception:
+                    pass
             self.recal_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            # Default to inactive until fusion worker reports processing active
+            try:
+                self.recal_button.setEnabled(False)
+                self.recal_button.setProperty('status', 'disabled')
+                try:
+                    self.recal_button.style().polish(self.recal_button)
+                except Exception:
+                    pass
+            except Exception:
+                pass
             # Connect to calibration panel handler if available
             try:
                 if hasattr(self, 'calibration_panel') and self.calibration_panel and hasattr(self.calibration_panel, '_on_recalibrate'):
@@ -1259,35 +1598,154 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             self.recal_button = None
 
+            self.recal_button = None
+
+        # Tools row: Preferences and Monitor share available space, About (?) takes fixed shortcut width
+        try:
+            tools_row = QHBoxLayout()
+            tools_row.setSpacing(6)
+            tools_row.setContentsMargins(0, 0, 0, 0)
+
+            # Preferences button (always active)
+            try:
+                self.preferences_button = QPushButton("Preferences...")
+                try:
+                    desired_h = max(self.preferences_button.sizeHint().height(), 24)
+                    self.preferences_button.setFixedHeight(desired_h + 6)
+                except Exception:
+                    pass
+                self.preferences_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                try:
+                    self.preferences_button.setEnabled(True)
+                    self.preferences_button.setProperty('status', '')
+                except Exception:
+                    pass
+                self.preferences_button.clicked.connect(self._open_preferences_window)
+                # Give a large stretch so this and monitor share remaining space
+                tools_row.addWidget(self.preferences_button, 100)
+            except Exception:
+                self.preferences_button = None
+
+            # Monitor / Logs button
+            try:
+                self.monitor_button = QPushButton("Monitor / Logs")
+                try:
+                    desired_h = max(self.monitor_button.sizeHint().height(), 24)
+                    self.monitor_button.setFixedHeight(desired_h + 6)
+                except Exception:
+                    pass
+                self.monitor_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                try:
+                    self.monitor_button.setEnabled(True)
+                    self.monitor_button.setProperty('status', '')
+                except Exception:
+                    pass
+                self.monitor_button.clicked.connect(self._open_monitor_window)
+                tools_row.addWidget(self.monitor_button, 100)
+            except Exception:
+                self.monitor_button = None
+
+            # About/help button (small, align with shortcut buttons)
+            try:
+                self.about_button = QPushButton("?")
+                self.about_button.setToolTip("About this application")
+                try:
+                    # Prefer actual painted width of an existing shortcut button when available,
+                    # otherwise fall back to sizeHint width or a small default.
+                    shortcut_w = None
+                    for nm in ('reset_shortcut_btn', 'disengage_shortcut_btn', 'disengage_shortcut_btn'):
+                        btn = getattr(self, nm, None)
+                        if btn is not None:
+                            try:
+                                w = btn.width()
+                                if w and w > 8:
+                                    shortcut_w = w
+                                    break
+                            except Exception:
+                                pass
+                            try:
+                                w = btn.sizeHint().width()
+                                if w and w > 8:
+                                    shortcut_w = w
+                                    break
+                            except Exception:
+                                pass
+                    if shortcut_w is None:
+                        # Fall back to sizeHint if painted width not available
+                        try:
+                            shortcut_w = self.reset_shortcut_btn.sizeHint().width() if hasattr(self, 'reset_shortcut_btn') and self.reset_shortcut_btn else 36
+                        except Exception:
+                            shortcut_w = 36
+                    # Clamp the width to a reasonable range so it doesn't overflow
+                    try:
+                        shortcut_w = int(shortcut_w)
+                        # clamp between 24 and 48
+                        if shortcut_w < 24:
+                            shortcut_w = 24
+                        elif shortcut_w > 48:
+                            shortcut_w = 40
+                    except Exception:
+                        shortcut_w = 36
+                    # Use same vertical sizing as tools
+                    desired_h = max(self.about_button.sizeHint().height(), 24)
+                    self.about_button.setFixedHeight(desired_h + 6)
+                    # Ensure a small fixed width matching shortcut buttons
+                    self.about_button.setFixedWidth(int(shortcut_w))
+                except Exception:
+                    pass
+                self.about_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                self.about_button.clicked.connect(self._open_about_window)
+                # Add without stretch so it remains fixed while others expand
+                tools_row.addWidget(self.about_button, 0)
+            except Exception:
+                self.about_button = None
+
+            values_layout.addLayout(tools_row)
+        except Exception:
+            # Fallback: add buttons individually
+            try:
+                if not hasattr(self, 'preferences_button') or self.preferences_button is None:
+                    self.preferences_button = QPushButton("Preferences...")
+                    self.preferences_button.clicked.connect(self._open_preferences_window)
+                    values_layout.addWidget(self.preferences_button)
+            except Exception:
+                pass
+            try:
+                if not hasattr(self, 'monitor_button') or self.monitor_button is None:
+                    self.monitor_button = QPushButton("Monitor / Logs")
+                    self.monitor_button.clicked.connect(self._open_monitor_window)
+                    values_layout.addWidget(self.monitor_button)
+            except Exception:
+                pass
+
         split_layout.addWidget(values_frame, stretch=1)
 
-        # Add the split layout to the main layout
-        main_layout.addLayout(split_layout)
+        # Wrap the top area (visualization + controls) in its own frame so
+        # the sliders below are a separate, non-overlapping section.
+        try:
+            top_frame = QFrame()
+            top_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            top_layout = QVBoxLayout(top_frame)
+            top_layout.setContentsMargins(0, 0, 0, 0)
+            top_layout.setSpacing(0)
+            top_layout.addLayout(split_layout)
+            # Give the top area the primary stretch so it doesn't starve
+            # the sliders area of vertical space. Sliders will be added
+            # below with a smaller stretch so they remain visible.
+            main_layout.addWidget(top_frame, 1)
+            try:
+                _ui_log(self, "[OrientationPanel] added top_frame to main_layout")
+            except Exception:
+                pass
+        except Exception:
+            # Fallback to adding the layout directly if widget wrapping fails
+            main_layout.addLayout(split_layout)
 
-        # Connect sliders to handlers
-        try:
-            self.drift_yaw_slider.valueChanged.connect(self._on_drift_yaw_angle_change)
-        except Exception:
-            pass
-        try:
-            self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
-        except Exception:
-            pass
-        try:
-            self.drift_roll_slider.valueChanged.connect(self._on_drift_roll_angle_change)
-        except Exception:
-            pass
+        # NOTE: slider widgets are created later in this method; connections
+        # are established immediately after each slider is instantiated.
 
         # Horizontal divider separating main panel from sliders
-        try:
-            sliders_div = QFrame()
-            sliders_div.setFrameShape(QFrame.HLine)
-            sliders_div.setFrameShadow(QFrame.Sunken)
-            sliders_div.setFixedHeight(1)
-            sliders_div.setStyleSheet("background-color: rgba(120,120,120,0.4);")
-            main_layout.addWidget(sliders_div)
-        except Exception:
-            pass
+        # (Divider now inserted as part of the sliders block below; removed duplicate here)
 
         # --- Input response monitoring ---
         try:
@@ -1301,14 +1759,19 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             self.input_response_timer = None
 
-        # End of UI build
-
         # --- Drift angle sliders spanning full width ---
         try:
+            _ui_log(self, "[OrientationPanel] entering sliders construction block")
+            try:
+                with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                    _f.write('entering sliders construction block\n')
+            except Exception:
+                pass
+
             sliders_frame = QFrame()
             sliders_layout = QVBoxLayout(sliders_frame)
-            sliders_layout.setContentsMargins(6, 6, 6, 6)
-            sliders_layout.setSpacing(8)
+            sliders_layout.setContentsMargins(4, 4, 4, 4)
+            sliders_layout.setSpacing(6)
 
             # Header
             header = QLabel("Drift Correction Angles")
@@ -1325,6 +1788,15 @@ class OrientationPanelQt(QGroupBox):
             self.drift_yaw_slider.setMinimum(0)
             self.drift_yaw_slider.setMaximum(250)
             self.drift_yaw_slider.setValue(int(self.drift_angle_yaw_value * 10))
+            try:
+                _ui_log(self, f"[OrientationPanel] created drift_yaw_slider: {self.drift_yaw_slider}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write('created drift_yaw_slider\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
             # Connect slider to handler so changes update viz/state
             try:
                 self.drift_yaw_slider.valueChanged.connect(self._on_drift_yaw_angle_change)
@@ -1347,6 +1819,15 @@ class OrientationPanelQt(QGroupBox):
             self.drift_pitch_slider.setMaximum(250)
             self.drift_pitch_slider.setValue(int(self.drift_angle_pitch_value * 10))
             try:
+                _ui_log(self, f"[OrientationPanel] created drift_pitch_slider: {self.drift_pitch_slider}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write('created drift_pitch_slider\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
                 self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
             except Exception:
                 pass
@@ -1367,6 +1848,15 @@ class OrientationPanelQt(QGroupBox):
             self.drift_roll_slider.setMaximum(250)
             self.drift_roll_slider.setValue(int(self.drift_angle_roll_value * 10))
             try:
+                _ui_log(self, f"[OrientationPanel] created drift_roll_slider: {self.drift_roll_slider}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write('created drift_roll_slider\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
                 self.drift_roll_slider.valueChanged.connect(self._on_drift_roll_angle_change)
             except Exception:
                 pass
@@ -1377,9 +1867,344 @@ class OrientationPanelQt(QGroupBox):
             roll_row.addWidget(self.drift_angle_roll_label)
             sliders_layout.addLayout(roll_row)
 
-            main_layout.addWidget(sliders_frame)
+            # Insert a horizontal divider immediately above the sliders so
+            # they visually separate from the top visualization/controls area.
+            try:
+                sliders_div = QFrame()
+                sliders_div.setFrameShape(QFrame.HLine)
+                sliders_div.setFrameShadow(QFrame.Sunken)
+                sliders_div.setFixedHeight(1)
+                sliders_div.setStyleSheet("background-color: rgba(120,120,120,0.25);")
+                main_layout.addWidget(sliders_div)
+            except Exception:
+                pass
+
+            # Ensure sliders area cannot be collapsed by surrounding layouts.
+            # Use Preferred vertical policy so the layout can allocate space,
+            # and set a sensible minimum height so sliders remain visible.
+            try:
+                sliders_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                # Prefer a minimum height so the sliders area can shrink when
+                # space is constrained while still remaining visible.
+                sliders_frame.setMinimumHeight(120)
+            except Exception:
+                pass
+
+            # Add sliders area with no stretch so it keeps a modest fixed
+            # allocation below the top_frame rather than being expanded.
+            try:
+                main_layout.addWidget(sliders_frame, 0)
+            except Exception:
+                main_layout.addWidget(sliders_frame)
+
+            # Debug: print existence and size hints immediately and again
+            # after a short delay so we can observe allocation post-layout.
+            try:
+                def _debug_print_slider_geometries():
+                    try:
+                        sf_geo = sliders_frame.geometry() if hasattr(sliders_frame, 'geometry') else None
+                        sf_hint = sliders_frame.sizeHint() if hasattr(sliders_frame, 'sizeHint') else None
+                        yaw_exists = hasattr(self, 'drift_yaw_slider') and self.drift_yaw_slider is not None
+                        pitch_exists = hasattr(self, 'drift_pitch_slider') and self.drift_pitch_slider is not None
+                        roll_exists = hasattr(self, 'drift_roll_slider') and self.drift_roll_slider is not None
+                        yaw_hint = self.drift_yaw_slider.sizeHint() if yaw_exists else None
+                        pitch_hint = self.drift_pitch_slider.sizeHint() if pitch_exists else None
+                        roll_hint = self.drift_roll_slider.sizeHint() if roll_exists else None
+                        min_h = sliders_frame.minimumHeight() if hasattr(sliders_frame, 'minimumHeight') else None
+                        _ui_log(self, f"[OrientationPanel] sliders_frame.geo={sf_geo}, hint={sf_hint}, minH={min_h}, yaw_exists={yaw_exists}, yaw_hint={yaw_hint}, pitch_exists={pitch_exists}, pitch_hint={pitch_hint}, roll_exists={roll_exists}, roll_hint={roll_hint}")
+                    except Exception as e:
+                        _ui_log(self, f"[OrientationPanel] debug geometry error: {e}")
+
+                # Immediate (post-construction) data
+                _debug_print_slider_geometries()
+
+                # Delayed check after layout pass
+                QTimer.singleShot(250, _debug_print_slider_geometries)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                _ui_log(self, f"[OrientationPanel] exception constructing sliders: {e}")
+                try:
+                    with open(r'd:/Development/Projects/Orienta/tools/orientation_debug.log', 'a', encoding='utf-8') as _f:
+                        _f.write(f'exception constructing sliders: {e}\n')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def _open_preferences_window(self):
+        """
+        Open a dialog containing the PreferencesPanel. If a preferences panel
+        instance was previously created by the main GUI (in the Preferences tab),
+        reuse that instance by reparenting it into the dialog and removing its
+        tab from the main TabbedGUIWorker. Otherwise create a new PreferencesPanel
+        instance and show it in the dialog.
+        """
+        try:
+            parent_window = None
+            try:
+                parent_window = self.window()
+            except Exception:
+                parent_window = None
+
+            dialog = QDialog(parent_window if parent_window is not None else self)
+            dialog.setWindowTitle("Preferences")
+            dialog.setModal(False)
+            dlg_layout = QVBoxLayout(dialog)
+            dlg_layout.setContentsMargins(6, 6, 6, 6)
+
+            prefs_widget = None
+            # If a preferences_panel exists (created by GUI worker), prefer to reuse it
+            prefs = getattr(self, 'preferences_panel', None)
+            if prefs is not None:
+                try:
+                    # Remove from any existing parent/layout by reparenting
+                    prefs.setParent(dialog)
+                    prefs_widget = prefs
+                except Exception:
+                    prefs_widget = None
+
+            if prefs_widget is None:
+                try:
+                    # Create a new PreferencesPanel using available queues/managers
+                    prefs_widget = PreferencesPanel(dialog)
+                except Exception:
+                    prefs_widget = None
+
+            if prefs_widget is not None:
+                dlg_layout.addWidget(prefs_widget)
+                # Connect to calibration panel if available
+                try:
+                    if hasattr(self, 'calibration_panel') and self.calibration_panel and hasattr(prefs_widget, 'connect_calibration_panel'):
+                        prefs_widget.connect_calibration_panel(self.calibration_panel)
+                except Exception:
+                    pass
+
+                # If parent_window can save/apply theme, wire signals back
+                try:
+                    if parent_window is not None:
+                        if hasattr(parent_window, '_apply_theme') and hasattr(prefs_widget, 'theme_changed'):
+                            prefs_widget.theme_changed.connect(parent_window._apply_theme)
+                        if hasattr(parent_window, 'save_preferences') and hasattr(prefs_widget, 'preferences_changed'):
+                            prefs_widget.preferences_changed.connect(parent_window.save_preferences)
+                except Exception:
+                    pass
+
+
+            # Apply parent's palette/style so the dialog matches the app theme
+            try:
+                if parent_window is not None:
+                    try:
+                        dialog.setStyleSheet(parent_window.styleSheet())
+                    except Exception:
+                        pass
+                    try:
+                        dialog.setPalette(parent_window.palette())
+                        dialog.setAutoFillBackground(True)
+                    except Exception:
+                        pass
+
+                # Resize to fit the full preferences page or use a sensible minimum
+                try:
+                    hint = prefs_widget.sizeHint() if prefs_widget is not None else None
+                    w = max(900, hint.width() + 40 if hint is not None else 900)
+                    h = max(700, hint.height() + 80 if hint is not None else 700)
+                    dialog.resize(int(w), int(h))
+                except Exception:
+                    try:
+                        dialog.resize(900, 700)
+                    except Exception:
+                        pass
+
+                # Show dialog non-modally
+                dialog.show()
+            except Exception:
+                try:
+                    dialog.exec_()
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                _ui_log(self, f"[OrientationPanel] Failed to open preferences window: {e}")
+            except Exception:
+                pass
+
+        # Connect some leftover slider signals (best-effort)
+        try:
+            self.drift_pitch_slider.valueChanged.connect(self._on_drift_pitch_angle_change)
         except Exception:
             pass
+
+        # --- Monitor / Logs dialog opener ---
+    def _open_monitor_window(self):
+        """
+        Open a dialog containing the MessagePanel. Reuse an existing MessagePanel
+        instance created by the main GUI when possible (reparenting it into the
+        dialog) so logs and serial output remain continuous. Otherwise create a
+        new MessagePanelQt instance attached to the dialog.
+        """
+        try:
+            parent_window = None
+            try:
+                parent_window = self.window()
+            except Exception:
+                parent_window = None
+
+            dialog = QDialog(parent_window if parent_window is not None else self)
+            dialog.setWindowTitle("Monitor / Logs")
+            dialog.setModal(False)
+            dlg_layout = QVBoxLayout(dialog)
+            dlg_layout.setContentsMargins(6, 6, 6, 6)
+
+            msg_widget = None
+            # Prefer any message_panel reference on this panel, calibration_panel, or parent_window
+            cand = getattr(self, 'message_panel', None)
+            if cand is None and hasattr(self, 'calibration_panel'):
+                cand = getattr(self.calibration_panel, 'message_panel', None)
+            if cand is None and parent_window is not None:
+                cand = getattr(parent_window, 'message_panel', None)
+
+            if cand is not None:
+                try:
+                    cand.setParent(dialog)
+                    msg_widget = cand
+                except Exception:
+                    msg_widget = None
+
+            if msg_widget is None:
+                try:
+                    # Create a local MessagePanel with generous history sizes
+                    msg_widget = MessagePanelQt(dialog, serial_height=12, message_height=12, max_serial_lines=500, max_message_lines=200, padding=6)
+                except Exception:
+                    msg_widget = None
+
+            if msg_widget is not None:
+                dlg_layout.addWidget(msg_widget)
+
+            # Apply parent's palette/style so the dialog matches the app theme
+            try:
+                if parent_window is not None:
+                    try:
+                        dialog.setStyleSheet(parent_window.styleSheet())
+                    except Exception:
+                        pass
+                    try:
+                        dialog.setPalette(parent_window.palette())
+                        dialog.setAutoFillBackground(True)
+                    except Exception:
+                        pass
+
+                # Resize to a sensible minimum for logs
+                try:
+                    hint = msg_widget.sizeHint() if msg_widget is not None else None
+                    w = max(800, hint.width() + 40 if hint is not None else 800)
+                    h = max(600, hint.height() + 80 if hint is not None else 600)
+                    dialog.resize(int(w), int(h))
+                except Exception:
+                    try:
+                        dialog.resize(800, 600)
+                    except Exception:
+                        pass
+
+                dialog.show()
+            except Exception:
+                try:
+                    dialog.exec_()
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                _ui_log(self, f"[OrientationPanel] Failed to open monitor window: {e}")
+            except Exception:
+                pass
+        try:
+            self.drift_roll_slider.valueChanged.connect(self._on_drift_roll_angle_change)
+        except Exception:
+            pass
+
+        # --- About dialog opener ---
+    def _open_about_window(self):
+        """
+        Open a dialog containing the AboutPanel. Reuse an existing AboutPanel
+        instance from the main window when possible (reparenting it into the
+        dialog) or create a fresh one if not available.
+        """
+        try:
+            parent_window = None
+            try:
+                parent_window = self.window()
+            except Exception:
+                parent_window = None
+
+            dialog = QDialog(parent_window if parent_window is not None else self)
+            dialog.setWindowTitle("About")
+            dialog.setModal(False)
+            dlg_layout = QVBoxLayout(dialog)
+            dlg_layout.setContentsMargins(6, 6, 6, 6)
+
+            about_widget = None
+            # Prefer any about_panel reference on this panel, calibration_panel, or parent_window
+            cand = getattr(self, 'about_panel', None)
+            if cand is None and hasattr(self, 'calibration_panel'):
+                cand = getattr(self.calibration_panel, 'about_panel', None)
+            if cand is None and parent_window is not None:
+                cand = getattr(parent_window, 'about_panel', None)
+
+            if cand is not None:
+                try:
+                    cand.setParent(dialog)
+                    about_widget = cand
+                except Exception:
+                    about_widget = None
+
+            if about_widget is None:
+                try:
+                    about_widget = AboutPanel(dialog)
+                except Exception:
+                    about_widget = None
+
+            if about_widget is not None:
+                dlg_layout.addWidget(about_widget)
+
+            # Apply parent's palette/style so the dialog matches the app theme
+            try:
+                if parent_window is not None:
+                    try:
+                        dialog.setStyleSheet(parent_window.styleSheet())
+                    except Exception:
+                        pass
+                    try:
+                        dialog.setPalette(parent_window.palette())
+                        dialog.setAutoFillBackground(True)
+                    except Exception:
+                        pass
+
+                # Resize to a sensible minimum for about content
+                try:
+                    hint = about_widget.sizeHint() if about_widget is not None else None
+                    w = max(500, hint.width() + 40 if hint is not None else 500)
+                    h = max(400, hint.height() + 80 if hint is not None else 400)
+                    dialog.resize(int(w), int(h))
+                except Exception:
+                    try:
+                        dialog.resize(500, 400)
+                    except Exception:
+                        pass
+
+                dialog.show()
+            except Exception:
+                try:
+                    dialog.exec_()
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                _ui_log(self, f"[OrientationPanel] Failed to open about window: {e}")
+            except Exception:
+                pass
+
+        # Sliders are constructed during _build_ui; removed duplicate block here.
 
     def _build_euler_displays(self, parent_layout):
         """Build Euler angle (Yaw, Pitch, Roll) display row."""
@@ -1456,6 +2281,470 @@ class OrientationPanelQt(QGroupBox):
                             pass
             except Exception:
                 pass
+        except Exception:
+            pass
+
+    def _create_popup_window(self):
+        """Create a frameless always-on-top window to host the visualization."""
+        try:
+            from PyQt5.QtWidgets import QWidget
+            popup = QWidget(None, Qt.Window | Qt.FramelessWindowHint | Qt.Tool)
+            # Ensure the popup respects application stylesheet (theme)
+            popup.setObjectName('visualizationPopup')
+            popup.setAttribute(Qt.WA_StyledBackground, True)
+            popup.setWindowFlags(popup.windowFlags() | Qt.WindowStaysOnTopHint)
+            popup.setAttribute(Qt.WA_TranslucentBackground, False)
+            popup.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            # Create a square container for the visualization inside popup
+            square = SquareContainer(self.visualization_widget, parent=popup)
+            layout = QVBoxLayout(popup)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(square)
+            # Position the popup. If a preferred geometry was stored use it,
+            # otherwise fall back to a sensible default in the bottom-right.
+            screen = QApplication.primaryScreen()
+            geom = screen.availableGeometry()
+            try:
+                if isinstance(self._popup_geom, QRect):
+                    w = max(64, int(self._popup_geom.width()))
+                    h = max(64, int(self._popup_geom.height()))
+                    x = int(self._popup_geom.x())
+                    y = int(self._popup_geom.y())
+                else:
+                    w = 320
+                    h = 320
+                    x = geom.right() - w - 24
+                    y = geom.bottom() - h - 24
+            except Exception:
+                w = 320
+                h = 320
+                x = geom.right() - w - 24
+                y = geom.bottom() - h - 24
+            popup.setGeometry(x, y, w, h)
+            # Apply stored opacity if available
+            try:
+                popup.setWindowOpacity(max(0.0, min(1.0, float(self._popup_opacity))))
+            except Exception:
+                pass
+            popup.show()
+            try:
+                # Record popup geometry for future size/position control
+                self._popup_geom = popup.geometry()
+            except Exception:
+                self._popup_geom = None
+            try:
+                # Install event filter so moves/resizes are recorded
+                popup.installEventFilter(self)
+            except Exception:
+                pass
+            return popup, square
+        except Exception:
+            return None, None
+
+    def _toggle_viz_popup(self):
+        """Toggle visualization between embedded and popped-out states."""
+        try:
+            if not self._viz_popped_out:
+                # Record previous visualization container size so we can restore it on pop-in
+                try:
+                    self._viz_prev_size = self.visualization_square.size()
+                except Exception:
+                    self._viz_prev_size = None
+                # Record original layout and index so we can restore later
+                try:
+                    parent = self.visualization_square.parent()
+                    self._viz_layout = parent.layout() if parent is not None else None
+                    self._viz_index = None
+                    if self._viz_layout is not None:
+                        for idx in range(self._viz_layout.count()):
+                            it = self._viz_layout.itemAt(idx)
+                            try:
+                                w = it.widget()
+                            except Exception:
+                                w = None
+                            if w is self.visualization_square:
+                                self._viz_index = idx
+                                break
+                except Exception:
+                    self._viz_layout = None
+                    self._viz_index = None
+
+                # Create placeholder to keep layout spacing
+                placeholder = QWidget()
+                placeholder.setMinimumSize(160, 160)
+                placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+                # Remove the visualization_square from its layout and insert placeholder
+                try:
+                    if self._viz_layout is not None and self._viz_index is not None:
+                        item = self._viz_layout.takeAt(self._viz_index)
+                        try:
+                            if item and item.widget():
+                                item.widget().setParent(None)
+                        except Exception:
+                            pass
+                        self._viz_layout.insertWidget(self._viz_index, placeholder, stretch=1)
+                    else:
+                        try:
+                            self.visualization_square.setParent(None)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # Create popup which will reparent the visualization widget into the popup's square
+                popup, square = self._create_popup_window()
+                if popup is None:
+                    # Failed to create popup: try to restore original placement
+                    try:
+                        if self._viz_layout is not None and self._viz_index is not None:
+                            # remove placeholder
+                            for i in range(self._viz_layout.count()):
+                                it = self._viz_layout.itemAt(i)
+                                if it and it.widget() is placeholder:
+                                    self._viz_layout.takeAt(i)
+                                    break
+                            self._viz_layout.insertWidget(self._viz_index, self.visualization_square, stretch=1)
+                    except Exception:
+                        pass
+                    return
+
+                # Save popup and placeholder references
+                self._popup_window = popup
+                self._popup_square = square
+                self._placeholder_square = placeholder
+
+                self.pop_viz_button.setText("Pop In")
+                self._viz_popped_out = True
+            else:
+                # Pop in: move visualization back into its original container
+                try:
+                    if self._popup_window:
+                        # Detach visualization from popup
+                        try:
+                            self.visualization_widget.setParent(None)
+                        except Exception:
+                            pass
+
+                        # Reparent visualization into the original square container
+                        try:
+                            self.visualization_widget.setParent(self.visualization_square)
+                            self.visualization_square._child = self.visualization_widget
+                        except Exception:
+                            pass
+
+                        # Replace placeholder with the original square in the recorded layout
+                        try:
+                            if self._viz_layout is not None and self._viz_index is not None:
+                                replaced = False
+                                for i in range(self._viz_layout.count()):
+                                    it = self._viz_layout.itemAt(i)
+                                    if it and it.widget() is self._placeholder_square:
+                                        self._viz_layout.takeAt(i)
+                                        self._viz_layout.insertWidget(i, self.visualization_square, stretch=1)
+                                        replaced = True
+                                        break
+                                if not replaced:
+                                    # fallback: insert at stored index
+                                    self._viz_layout.insertWidget(self._viz_index, self.visualization_square, stretch=1)
+                            else:
+                                # fallback: try to add back to a reasonable parent
+                                try:
+                                    parent = self.visualization_square.parent()
+                                    if parent is not None:
+                                        parent.layout().addWidget(self.visualization_square, stretch=1)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                        try:
+                            self._popup_window.close()
+                        except Exception:
+                            pass
+                        # Force a geometry refresh on the restored square so the
+                        # child visualization is laid out at the correct size.
+                        try:
+                            if self._viz_prev_size is not None:
+                                try:
+                                    # Apply fixed size to the square to restore previous scale
+                                    self.visualization_square.setFixedSize(self._viz_prev_size.width(), self._viz_prev_size.height())
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(self.visualization_square, 'refresh_child_geometry'):
+                                QTimer.singleShot(0, self.visualization_square.refresh_child_geometry)
+                        except Exception:
+                            pass
+                        try:
+                            self.visualization_widget.update()
+                        except Exception:
+                            pass
+                        # Remove fixed size after a short delay to let layouts resume control
+                        try:
+                            def _clear_fixed():
+                                try:
+                                    self.visualization_square.setMinimumSize(0, 0)
+                                    self.visualization_square.setMaximumSize(16777215, 16777215)
+                                    self.visualization_square.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                                    try:
+                                        self.visualization_square.update()
+                                    except Exception:
+                                        pass
+                                except Exception:
+                                    pass
+                            QTimer.singleShot(150, _clear_fixed)
+                        except Exception:
+                            pass
+                    # Clear stored popup/placeholder/layout info
+                    self._popup_window = None
+                    self._popup_square = None
+                    self._placeholder_square = None
+                    self._viz_layout = None
+                    self._viz_index = None
+                except Exception:
+                    pass
+                self.pop_viz_button.setText("Pop Out")
+                self._viz_popped_out = False
+        except Exception:
+            pass
+
+    def _open_viz_settings(self):
+        """Open a small dialog allowing the user to set popout size and position."""
+        try:
+            dlg = QDialog(self)
+            dlg.setObjectName('visualizationSettingsDialog')
+            dlg.setAttribute(Qt.WA_StyledBackground, True)
+            dlg.setWindowTitle("Visualization Settings")
+            layout = QVBoxLayout(dlg)
+
+            # Remember the original geometry so Cancel can restore it
+            orig_geom = None
+            try:
+                if self._popup_window and self._popup_geom is not None:
+                    orig_geom = QRect(self._popup_geom)
+                elif self._popup_window:
+                    orig_geom = QRect(self._popup_window.geometry())
+                elif self._popup_geom is not None:
+                    orig_geom = QRect(self._popup_geom)
+            except Exception:
+                orig_geom = None
+
+            # Size setting
+            size_row = QHBoxLayout()
+            size_row.addWidget(QLabel("Popout size:"))
+            self._size_slider = QSlider(Qt.Horizontal)
+            self._size_slider.setMinimum(200)
+            self._size_slider.setMaximum(1200)
+            current_size = 320
+            try:
+                if self._popup_window:
+                    current_size = max(64, int(self._popup_window.width()))
+                elif self._popup_geom is not None:
+                    current_size = max(64, int(self._popup_geom.width()))
+            except Exception:
+                current_size = 320
+            self._size_slider.setValue(current_size)
+            size_row.addWidget(self._size_slider, 1)
+            layout.addLayout(size_row)
+
+            # Opacity setting (0-100 mapped to 0.0-1.0)
+            opacity_row = QHBoxLayout()
+            opacity_row.addWidget(QLabel("Popout opacity:"))
+            from PyQt5.QtWidgets import QSpinBox
+            self._opacity_slider = QSlider(Qt.Horizontal)
+            self._opacity_slider.setMinimum(10)
+            self._opacity_slider.setMaximum(100)
+            try:
+                cur_op = int(max(10, min(100, int(self._popup_opacity * 100))))
+            except Exception:
+                cur_op = 100
+            self._opacity_slider.setValue(cur_op)
+            opacity_row.addWidget(self._opacity_slider, 1)
+            self._opacity_label = QLabel(f"{cur_op}%")
+            self._opacity_label.setMinimumWidth(48)
+            self._opacity_label.setAlignment(Qt.AlignCenter)
+            opacity_row.addWidget(self._opacity_label)
+            layout.addLayout(opacity_row)
+
+            # Position options
+            pos_row = QHBoxLayout()
+            pos_row.addWidget(QLabel("Position:"))
+            from PyQt5.QtWidgets import QComboBox
+            self._pos_combo = QComboBox()
+            self._pos_combo.addItems(["Top Left", "Top Right", "Bottom Left", "Bottom Right"])
+            # Try to select current popup position if available
+            try:
+                if self._popup_window and self._popup_geom is not None:
+                    screen = QApplication.primaryScreen().availableGeometry()
+                    g = self._popup_geom
+                    if g.x() < screen.center().x():
+                        # left
+                        if g.y() < screen.center().y():
+                            self._pos_combo.setCurrentIndex(0)
+                        else:
+                            self._pos_combo.setCurrentIndex(2)
+                    else:
+                        if g.y() < screen.center().y():
+                            self._pos_combo.setCurrentIndex(1)
+                        else:
+                            self._pos_combo.setCurrentIndex(3)
+            except Exception:
+                pass
+            pos_row.addWidget(self._pos_combo, 1)
+            layout.addLayout(pos_row)
+
+            # Live apply: when sliders change, update popup immediately
+            def _apply_live():
+                try:
+                    size = int(self._size_slider.value())
+                    pos_idx = int(self._pos_combo.currentIndex())
+                    screen = QApplication.primaryScreen().availableGeometry()
+                    w = size
+                    h = size
+                    margin = 24
+                    if pos_idx == 0:  # TL
+                        x = screen.left() + margin
+                        y = screen.top() + margin
+                    elif pos_idx == 1:  # TR
+                        x = screen.right() - w - margin
+                        y = screen.top() + margin
+                    elif pos_idx == 2:  # BL
+                        x = screen.left() + margin
+                        y = screen.bottom() - h - margin
+                    else:  # BR
+                        x = screen.right() - w - margin
+                        y = screen.bottom() - h - margin
+                    self._popup_geom = QRect(x, y, w, h)
+                    if self._popup_window:
+                        try:
+                            self._popup_window.setGeometry(self._popup_geom)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            def _apply_opacity_live():
+                try:
+                    val = int(self._opacity_slider.value())
+                    pct = max(10, min(100, val))
+                    self._popup_opacity = pct / 100.0
+                    try:
+                        self._opacity_label.setText(f"{pct}%")
+                    except Exception:
+                        pass
+                    if self._popup_window:
+                        try:
+                            self._popup_window.setWindowOpacity(self._popup_opacity)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            self._size_slider.valueChanged.connect(lambda _: _apply_live())
+            self._pos_combo.currentIndexChanged.connect(lambda _: _apply_live())
+            self._opacity_slider.valueChanged.connect(lambda _: _apply_opacity_live())
+
+            # When live changes occur, emit preferences_changed to persist immediately
+            try:
+                prefs = getattr(self, 'preferences_panel', None) or (getattr(self, 'calibration_panel', None) and getattr(self.calibration_panel, 'preferences_panel', None))
+                if prefs and hasattr(prefs, 'preferences_changed'):
+                    self._size_slider.valueChanged.connect(lambda _: self._request_pref_save())
+                    self._pos_combo.currentIndexChanged.connect(lambda _: self._request_pref_save())
+                    self._opacity_slider.valueChanged.connect(lambda _: self._request_pref_save())
+            except Exception:
+                pass
+
+            # Buttons: OK simply closes, Cancel restores original geometry
+            bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            layout.addWidget(bb)
+            def _on_ok():
+                try:
+                    # Already applied live; just accept
+                    dlg.accept()
+                except Exception:
+                    dlg.accept()
+
+            def _on_cancel():
+                try:
+                    # Restore previous geometry if popup exists
+                    if orig_geom is not None:
+                        self._popup_geom = QRect(orig_geom)
+                        if self._popup_window:
+                            try:
+                                self._popup_window.setGeometry(self._popup_geom)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                dlg.reject()
+
+            bb.accepted.connect(_on_ok)
+            bb.rejected.connect(_on_cancel)
+            dlg.exec_()
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, event):
+        """Capture move/resize events from the popup to keep _popup_geom current."""
+        try:
+            if obj is getattr(self, '_popup_window', None):
+                if event.type() in (QEvent.Move, QEvent.Resize):
+                    try:
+                        g = self._popup_window.geometry()
+                        self._popup_geom = QRect(g)
+                        # Emit preferences_changed via PreferencesPanel if available
+                        prefs = getattr(self, 'preferences_panel', None)
+                        if prefs and hasattr(prefs, 'preferences_changed'):
+                            try:
+                                self._request_pref_save()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def _update_euler_view(self):
+        """Show Euler angles only while fusion is processing and no calibration runs."""
+        try:
+            stack = getattr(self, 'euler_stack', None)
+            if stack is None:
+                return
+
+            show_angles = (bool(getattr(self, '_processing_active', False))
+                           and not bool(getattr(self, '_calibrating', False)))
+            hold = getattr(self, 'hold_indicator', None)
+
+            if show_angles:
+                if hold is not None:
+                    try:
+                        hold.stop_blinking()
+                    except Exception:
+                        pass
+                stack.setCurrentWidget(self._euler_page)
+            else:
+                # Show hold page; only blink when calibration is running or when
+                # serial is connected but the fusion loop isn't processing data.
+                stack.setCurrentWidget(self._hold_page)
+                try:
+                    should_blink = bool(getattr(self, '_calibrating', False)) or (
+                        (getattr(self, '_serial_state', None) == 'connected') and not bool(getattr(self, '_processing_active', False))
+                    )
+                except Exception:
+                    should_blink = bool(getattr(self, '_calibrating', False))
+
+                if hold is not None:
+                    try:
+                        if should_blink:
+                            hold.start_blinking()
+                        else:
+                            hold.stop_blinking()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -1538,12 +2827,55 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
+        # Calibration blocks live angle output; reflect that in the Euler area
+        self._calibrating = bool(calibrating)
+        self._update_euler_view()
+
+    def update_serial_connection_status(self, value):
+        """
+        Compatibility method called by GUI worker to inform about serial connection
+        lifecycle changes. Expected values: 'connected', 'stopped', 'disconnected', 'error', etc.
+        The hold indicator should blink when serial is connected but no fusion data
+        is being processed (i.e. waiting for the device to begin sending samples).
+        """
+        try:
+            # Normalize to string where possible
+            state = None
+            if isinstance(value, str):
+                state = value.lower().strip()
+            elif isinstance(value, bool):
+                state = 'connected' if value else 'stopped'
+            elif value is None:
+                state = None
+            else:
+                try:
+                    state = str(value).lower()
+                except Exception:
+                    state = None
+
+            self._serial_state = state
+        except Exception:
+            # Defensive fallback
+            try:
+                self._serial_state = str(value)
+            except Exception:
+                self._serial_state = None
+        finally:
+            # Refresh the Euler/hold display based on the new serial state
+            try:
+                self._update_euler_view()
+            except Exception:
+                pass
+
+
     def update_processing_status(self, value):
         """
         Update UI elements based on whether the fusion worker is actively processing data.
 
         When processing is inactive the Disengage, Reset and Recalibrate buttons (and
         their shortcut-set buttons) are disabled and visually muted.
+        This method is idempotent: repeated calls with the same boolean state are
+        ignored to avoid duplicate work and noisy logging.
         """
         try:
             # Normalize incoming value to a boolean 'active'
@@ -1551,128 +2883,157 @@ class OrientationPanelQt(QGroupBox):
             if isinstance(value, bool):
                 active = value
             elif isinstance(value, str):
-                active = value.lower() == 'active' or 'active' in value.lower()
-            else:
-                try:
-                    active = bool(value)
-                except Exception:
+                v = value.lower().strip()
+                if v in ('active', 'true', '1', 'on'):
+                    active = True
+                elif v in ('inactive', 'false', '0', 'off'):
                     active = False
+                else:
+                    # Fallback: interpret non-empty strings as True
+                    active = bool(v)
+            else:
+                active = bool(value)
+
+            # If state hasn't changed, do nothing
+            if getattr(self, '_processing_active', None) == active:
+                self._update_euler_view()
+                return
 
             # Remember state
+            self._processing_active = active
+            self._update_euler_view()
+
+            # Log state change
             try:
-                self._processing_active = active
+                _ui_log(self, f"[OrientationPanel] update_processing_status called -> active={active}")
             except Exception:
                 pass
 
-            # Debug
-            try:
-                print(f"[OrientationPanel] update_processing_status called -> active={active}")
-            except Exception:
-                pass
-
-            widget_names = (
-                'disengage_btn', 'disengage_shortcut_btn',
-                'reset_button', 'reset_shortcut_btn',
-                'recal_button'
-            )
+            widget_names = ('disengage_btn', 'reset_button', 'recal_button')
 
             for name in widget_names:
+                w = getattr(self, name, None)
+                if w is None:
+                    continue
+
                 try:
-                    w = getattr(self, name, None)
-                    if w is None:
-                        continue
-                    try:
-                        w.setEnabled(active)
-                    except Exception:
-                        pass
+                    if not active:
+                        # Ensure disabled appearance and behavior
+                        w.setEnabled(False)
+                        w.setProperty('status', 'disabled')
+                        prev_tip = w.toolTip() or ''
+                        w.setToolTip((prev_tip + ' (inactive: waiting for data)').strip())
+                        w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                        w.setFocusPolicy(Qt.NoFocus)
 
-                    try:
-                        if not active:
-                            w.setProperty('status', 'disabled')
+                        try:
+                            from PyQt5.QtWidgets import QGraphicsOpacityEffect
+                            eff = QGraphicsOpacityEffect()
+                            eff.setOpacity(0.45)
+                            w._inactive_opacity_effect = eff
+                            w.setGraphicsEffect(eff)
+                        except Exception:
+                            # If style or widgets not available in tests, ignore
+                            pass
+                    else:
+                        # Active -> restore normal appearance
+                        w.setEnabled(True)
+                        w.setProperty('status', '')
+                        w.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+                        w.setFocusPolicy(Qt.StrongFocus)
+                        if hasattr(w, '_inactive_opacity_effect'):
                             try:
-                                prev_tip = w.toolTip() or ''
-                                w.setToolTip((prev_tip + ' (inactive: waiting for data)').strip())
+                                w.setGraphicsEffect(None)
                             except Exception:
                                 pass
                             try:
-                                w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                                del w._inactive_opacity_effect
                             except Exception:
                                 pass
-                            try:
-                                w.setFocusPolicy(Qt.NoFocus)
-                            except Exception:
-                                pass
-                            try:
-                                from PyQt5.QtWidgets import QGraphicsOpacityEffect
-                                eff = QGraphicsOpacityEffect()
-                                eff.setOpacity(0.45)
-                                w._inactive_opacity_effect = eff
-                                w.setGraphicsEffect(eff)
-                            except Exception:
-                                pass
-                        else:
-                            w.setProperty('status', '')
-                            try:
-                                w.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-                            except Exception:
-                                pass
-                            try:
-                                w.setFocusPolicy(Qt.StrongFocus)
-                            except Exception:
-                                pass
-                            try:
-                                if hasattr(w, '_inactive_opacity_effect'):
-                                    w.setGraphicsEffect(None)
-                                    delattr(w, '_inactive_opacity_effect')
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
 
+                    # Refresh widget style where possible
                     try:
                         w.style().polish(w)
                         w.update()
                     except Exception:
                         pass
                 except Exception:
+                    # Defensive: if any one widget fails, continue with others
                     pass
         except Exception:
+            # Defensive catch-all to avoid crashing the UI
             pass
 
-    def update_device_status(self, stationary: bool):
+    def clear_calibration_state(self):
         """
-        Update drift correction status and visualization.
+        Discard any locally-stored calibration data and reset calibration UI.
 
-        Args:
-            active: Boolean indicating if drift correction is active
+        Called when the serial connection is stopped or an external event requires
+        clearing calibration state so the UI does not display stale values.
         """
+        # Keep the function defensive but simpler to avoid nested try/except matching issues.
         try:
-            # Update visualization state
+            # Reset calibration indicator
+            if getattr(self, 'calib_status_label', None):
+                try:
+                    self.calib_status_label.setText("Gyro: Not calibrated")
+                    self.calib_status_label.setProperty('status', 'error')
+                    try:
+                        self.calib_status_label.style().polish(self.calib_status_label)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # Reset stored drift angles to defaults
             try:
-                if hasattr(self, 'visualization_widget') and self.visualization_widget:
-                    self.visualization_widget.update_drift_correction(active)
+                from config.config import DEFAULT_CENTER_THRESHOLD
+                self.drift_angle_yaw_value = DEFAULT_CENTER_THRESHOLD
+                self.drift_angle_pitch_value = DEFAULT_CENTER_THRESHOLD
+                self.drift_angle_roll_value = DEFAULT_CENTER_THRESHOLD
+            except Exception:
+                # If config import fails, fall back to existing values or zeros
+                self.drift_angle_yaw_value = getattr(self, 'drift_angle_yaw_value', 0.0)
+                self.drift_angle_pitch_value = getattr(self, 'drift_angle_pitch_value', 0.0)
+                self.drift_angle_roll_value = getattr(self, 'drift_angle_roll_value', 0.0)
+
+            # Update UI controls if present
+            try:
+                if hasattr(self, 'drift_angle_yaw_label') and self.drift_angle_yaw_label:
+                    self.drift_angle_yaw_label.setText(f"{self.drift_angle_yaw_value:.1f}°")
+                if hasattr(self, 'drift_yaw_slider') and self.drift_yaw_slider:
+                    self.drift_yaw_slider.setValue(int(self.drift_angle_yaw_value * 10))
+                if hasattr(self, 'drift_angle_pitch_label') and self.drift_angle_pitch_label:
+                    self.drift_angle_pitch_label.setText(f"{self.drift_angle_pitch_value:.1f}°")
+                if hasattr(self, 'drift_pitch_slider') and self.drift_pitch_slider:
+                    self.drift_pitch_slider.setValue(int(self.drift_angle_pitch_value * 10))
+                if hasattr(self, 'drift_angle_roll_label') and self.drift_angle_roll_label:
+                    self.drift_angle_roll_label.setText(f"{self.drift_angle_roll_value:.1f}°")
+                if hasattr(self, 'drift_roll_slider') and self.drift_roll_slider:
+                    self.drift_roll_slider.setValue(int(self.drift_angle_roll_value * 10))
             except Exception:
                 pass
 
-            # Update own drift status label
-            if hasattr(self, 'drift_status_label') and self.drift_status_label:
-                if active:
-                    self.drift_status_label.setText("Drift Correction Active")
-                    self.drift_status_label.setProperty("status", "enabled")
-                else:
-                    self.drift_status_label.setText("Drift Correction Inactive")
-                    self.drift_status_label.setProperty("status", "error")
-                try:
-                    self.drift_status_label.style().polish(self.drift_status_label)
-                except Exception:
-                    pass
-
-            # Also notify calibration panel if present so it can update internal state
-            if hasattr(self, 'calibration_panel') and self.calibration_panel:
-                try:
-                    self.calibration_panel._processing_active = getattr(self.calibration_panel, '_processing_active', False)
-                except Exception:
-                    pass
+            # Mirror cleared values and stored drifts to attached calibration panel if present
+            try:
+                self.stored_drift_yaw = self.drift_angle_yaw_value
+                self.stored_drift_pitch = self.drift_angle_pitch_value
+                self.stored_drift_roll = self.drift_angle_roll_value
+                cal = getattr(self, 'calibration_panel', None)
+                if cal is not None:
+                    if hasattr(cal, 'drift_angle_yaw_value'):
+                        cal.drift_angle_yaw_value = self.drift_angle_yaw_value
+                    if hasattr(cal, 'drift_angle_pitch_value'):
+                        cal.drift_angle_pitch_value = self.drift_angle_pitch_value
+                    if hasattr(cal, 'drift_angle_roll_value'):
+                        cal.drift_angle_roll_value = self.drift_angle_roll_value
+                    if hasattr(cal, 'clear_calibration_state'):
+                        try:
+                            cal.clear_calibration_state()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -2006,60 +3367,6 @@ class OrientationPanelQt(QGroupBox):
                         self.message_callback(f"Initial roll drift angle set to {self.drift_angle_roll_value:.1f}°")
         except Exception:
             pass
-        try:
-            angle = float(angle)
-            angle = max(0.0, min(25.0, angle))
-            angle = round(angle * 10.0) / 10.0
-            self.drift_angle_yaw_value = angle
-            try:
-                self.drift_angle_yaw_label.setText(f"{angle:.1f}°")
-                self.drift_yaw_slider.setValue(int(angle * 10))
-            except Exception:
-                pass
-            if self.control_queue:
-                from util.error_utils import safe_queue_put
-                from config.config import QUEUE_PUT_TIMEOUT
-                safe_queue_put(self.control_queue, ('set_center_threshold_yaw', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
-        except Exception:
-            pass
-
-    def set_drift_angle_pitch(self, angle):
-        try:
-            angle = float(angle)
-            angle = max(0.0, min(25.0, angle))
-            angle = round(angle * 10.0) / 10.0
-            self.drift_angle_pitch_value = angle
-            try:
-                self.drift_angle_pitch_label.setText(f"{angle:.1f}°")
-                self.drift_pitch_slider.setValue(int(angle * 10))
-            except Exception:
-                pass
-            if self.control_queue:
-                from util.error_utils import safe_queue_put
-                from config.config import QUEUE_PUT_TIMEOUT
-                safe_queue_put(self.control_queue, ('set_center_threshold_pitch', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
-        except Exception:
-            pass
-
-    def set_drift_angle_roll(self, angle):
-        try:
-            angle = float(angle)
-            angle = max(0.0, min(25.0, angle))
-            angle = round(angle * 10.0) / 10.0
-            self.drift_angle_roll_value = angle
-            try:
-                self.drift_angle_roll_label.setText(f"{angle:.1f}°")
-                self.drift_roll_slider.setValue(int(angle * 10))
-            except Exception:
-                pass
-            if self.control_queue:
-                from util.error_utils import safe_queue_put
-                from config.config import QUEUE_PUT_TIMEOUT
-                safe_queue_put(self.control_queue, ('set_center_threshold_roll', float(angle)), timeout=QUEUE_PUT_TIMEOUT)
-        except Exception:
-            pass
-
-
     
     def get_prefs(self):
         """
@@ -2078,6 +3385,30 @@ class OrientationPanelQt(QGroupBox):
                 'disengage_shortcut_display_name': getattr(self, 'disengage_shortcut_display_name', 'None'),
                 'disengage_toggle_mode': getattr(self, 'disengage_toggle_mode', False)
             }
+
+            # Persist popup geometry and opacity so popout restores between runs
+            try:
+                if isinstance(self._popup_geom, QRect):
+                    prefs['popup_x'] = int(self._popup_geom.x())
+                    prefs['popup_y'] = int(self._popup_geom.y())
+                    prefs['popup_w'] = int(self._popup_geom.width())
+                    prefs['popup_h'] = int(self._popup_geom.height())
+                elif self._popup_window is not None:
+                    try:
+                        g = self._popup_window.geometry()
+                        prefs['popup_x'] = int(g.x())
+                        prefs['popup_y'] = int(g.y())
+                        prefs['popup_w'] = int(g.width())
+                        prefs['popup_h'] = int(g.height())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            try:
+                prefs['popup_opacity'] = float(getattr(self, '_popup_opacity', 1.0))
+            except Exception:
+                prefs['popup_opacity'] = 1.0
             return prefs
         except Exception:
             return {}
@@ -2142,6 +3473,45 @@ class OrientationPanelQt(QGroupBox):
                 toggle_mode = toggle_mode.lower() in ('true', '1', 'yes')
             try:
                 self.set_disengage_toggle_mode(bool(toggle_mode))
+            except Exception:
+                pass
+
+            # Restore popup geometry and opacity if present
+            try:
+                # Opacity might be stored as float or string
+                if 'popup_opacity' in prefs and prefs.get('popup_opacity') is not None:
+                    try:
+                        op = prefs.get('popup_opacity')
+                        if isinstance(op, str):
+                            op = float(op)
+                        else:
+                            op = float(op)
+                        # clamp between 0.1 and 1.0 to avoid invisible popups
+                        op = max(0.1, min(1.0, op))
+                        self._popup_opacity = op
+                    except Exception:
+                        pass
+
+                # Geometry may be stored as four separate numeric keys
+                if ('popup_x' in prefs and 'popup_y' in prefs and
+                        'popup_w' in prefs and 'popup_h' in prefs):
+                    try:
+                        x = int(prefs.get('popup_x'))
+                        y = int(prefs.get('popup_y'))
+                        w = int(prefs.get('popup_w'))
+                        h = int(prefs.get('popup_h'))
+                        # Basic validation
+                        if w <= 0 or h <= 0:
+                            raise ValueError('invalid size')
+                        self._popup_geom = QRect(x, y, w, h)
+                        # If popup already exists, apply immediately
+                        if getattr(self, '_popup_window', None):
+                            try:
+                                self._popup_window.setGeometry(self._popup_geom)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
         except Exception:
@@ -2405,11 +3775,11 @@ class OrientationPanelQt(QGroupBox):
                         # Generally handled by KeyCaptureDialog; ignore here unless no dialog
                         key = resp[1] if len(resp) > 1 else None
                         disp = resp[2] if len(resp) > 2 else None
-                        print(f"[OrientationPanel] input_captured: {key} ({disp})")
+                        _ui_log(self, f"[OrientationPanel] input_captured: {key} ({disp})")
                     elif tag == 'shortcut_pressed':
                         key = resp[1] if len(resp) > 1 else None
                         action = resp[2] if len(resp) > 2 else None
-                        print(f"[OrientationPanel] shortcut_pressed: {key} -> {action}")
+                        _ui_log(self, f"[OrientationPanel] shortcut_pressed: {key} -> {action}")
                         if action == 'reset_orientation' and hasattr(self, '_on_reset_orientation'):
                             try:
                                 self._on_reset_orientation()
@@ -2423,14 +3793,14 @@ class OrientationPanelQt(QGroupBox):
                     elif tag == 'shortcut_released':
                         key = resp[1] if len(resp) > 1 else None
                         action = resp[2] if len(resp) > 2 else None
-                        print(f"[OrientationPanel] shortcut_released: {key} -> {action}")
+                        _ui_log(self, f"[OrientationPanel] shortcut_released: {key} -> {action}")
                         if action == 'disengage_drift' and hasattr(self, '_on_disengage_released'):
                             try:
                                 self._on_disengage_released()
                             except Exception:
                                 pass
                 except Exception as e:
-                    print(f"[OrientationPanel] Error handling input response: {e}")
+                    _ui_log(self, f"[OrientationPanel] Error handling input response: {e}")
         except Exception:
             pass
 
@@ -2582,5 +3952,47 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
 
+            # Debug: show whether prefs contain popup geometry/opactiy after connection
+            try:
+                p = getattr(preferences_panel, 'prefs_manager', None)
+                if p:
+                    allp = p.load()
+                    _ui_log(self, f"[OrientationPanel] connected prefs sections: {list(allp.keys())}")
+                    ori = allp.get('orientation', {})
+                    if isinstance(ori, dict) and ('popup_x' in ori or 'popup_opacity' in ori):
+                        _ui_log(self, f"[OrientationPanel] orientation prefs loaded: popup_x={ori.get('popup_x')}, popup_opacity={ori.get('popup_opacity')}")
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
+        # End connect_preferences_panel
+
+    def _request_pref_save(self):
+        """Request a debounced preferences save via the connected PreferencesPanel.
+
+        This will call `PreferencesPanel._trigger_preference_save()` when
+        available (debounced), otherwise fall back to emitting
+        `preferences_changed` immediately.
+        """
+        try:
+            prefs = getattr(self, 'preferences_panel', None)
+            if not prefs and getattr(self, 'calibration_panel', None):
+                # calibration_panel may expose a preferences_panel reference
+                prefs = getattr(self.calibration_panel, 'preferences_panel', None)
+            if prefs:
+                if hasattr(prefs, '_trigger_preference_save'):
+                    try:
+                        prefs._trigger_preference_save()
+                        return
+                    except Exception:
+                        pass
+                if hasattr(prefs, 'preferences_changed'):
+                    try:
+                        prefs.preferences_changed.emit()
+                        return
+                    except Exception:
+                        pass
         except Exception:
             pass

@@ -25,7 +25,6 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
     udp_ip = DEFAULT_UDP_IP if udp_ip is None else udp_ip
     udp_port = DEFAULT_UDP_PORT if udp_port is None else udp_port
     log_info(logQueue, "UDP Worker", f"Starting UDP sender to {udp_ip}:{udp_port}")
-    print(f"[UDP Worker] Starting. Sending to {udp_ip}:{udp_port}")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_enabled = False
@@ -81,10 +80,8 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
                     last_rate_ts = now
             except (IndexError, TypeError, ValueError, OSError) as error:
                 log_error(logQueue, "UDP Worker", f"Pack/send error: {error}")
-                print(f"[UDP Worker] Pack/send error: {error}")
     except KeyboardInterrupt:
         pass
     finally:
         sock.close()
         log_info(logQueue, "UDP Worker", "Stopped")
-        print("[UDP Worker] Stopped.")

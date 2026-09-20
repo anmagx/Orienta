@@ -49,7 +49,11 @@ class ThemeManager:
             theme_name: Theme name ('light' or 'dark')
         """
         if theme_name not in ['light', 'dark']:
-            print(f"[ThemeManager] Unknown theme: {theme_name}, defaulting to light")
+            try:
+                from util.log_utils import log_warning
+                log_warning(None, 'ThemeManager', f"Unknown theme: {theme_name}, defaulting to light")
+            except Exception:
+                pass
             theme_name = 'light'
         
         theme_file = os.path.join(self.themes_dir, f"{theme_name}.qss")
@@ -62,14 +66,30 @@ class ThemeManager:
                 if self.app:
                     self.app.setStyleSheet(stylesheet)
                     self.current_theme = theme_name
-                    print(f"[ThemeManager] Applied {theme_name} theme")
+                    try:
+                        from util.log_utils import log_info
+                        log_info(None, 'ThemeManager', f"Applied {theme_name} theme")
+                    except Exception:
+                        pass
                 else:
-                    print(f"[ThemeManager] No QApplication instance available")
+                    try:
+                        from util.log_utils import log_warning
+                        log_warning(None, 'ThemeManager', "No QApplication instance available")
+                    except Exception:
+                        pass
             else:
-                print(f"[ThemeManager] Theme file not found: {theme_file}")
+                try:
+                    from util.log_utils import log_warning
+                    log_warning(None, 'ThemeManager', f"Theme file not found: {theme_file}")
+                except Exception:
+                    pass
                 
         except Exception as e:
-            print(f"[ThemeManager] Error loading theme {theme_name}: {e}")
+            try:
+                from util.log_utils import log_error
+                log_error(None, 'ThemeManager', f"Error loading theme {theme_name}: {e}")
+            except Exception:
+                pass
     
     def get_current_theme(self):
         """

@@ -27,6 +27,14 @@ QGroupBox::title {
     color: #333333;
 }
 
+/* Visualization popup and settings dialog */
+QWidget#visualizationPopup, QDialog#visualizationSettingsDialog {
+     background-color: #ffffff;
+     color: #000000;
+     border: 1px solid #cccccc;
+     border-radius: 4px;
+}
+
 /* Buttons */
 QPushButton {
     background-color: #e1e1e1;

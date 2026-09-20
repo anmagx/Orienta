@@ -250,10 +250,7 @@ class QuaternionComplementaryFilter:
                 log_info(self.logQueue, "Fusion", f"Initializing quaternion baseline at {timestamp}")
             except Exception:
                 pass
-            try:
-                print(f"[Fusion] Initializing quaternion baseline at {timestamp}")
-            except Exception:
-                pass
+            # Initialization logged via log_info; avoid console prints in worker
             self.last_time = timestamp
             self.q = np.array([1.0, 0.0, 0.0, 0.0])
             return 0.0, 0.0, 0.0, False, False
@@ -433,9 +430,11 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
     Fusion worker that reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
     """
     from util.log_utils import log_info, log_error, log_warning
-    
+
+    # All logging should use util.log_utils (log_info/log_error). Legacy
+    # print() calls have been removed; no redirecting of builtins.print is used.
+
     log_info(logQueue, "Fusion Worker", "Starting complementary filter")
-    print("[Fusion Worker] Starting complementary filter...")
     
     # Initialize quaternion filter with defaults from config. The GUI can update
     # filter parameters at runtime via the controlQueue.
@@ -530,12 +529,10 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                         except Exception:
                             pass
                     log_info(logQueue, "Fusion Worker", "Orientation reset to seeded accel baseline (preserving calibration)")
-                    print("[Fusion Worker] Orientation reset to seeded accel baseline (preserving calibration)")
                     # Schedule a center-level recalibration to run after reset when the sensor is stationary
                     try:
                         filter._pending_center_cal = LEVEL_CAL_SAMPLES
                         log_info(logQueue, "Fusion Worker", f"Scheduled center recalibration for {LEVEL_CAL_SAMPLES} samples (after recenter)")
-                        print(f"[Fusion Worker] Scheduled center recalibration ({LEVEL_CAL_SAMPLES} samples) (after recenter)")
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Failed to schedule center recalibration: {e}")
                 elif cmd == 'reset' or (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'reset'):
@@ -553,10 +550,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             log_info(logQueue, "Fusion Worker", "Cleared timing baseline and stationary debounce state on reset")
                         except Exception:
                             pass
-                        try:
-                            print("[Fusion Worker] Cleared timing baseline and stationary debounce state on reset")
-                        except Exception:
-                            pass
+                        # Cleared timing baseline logged above; skip console print to reduce noise
                     except Exception:
                         pass
                     try:
@@ -577,7 +571,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                     except Exception:
                         pass
                     log_info(logQueue, "Fusion Worker", "Orientation reset to zero and calibration cleared")
-                    print("[Fusion Worker] Orientation reset to zero and calibration cleared")
+                    # Skip console print; message logged via log_info
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_center_threshold':
                     try:
                         new_val = float(cmd[1])
@@ -588,7 +582,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             filter.center_threshold_pitch = new_val
                             filter.center_threshold_roll = new_val
                             log_info(logQueue, "Fusion Worker", f"Center threshold updated to {new_val}")
-                            print(f"[Fusion Worker] Center threshold updated to {new_val}")
+                            # Logged above; no console print
                         else:
                             log_warning(logQueue, "Fusion Worker", f"Invalid center threshold: {new_val}")
                     except Exception as e:
@@ -644,7 +638,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                         if 0.0 <= new_val <= 1.0:  # Alpha values must be between 0 and 1
                             filter.alpha_yaw = new_val
                             log_info(logQueue, "Fusion Worker", f"Alpha yaw updated to {new_val}")
-                            print(f"[Fusion Worker] Alpha yaw updated to {new_val}")
+                            # Alpha yaw update logged; skip console print
                         else:
                             log_warning(logQueue, "Fusion Worker", f"Invalid alpha yaw: {new_val}")
                     except Exception as e:
@@ -704,21 +698,21 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                     try:
                         filter.invert_yaw = bool(cmd[1])
                         log_info(logQueue, "Fusion Worker", f"Yaw inversion set to {filter.invert_yaw}")
-                        print(f"[Fusion Worker] Yaw inversion set to {filter.invert_yaw}")
+                            # Logged above; skip console print
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error setting yaw inversion: {e}")
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_invert_pitch':
                     try:
                         filter.invert_pitch = bool(cmd[1])
                         log_info(logQueue, "Fusion Worker", f"Pitch inversion set to {filter.invert_pitch}")
-                        print(f"[Fusion Worker] Pitch inversion set to {filter.invert_pitch}")
+                            # Logged above; skip console print
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error setting pitch inversion: {e}")
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_invert_roll':
                     try:
                         filter.invert_roll = bool(cmd[1])
                         log_info(logQueue, "Fusion Worker", f"Roll inversion set to {filter.invert_roll}")
-                        print(f"[Fusion Worker] Roll inversion set to {filter.invert_roll}")
+                            # Logged above; skip console print
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error setting roll inversion: {e}")
                 elif (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'recalibrate_gyro_bias') or cmd == ('recalibrate_gyro_bias',):
@@ -738,7 +732,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             log_warning(logQueue, "Fusion Worker", f"Recalibration requested with non-positive sample count: {n_samples}")
                         else:
                             log_info(logQueue, "Fusion Worker", f"Recalibrating gyro yaw bias with {n_samples} samples")
-                            print(f"[Fusion Worker] Recalibrating gyro yaw bias ({n_samples} samples)...")
+                            # Runtime recalibration started; skip console print
                             
                             # Notify GUI that calibration is starting
                             try:
@@ -777,7 +771,6 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                                 except Exception:
                                     pass
                                 log_info(logQueue, "Fusion Worker", f"Runtime gyro yaw bias recalibrated from {len(samples)} samples: {bias:.6f} deg/s")
-                                print(f"[Fusion Worker] Gyro yaw bias recalibrated: {bias:.6f} deg/s")
                             else:
                                 filter.gyro_calibrated = False
                                 try:
@@ -805,7 +798,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             log_warning(logQueue, "Fusion Worker", f"Level recalibration requested with non-positive sample count: {n_samples}")
                         else:
                             log_info(logQueue, "Fusion Worker", f"Recalibrating center level with {n_samples} samples")
-                            print(f"[Fusion Worker] Recalibrating center level ({n_samples} samples)...")
+                            # Runtime center recalibration started; skip console print
                             # Notify GUI that calibration is starting
                             try:
                                 safe_queue_put(statusQueue, ('center_calibrating', True), timeout=QUEUE_PUT_TIMEOUT)
@@ -848,7 +841,6 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                                 except Exception:
                                     pass
                                 log_info(logQueue, "Fusion Worker", f"Runtime center level recalibrated from {len(roll_samples)} samples: roll={avg_roll:.3f} pitch={avg_pitch:.3f}")
-                                print(f"[Fusion Worker] Center level recalibrated: roll={avg_roll:.3f} pitch={avg_pitch:.3f}")
                             else:
                                 filter.center_calibrated = False
                                 try:
@@ -897,9 +889,9 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             pass
                             
                         log_info(logQueue, "Fusion Worker", "Processing inactive - no data received")
-                        print("[Fusion Worker] Processing inactive - no data received")
+                        # Processing inactive state logged above; skip console print
                     except Exception as e:
-                        print(f"[Fusion Worker] Failed to send UI inactive status: {e}")
+                        log_warning(logQueue, "Fusion Worker", f"Failed to send UI inactive status: {e}")
                 
                 # Brief non-blocking delay to prevent CPU spinning
                 time.sleep(0.001)  # 1ms delay instead of blocking timeout
@@ -963,7 +955,6 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             except Exception:
                                 pass
                             log_info(logQueue, "Fusion Worker", f"Runtime center level recalibrated from {len(roll_samples)} samples (scheduled): roll={avg_roll:.3f} pitch={avg_pitch:.3f}")
-                            print(f"[Fusion Worker] Center level recalibrated (scheduled): roll={avg_roll:.3f} pitch={avg_pitch:.3f}")
                         else:
                             filter.center_calibrated = False
                             try:
@@ -991,9 +982,9 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             safe_queue_put(uiStatusQueue, ('processing', 'active'), timeout=QUEUE_PUT_TIMEOUT)
                         processing_active = True
                         log_info(logQueue, "Fusion Worker", "Processing active - data received")
-                        print("[Fusion Worker] Processing active - data received")
+                        # Processing active state logged above; skip console print
                     except Exception as e:
-                        print(f"[Fusion Worker] Failed to send UI processing status: {e}")
+                        log_warning(logQueue, "Fusion Worker", f"Failed to send UI processing status: {e}")
                         pass
                 
                 # Send drift correction status to UI only when it changes (non-blocking)
@@ -1044,7 +1035,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                                 eulerDisplayQueue.put_nowait(euler_data)
                             # Log critical queue state occasionally
                             if filter._frame_counter % 100 == 0:
-                                print(f"[Fusion] Display queue critical: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
+                                log_warning(logQueue, "Fusion", f"Display queue critical: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
                         else:
                             # Queue not full - send all frames
                             eulerDisplayQueue.put_nowait(euler_data)
@@ -1052,12 +1043,12 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             if max_size > 0 and queue_size / max_size > 0.7:
                                 filter._warning_counter = getattr(filter, '_warning_counter', 0) + 1
                                 if filter._warning_counter % 200 == 0:  # Log every 200 frames when >70%
-                                    print(f"[Fusion] Display queue warning: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
+                                    log_info(logQueue, "Fusion", f"Display queue warning: {queue_size}/{max_size} ({queue_size/max_size:.1%})")
                     except Exception as e:
                         # Track queue errors 
                         filter._error_counter = getattr(filter, '_error_counter', 0) + 1
                         if filter._error_counter % 50 == 0:  # Log every 50 errors
-                            print(f"[Fusion] Display queue error #{filter._error_counter}: {e}")
+                            log_error(logQueue, "Fusion", f"Display queue error #{filter._error_counter}: {e}")
                         pass
                 
             except ValueError as e:
@@ -1089,4 +1080,4 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
         except Exception:
             pass
         log_info(logQueue, "Fusion Worker", "Stopped")
-        print("[Fusion Worker] Stopped.")
+        # Stopped logged via log_info; avoid console print

@@ -122,7 +122,7 @@ FPS_REPORT_INTERVAL = 1.0  # seconds between FPS updates
 THRESH_DEBOUNCE_MS = 150  # milliseconds to debounce threshold slider
 
 # Orientation visualization
-VISUALIZATION_RANGE = 15.0  # degrees: +/- range for pitch/yaw axes
+VISUALIZATION_RANGE = 25.0  # degrees: +/- range for pitch/yaw axes
 VISUALIZATION_SIZE = 160  # pixels: width and height of visualization widget
 
 # Theme settings
