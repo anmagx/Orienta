@@ -43,9 +43,8 @@ class ProcessHandler:
     - Run a background log writer thread that persists log entries to disk.
     """
 
-    def __init__(self, enable_diagnostics=False):
+    def __init__(self):
         ## Init Queues (use config constants)
-        self.enable_diagnostics = enable_diagnostics
         self.serialQueue = Queue(maxsize=QUEUE_SIZE_DATA)
         self.eulerQueue = Queue(maxsize=QUEUE_SIZE_DATA)
         self.serialDisplayQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
@@ -290,7 +289,7 @@ class ProcessHandler:
                    self.stop_event, self.eulerDisplayQueue, self.controlQueue, 
                    self.serialControlQueue, 
                    self.udpControlQueue, self.logQueue, self.uiStatusQueue,
-                   self.inputCommandQueue, self.inputResponseQueue, self.enable_diagnostics)
+                   self.inputCommandQueue, self.inputResponseQueue)
         gui_worker = Process(
             target = run_gui_worker,
             args = gui_args,

@@ -11,7 +11,7 @@ Do NOT store runtime state here - this module only defines initial defaults.
 # Application Information
 # ============================================================================
 APP_NAME = "orienta"
-APP_VERSION = "0.13-alpha"
+APP_VERSION = "0.10"
 
 # ============================================================================
 # GUI Timing and Updates  

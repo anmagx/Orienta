@@ -11,8 +11,9 @@ from PyQt5.QtWidgets import (
     QSpinBox, QFrame, QScrollArea
 )
 
-from workers.gui_qt.managers.preferences_manager import PreferencesManager
+from managers.preferences_manager import PreferencesManager
 from config.config import DEFAULT_THEME, THEMES_ENABLED, ALPHA_YAW, ALPHA_ROLL, ALPHA_PITCH, THRESH_DEBOUNCE_MS, STATIONARY_GYRO_THRESHOLD, STATIONARY_DEBOUNCE_S, DRIFT_SMOOTHING_TIME, DRIFT_TRANSITION_CURVE, GYRO_BIAS_CAL_SAMPLES, QUEUE_PUT_TIMEOUT
+from workers.gui_qt.panels.base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, DIALOG_CONTENT_MARGIN
 
 from util.error_utils import (
     safe_queue_put
@@ -26,8 +27,9 @@ class PreferencesPanel(QWidget):
     theme_changed = pyqtSignal(str)  # theme_name
     preferences_changed = pyqtSignal()  # General signal for any preference change
     
-    def __init__(self, parent=None, preferences_manager=None, 
-                 input_command_queue=None, input_response_queue=None):
+    def __init__(self, parent=None, preferences_manager=None,
+                 input_command_queue=None, input_response_queue=None,
+                 control_queue=None):
         """
         Initialize preferences panel.
         
@@ -36,15 +38,15 @@ class PreferencesPanel(QWidget):
             preferences_manager: PreferencesManager instance
             input_command_queue: Queue for sending commands to input worker
             input_response_queue: Queue for receiving responses from input worker
+            control_queue: Queue for sending fusion setting commands
         """
         super().__init__(parent)
         self.prefs_manager = preferences_manager or PreferencesManager()
-        self.reset_shortcut = "None"
-        self.reset_shortcut_display_name = "None"
-        self.disengage_shortcut = "None"
-        self.disengage_shortcut_display_name = "None"
+        # Shortcuts are owned by OrientationPanelQt; this panel only mirrors the
+        # toggle mode for its checkbox and never persists shortcut state itself.
         self.disengage_toggle_mode = False  # False = hold to disengage, True = toggle on/off
-        self.calibration_panel = None  # Will be set by parent
+        self.orientation_panel = None  # Will be set by parent
+        self.control_queue = control_queue
         
         # Store input worker queues
         self.input_command_queue = input_command_queue
@@ -119,7 +121,7 @@ class PreferencesPanel(QWidget):
         """Set up the user interface."""
         # Main layout for this widget
         main_layout = QVBoxLayout()
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(DEFAULT_SPACING)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         # Buttons will be placed in a bottom fixed row (added after scroll area)
@@ -159,14 +161,9 @@ class PreferencesPanel(QWidget):
         
         # Keyboard shortcuts group
         # Note: The actual "Set Shortcut..." controls for Reset Orientation and
-        # Disengage Drift Correction now live next to their respective buttons
-        # in the Orientation panel (small "..." buttons). Only the disengage
-        # hold/toggle mode behavior remains configurable here. Placeholder
-        # attributes below preserve compatibility with load/save preference
-        # code that still tracks shortcut state for persistence.
-        self.shortcut_button = None
-        self.disengage_shortcut_button = None
-
+        # Disengage Drift Correction live next to their respective buttons in
+        # the Orientation panel, which also owns their state and persistence.
+        # Only the disengage hold/toggle mode behavior is configurable here.
         shortcuts_group = QGroupBox("Disengage Behavior")
         shortcuts_layout = QVBoxLayout()
         
@@ -183,7 +180,7 @@ class PreferencesPanel(QWidget):
         # Sensor configuration group
         sensor_group = QGroupBox("Sensor Configuration")
         sensor_layout = QVBoxLayout()
-        sensor_layout.setSpacing(8)
+        sensor_layout.setSpacing(DEFAULT_SPACING)
         
         # Axis inversion checkboxes
         inversion_header = QLabel("Axis Inversions (adjust for sensor mounting)")
@@ -219,7 +216,7 @@ class PreferencesPanel(QWidget):
         # Drift correction group
         drift_group = QGroupBox("Drift Correction")
         drift_layout = QVBoxLayout()
-        drift_layout.setSpacing(8)
+        drift_layout.setSpacing(DEFAULT_SPACING)
         
         # Pitch alpha slider
         # Header for pitch/roll stability controls
@@ -265,7 +262,7 @@ class PreferencesPanel(QWidget):
         divider.setFrameShape(QFrame.HLine)
         divider.setFrameShadow(QFrame.Sunken)
         divider.setObjectName("sectionDivider")
-        divider.setFixedHeight(1)
+        divider.setFixedHeight(LINE_THICKNESS)
         drift_layout.addWidget(divider)
 
         # Short tooltip specific to alpha sliders (placed under Roll Alpha)
@@ -341,7 +338,7 @@ class PreferencesPanel(QWidget):
         # Stationary detection group
         stationary_group = QGroupBox("Stationary Detection")
         stationary_layout = QVBoxLayout()
-        stationary_layout.setSpacing(8)
+        stationary_layout.setSpacing(DEFAULT_SPACING)
         
         # Gyro threshold slider (1.0 to 20.0 deg/s)
         gyro_layout = QHBoxLayout()
@@ -388,7 +385,7 @@ class PreferencesPanel(QWidget):
         # Gyro calibration group
         gyro_group = QGroupBox("Gyro Calibration")
         gyro_layout = QVBoxLayout()
-        gyro_layout.setSpacing(8)
+        gyro_layout.setSpacing(DEFAULT_SPACING)
         
         # Calibration samples slider (500 to 5000)
         samples_layout = QHBoxLayout()
@@ -460,8 +457,10 @@ class PreferencesPanel(QWidget):
             if index >= 0:
                 self.theme_combo.setCurrentIndex(index)
         
-        # Extract calibration preferences
-        cal_prefs = prefs.get('calibration', {})
+        # These settings are persisted into the 'orientation' section by the GUI
+        # worker; 'calibration' is only read to migrate older config files.
+        cal_prefs = dict(prefs.get('calibration', {}))
+        cal_prefs.update(prefs.get('orientation', {}))
         
         # Load and apply all calibration settings
         self._load_alpha_settings(cal_prefs)
@@ -469,7 +468,6 @@ class PreferencesPanel(QWidget):
         self._load_drift_settings(cal_prefs)
         self._load_gyro_settings(cal_prefs)
         self._load_shortcut_settings(cal_prefs)
-        self._load_sensor_settings(cal_prefs)
         self._load_sensor_settings(cal_prefs)
         
         # Send settings to fusion worker
@@ -497,22 +495,14 @@ class PreferencesPanel(QWidget):
         except Exception:
             pass
 
-    def _safe_set_reset_shortcut(self, cal_panel, key, display_name):
-        """Safely call calibration panel's _set_reset_shortcut without raising if deleted."""
-        try:
-            if cal_panel:
-                cal_panel._set_reset_shortcut(key, display_name)
-        except Exception:
-            # Ignore errors from deleted C++ wrappers or other issues
-            pass
-    
-
-    
     def _on_theme_changed(self, theme_name):
-        """Handle theme selection change."""
+        """Handle theme selection change.
+
+        The theme is persisted by the GUI worker's aggregated save (it reads the
+        active theme from ThemeManager), so this only applies the theme and
+        requests a save rather than writing the config file itself.
+        """
         if THEMES_ENABLED:
-            # Save preference and emit signals
-            self.prefs_manager.set_theme(theme_name)
             self.theme_changed.emit(theme_name)
             # Only emit preferences changed if not loading to prevent duplicate saves
             if not getattr(self, '_loading', False):
@@ -551,28 +541,18 @@ class PreferencesPanel(QWidget):
     
     def _apply_alpha_pitch(self):
         """Apply pitch alpha value to fusion worker (debounced)."""
-        if self._pending_alpha_pitch is not None and self.calibration_panel:
+        if self._pending_alpha_pitch is not None:
             try:
-                if hasattr(self.calibration_panel, 'control_queue'):
-                    from util.error_utils import safe_queue_put
-                    from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    safe_queue_put(self.calibration_panel.control_queue, 
-                                 ('set_alpha_pitch', self._pending_alpha_pitch), timeout=QUEUE_PUT_TIMEOUT)
+                self._send_control_command(('set_alpha_pitch', self._pending_alpha_pitch))
                 self._pending_alpha_pitch = None
             except Exception:
                 pass
     
     def _apply_alpha_roll(self):
         """Apply roll alpha value to fusion worker (debounced)."""
-        if self._pending_alpha_roll is not None and self.calibration_panel:
+        if self._pending_alpha_roll is not None:
             try:
-                if hasattr(self.calibration_panel, 'control_queue'):
-                    from util.error_utils import safe_queue_put
-                    from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    safe_queue_put(self.calibration_panel.control_queue, 
-                                 ('set_alpha_roll', self._pending_alpha_roll), timeout=QUEUE_PUT_TIMEOUT)
+                self._send_control_command(('set_alpha_roll', self._pending_alpha_roll))
                 self._pending_alpha_roll = None
             except Exception:
                 pass
@@ -609,33 +589,29 @@ class PreferencesPanel(QWidget):
     
     def _apply_stationary_gyro(self):
         """Apply stationary gyro threshold to fusion worker (debounced)."""
-        if self._pending_stationary_gyro is not None and self.calibration_panel:
+        if self._pending_stationary_gyro is not None:
             try:
-                if hasattr(self.calibration_panel, 'control_queue'):
-                    from util.error_utils import safe_queue_put
-                    from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    # Note: This would need to be implemented in the fusion worker
-                    # For now, we'll store it in preferences
-                    pass
+                self._send_control_command(
+                    ('set_stationary_gyro_threshold', float(self._pending_stationary_gyro)),
+                    failure_message="[Preferences] Unable to send stationary gyro threshold: queue unavailable or full",
+                    success_message=f"[Preferences] Sent stationary gyro threshold: {self._pending_stationary_gyro}"
+                )
                 self._pending_stationary_gyro = None
-            except Exception:
-                pass
+            except Exception as e:
+                _ui_log(self, f"[Preferences] Failed to apply stationary gyro threshold: {e}")
     
     def _apply_stationary_debounce(self):
         """Apply stationary debounce time to fusion worker (debounced)."""
-        if self._pending_stationary_debounce is not None and self.calibration_panel:
+        if self._pending_stationary_debounce is not None:
             try:
-                if hasattr(self.calibration_panel, 'control_queue'):
-                    from util.error_utils import safe_queue_put
-                    from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    # Note: This would need to be implemented in the fusion worker
-                    # For now, we'll store it in preferences
-                    pass
+                self._send_control_command(
+                    ('set_stationary_debounce', float(self._pending_stationary_debounce)),
+                    failure_message="[Preferences] Unable to send stationary debounce: queue unavailable or full",
+                    success_message=f"[Preferences] Sent stationary debounce: {self._pending_stationary_debounce}"
+                )
                 self._pending_stationary_debounce = None
-            except Exception:
-                pass
+            except Exception as e:
+                _ui_log(self, f"[Preferences] Failed to apply stationary debounce: {e}")
     
     def _on_drift_smoothing_changed(self, value):
         """Handle drift smoothing time slider change with debouncing."""
@@ -672,13 +648,10 @@ class PreferencesPanel(QWidget):
         self.drift_transition_curve = curve_type
         
         # Send command to fusion worker for live update
-        if hasattr(self.calibration_panel, 'control_queue'):
-            try:
-                control_queue = self.calibration_panel.control_queue
-                if control_queue and not control_queue.full():
-                    safe_queue_put(control_queue, ('set_drift_curve_type', curve_type), timeout=QUEUE_PUT_TIMEOUT)
-            except Exception as e:
-                    _ui_log(self, f"[Preferences] Failed to send drift curve command: {e}")
+        try:
+            self._send_control_command(('set_drift_curve_type', curve_type))
+        except Exception as e:
+            _ui_log(self, f"[Preferences] Failed to send drift curve command: {e}")
         
         self._trigger_preference_save()
     
@@ -710,11 +683,8 @@ class PreferencesPanel(QWidget):
 
         # Send command to fusion worker for live update if available
         try:
-            cal = getattr(self, 'calibration_panel', None)
-            if cal and hasattr(cal, 'control_queue'):
-                control_queue = cal.control_queue
-                if control_queue and not control_queue.full():
-                    safe_queue_put(control_queue, ('set_invert_yaw', self.invert_yaw), timeout=QUEUE_PUT_TIMEOUT)
+            cal = getattr(self, 'orientation_panel', None)
+            self._send_control_command(('set_invert_yaw', self.invert_yaw))
         except Exception as e:
             _ui_log(self, f"[Preferences] Failed to send yaw inversion command: {e}")
 
@@ -733,11 +703,8 @@ class PreferencesPanel(QWidget):
 
         # Send command to fusion worker for live update if available
         try:
-            cal = getattr(self, 'calibration_panel', None)
-            if cal and hasattr(cal, 'control_queue'):
-                control_queue = cal.control_queue
-                if control_queue and not control_queue.full():
-                    safe_queue_put(control_queue, ('set_invert_pitch', self.invert_pitch), timeout=QUEUE_PUT_TIMEOUT)
+            cal = getattr(self, 'orientation_panel', None)
+            self._send_control_command(('set_invert_pitch', self.invert_pitch))
         except Exception as e:
             _ui_log(self, f"[Preferences] Failed to send pitch inversion command: {e}")
 
@@ -756,11 +723,8 @@ class PreferencesPanel(QWidget):
 
         # Send command to fusion worker for live update if available
         try:
-            cal = getattr(self, 'calibration_panel', None)
-            if cal and hasattr(cal, 'control_queue'):
-                control_queue = cal.control_queue
-                if control_queue and not control_queue.full():
-                    safe_queue_put(control_queue, ('set_invert_roll', self.invert_roll), timeout=QUEUE_PUT_TIMEOUT)
+            cal = getattr(self, 'orientation_panel', None)
+            self._send_control_command(('set_invert_roll', self.invert_roll))
         except Exception as e:
             _ui_log(self, f"[Preferences] Failed to send roll inversion command: {e}")
 
@@ -775,34 +739,18 @@ class PreferencesPanel(QWidget):
     
     def _apply_drift_smoothing(self):
         """Apply drift smoothing time to fusion worker (debounced)."""
-        if self._pending_drift_smoothing is not None and self.calibration_panel:
+        if self._pending_drift_smoothing is not None:
             try:
-                if hasattr(self.calibration_panel, 'control_queue'):
-                    from util.error_utils import safe_queue_put
-                    from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    # Send command to fusion worker
-                    control_queue = self.calibration_panel.control_queue
-                    if control_queue and not control_queue.full():
-                        safe_queue_put(control_queue, ('set_drift_smoothing_time', self._pending_drift_smoothing), timeout=QUEUE_PUT_TIMEOUT)
-                        
+                self._send_control_command(('set_drift_smoothing_time', self._pending_drift_smoothing))
                 self._pending_drift_smoothing = None
             except Exception:
                 pass
     
     def _apply_drift_strength(self):
         """Apply drift correction strength to fusion worker (debounced)."""
-        if self._pending_drift_strength is not None and self.calibration_panel:
+        if self._pending_drift_strength is not None:
             try:
-                if hasattr(self.calibration_panel, 'control_queue'):
-                    from util.error_utils import safe_queue_put
-                    from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    # Send command to fusion worker
-                    control_queue = self.calibration_panel.control_queue
-                    if control_queue and not control_queue.full():
-                        safe_queue_put(control_queue, ('set_drift_correction_strength', self._pending_drift_strength), timeout=QUEUE_PUT_TIMEOUT)
-                        
+                self._send_control_command(('set_drift_correction_strength', self._pending_drift_strength))
                 self._pending_drift_strength = None
             except Exception:
                 pass
@@ -827,8 +775,7 @@ class PreferencesPanel(QWidget):
             if index >= 0:
                 self.theme_combo.setCurrentIndex(index)
             
-            # Save and apply
-            self.prefs_manager.set_theme(DEFAULT_THEME)
+            # Apply the default theme; persistence happens via the save below
             self.theme_changed.emit(DEFAULT_THEME)
         
         # Reset alpha values to defaults
@@ -858,10 +805,10 @@ class PreferencesPanel(QWidget):
         self.invert_roll_checkbox.setChecked(self.invert_roll)
         
         # Apply to calibration panel
-        if self.calibration_panel:
-            self.calibration_panel.set_invert_yaw(self.invert_yaw)
-            self.calibration_panel.set_invert_pitch(self.invert_pitch)
-            self.calibration_panel.set_invert_roll(self.invert_roll)
+        if self.orientation_panel:
+            self.orientation_panel.set_invert_yaw(self.invert_yaw)
+            self.orientation_panel.set_invert_pitch(self.invert_pitch)
+            self.orientation_panel.set_invert_roll(self.invert_roll)
         
         # Update sliders and labels
         self.alpha_pitch_slider.setValue(int(self.alpha_pitch * 1000))
@@ -912,6 +859,9 @@ class PreferencesPanel(QWidget):
         self._apply_drift_smoothing()
         self._apply_drift_strength()
         
+        # Persist every reset value through the aggregated save
+        self._trigger_preference_save()
+        
         # Visual feedback
         self.reset_btn.setText("Reset!")
         self.reset_btn.setEnabled(False)
@@ -927,9 +877,9 @@ class PreferencesPanel(QWidget):
         """Handle disengage toggle mode checkbox change."""
         self.disengage_toggle_mode = (state == 2)  # Qt.Checked == 2
         
-        # Update calibration panel with new toggle mode
-        if self.calibration_panel:
-            self.calibration_panel.set_disengage_toggle_mode(self.disengage_toggle_mode)
+        # OrientationPanelQt owns this setting and persists it
+        if self.orientation_panel:
+            self.orientation_panel.set_disengage_toggle_mode(self.disengage_toggle_mode)
         
         # Save preference
         if not getattr(self, '_loading', False):
@@ -992,115 +942,24 @@ class PreferencesPanel(QWidget):
             self.gyro_samples_value.setText(str(val))
     
     def _load_shortcut_settings(self, cal_prefs):
-        """Load keyboard shortcut settings."""
-        # Load reset orientation shortcut
-        shortcut = cal_prefs.get('reset_shortcut', 'None')
-        if shortcut and shortcut != 'None':
-            try:
-                # Try to get saved display name first
-                display_name = cal_prefs.get('reset_shortcut_display_name', shortcut)
-                
-                # If no saved display name, generate one
-                if display_name == shortcut or not display_name:
-                    if shortcut.startswith('KP_'):
-                        # Generate display name for numpad keys
-                        numpad_map = {
-                            'KP_0': 'Numpad 0', 'KP_1': 'Numpad 1', 'KP_2': 'Numpad 2',
-                            'KP_3': 'Numpad 3', 'KP_4': 'Numpad 4', 'KP_5': 'Numpad 5',
-                            'KP_6': 'Numpad 6', 'KP_7': 'Numpad 7', 'KP_8': 'Numpad 8',
-                            'KP_9': 'Numpad 9', 'KP_Decimal': 'Numpad .', 'KP_Divide': 'Numpad /',
-                            'KP_Multiply': 'Numpad *', 'KP_Subtract': 'Numpad -', 'KP_Add': 'Numpad +',
-                            'KP_Enter': 'Numpad Enter'
-                        }
-                        display_name = numpad_map.get(shortcut, shortcut)
-                    elif shortcut.startswith('joy'):
-                        # For gamepad shortcuts without saved name, show generic label
-                        display_name = f"Gamepad ({shortcut})"
-                    else:
-                        # For other keys, use the shortcut itself
-                        display_name = shortcut.upper()
-                
-                self.reset_shortcut = shortcut
-                self.reset_shortcut_display_name = display_name
-                if self.shortcut_button:
-                    self.shortcut_button.setText(f"Shortcut: {display_name}")
-                
-                # Apply to calibration panel to register the hotkey
-                if self.calibration_panel:
-                    from PyQt5.QtCore import QTimer
-                    # Check if calibration panel is initializing to prevent duplicate messages
-                    if not getattr(self.calibration_panel, '_initializing', False):
-                        cal = self.calibration_panel
-                        QTimer.singleShot(0, lambda _cal=cal, _s=shortcut, _d=display_name: self._safe_set_reset_shortcut(_cal, _s, _d))
-            except Exception:
-                pass
+        """Sync the disengage toggle checkbox from the orientation panel.
+
+        Shortcut keys themselves are owned, loaded and persisted by
+        OrientationPanelQt; this panel only reflects the toggle mode.
+        """
+        toggle_mode = False
+        if self.orientation_panel:
+            toggle_mode = bool(getattr(self.orientation_panel, 'disengage_toggle_mode', False))
         else:
-            self.reset_shortcut = "None"
-            self.reset_shortcut_display_name = "None"
-            if self.shortcut_button:
-                self.shortcut_button.setText("Set Shortcut...")
-            
-            # Ensure calibration panel also has no shortcut
-            if self.calibration_panel:
-                from PyQt5.QtCore import QTimer
-                # Check if calibration panel is initializing to prevent duplicate messages
-                if not getattr(self.calibration_panel, '_initializing', False):
-                    cal = self.calibration_panel
-                    QTimer.singleShot(0, lambda _cal=cal: self._safe_set_reset_shortcut(_cal, "None", "None"))
-        
-        # Load disengage drift correction shortcut
-        disengage_shortcut = cal_prefs.get('disengage_shortcut', 'None')
-        if disengage_shortcut and disengage_shortcut != 'None':
-            try:
-                # Try to get saved display name first
-                display_name = cal_prefs.get('disengage_shortcut_display_name', disengage_shortcut)
-                
-                # If no saved display name, generate one
-                if display_name == disengage_shortcut or not display_name:
-                    if disengage_shortcut.startswith('KP_'):
-                        numpad_map = {
-                            'KP_0': 'Numpad 0', 'KP_1': 'Numpad 1', 'KP_2': 'Numpad 2',
-                            'KP_3': 'Numpad 3', 'KP_4': 'Numpad 4', 'KP_5': 'Numpad 5',
-                            'KP_6': 'Numpad 6', 'KP_7': 'Numpad 7', 'KP_8': 'Numpad 8',
-                            'KP_9': 'Numpad 9', 'KP_Decimal': 'Numpad .', 'KP_Divide': 'Numpad /',
-                            'KP_Multiply': 'Numpad *', 'KP_Subtract': 'Numpad -', 'KP_Add': 'Numpad +',
-                            'KP_Enter': 'Numpad Enter'
-                        }
-                        display_name = numpad_map.get(disengage_shortcut, disengage_shortcut)
-                    elif disengage_shortcut.startswith('joy'):
-                        display_name = f"Gamepad ({disengage_shortcut})"
-                    else:
-                        display_name = disengage_shortcut.upper()
-                
-                self.disengage_shortcut = disengage_shortcut
-                self.disengage_shortcut_display_name = display_name
-                if self.disengage_shortcut_button:
-                    self.disengage_shortcut_button.setText(f"Shortcut: {display_name}")
-                
-                # Apply to calibration panel to register the hotkey
-                if self.calibration_panel:
-                    from PyQt5.QtCore import QTimer
-                    if not getattr(self.calibration_panel, '_initializing', False):
-                        cal = self.calibration_panel
-                        QTimer.singleShot(0, lambda _cal=cal, _s=disengage_shortcut, _d=display_name: _cal._set_disengage_shortcut(_s, _d))
-            except Exception:
-                pass
-        else:
-            self.disengage_shortcut = "None"
-            self.disengage_shortcut_display_name = "None"
-            if self.disengage_shortcut_button:
-                self.disengage_shortcut_button.setText("Set Shortcut...")
-        
-        # Load disengage toggle mode
-        self.disengage_toggle_mode = cal_prefs.get('disengage_toggle_mode', False)
-        if isinstance(self.disengage_toggle_mode, str):
-            self.disengage_toggle_mode = self.disengage_toggle_mode.lower() in ('true', '1', 'yes')
-        self.disengage_toggle_checkbox.setChecked(self.disengage_toggle_mode)
-        
-        # Update calibration panel with toggle mode
-        if self.calibration_panel:
-            self.calibration_panel.set_disengage_toggle_mode(self.disengage_toggle_mode)
-    
+            raw = cal_prefs.get('disengage_toggle_mode', False)
+            if isinstance(raw, str):
+                toggle_mode = raw.lower() in ('true', '1', 'yes')
+            else:
+                toggle_mode = bool(raw)
+
+        self.disengage_toggle_mode = toggle_mode
+        self.disengage_toggle_checkbox.setChecked(toggle_mode)
+
     def _load_sensor_settings(self, cal_prefs):
         """Load sensor configuration settings from preferences."""
         # Convert string boolean values to actual booleans
@@ -1122,7 +981,7 @@ class PreferencesPanel(QWidget):
     
     def _apply_settings_to_fusion_worker(self, cal_prefs):
         """Send all calibration settings to fusion worker at startup."""
-        if not (hasattr(self.calibration_panel, 'control_queue') and self.calibration_panel.control_queue):
+        if not self.control_queue:
             return
         
         # Prevent duplicate application during startup
@@ -1133,25 +992,21 @@ class PreferencesPanel(QWidget):
         try:
             # Apply drift curve setting to fusion worker
             drift_curve = cal_prefs.get('drift_transition_curve', DRIFT_TRANSITION_CURVE)
-            safe_queue_put(self.calibration_panel.control_queue, 
-                         ('set_drift_curve_type', drift_curve), timeout=QUEUE_PUT_TIMEOUT)
+            self._send_control_command(('set_drift_curve_type', drift_curve))
             
             # Apply alpha values to fusion worker
             if 'alpha_pitch' in cal_prefs:
                 alpha_pitch = float(cal_prefs['alpha_pitch'])
-                safe_queue_put(self.calibration_panel.control_queue, 
-                             ('set_alpha_pitch', alpha_pitch), timeout=QUEUE_PUT_TIMEOUT)
+                self._send_control_command(('set_alpha_pitch', alpha_pitch))
             
             if 'alpha_roll' in cal_prefs:
                 alpha_roll = float(cal_prefs['alpha_roll'])
-                safe_queue_put(self.calibration_panel.control_queue, 
-                             ('set_alpha_roll', alpha_roll), timeout=QUEUE_PUT_TIMEOUT)
+                self._send_control_command(('set_alpha_roll', alpha_roll))
             
             # Apply drift correction strength
             if 'drift_correction_strength' in cal_prefs:
                 strength = float(cal_prefs['drift_correction_strength'])
-                safe_queue_put(self.calibration_panel.control_queue, 
-                             ('set_drift_correction_strength', strength), timeout=QUEUE_PUT_TIMEOUT)
+                self._send_control_command(('set_drift_correction_strength', strength))
             
             _ui_log(self, "[Preferences] Startup settings applied")
                     
@@ -1159,30 +1014,39 @@ class PreferencesPanel(QWidget):
             _ui_log(self, f"[Preferences] Error applying startup settings: {e}")
         
         # Apply axis inversions to calibration panel visualization
-        if self.calibration_panel:
-            self.calibration_panel.set_invert_yaw(self.invert_yaw)
-            self.calibration_panel.set_invert_pitch(self.invert_pitch)
-            self.calibration_panel.set_invert_roll(self.invert_roll)
+        if self.orientation_panel:
+            self.orientation_panel.set_invert_yaw(self.invert_yaw)
+            self.orientation_panel.set_invert_pitch(self.invert_pitch)
+            self.orientation_panel.set_invert_roll(self.invert_roll)
         
         # Send axis inversions to fusion worker
         try:
-            safe_queue_put(self.calibration_panel.control_queue, 
-                         ('set_invert_yaw', self.invert_yaw), timeout=QUEUE_PUT_TIMEOUT)
-            safe_queue_put(self.calibration_panel.control_queue, 
-                         ('set_invert_pitch', self.invert_pitch), timeout=QUEUE_PUT_TIMEOUT)
-            safe_queue_put(self.calibration_panel.control_queue, 
-                         ('set_invert_roll', self.invert_roll), timeout=QUEUE_PUT_TIMEOUT)
+            self._send_control_command(('set_invert_yaw', self.invert_yaw))
+            self._send_control_command(('set_invert_pitch', self.invert_pitch))
+            self._send_control_command(('set_invert_roll', self.invert_roll))
+            # Apply stationary detection settings if present
+            if 'stationary_gyro_threshold' in cal_prefs:
+                try:
+                    val = float(cal_prefs['stationary_gyro_threshold'])
+                    self._send_control_command(('set_stationary_gyro_threshold', val))
+                except Exception as e:
+                    _ui_log(self, f"[Preferences] Failed to send startup stationary_gyro_threshold: {e}")
+            if 'stationary_debounce_s' in cal_prefs:
+                try:
+                    val = float(cal_prefs['stationary_debounce_s'])
+                    self._send_control_command(('set_stationary_debounce', val))
+                except Exception as e:
+                    _ui_log(self, f"[Preferences] Failed to send startup stationary_debounce_s: {e}")
         except Exception as e:
             _ui_log(self, f"[Preferences] Error applying axis inversions to fusion worker: {e}")
     
-    def get_shortcut_preferences(self):
-        """Get shortcut preferences for saving."""
+    def get_tuning_preferences(self):
+        """Get the fusion-tuning preferences owned by this panel.
+
+        Shortcut keys and the disengage toggle mode are intentionally excluded:
+        OrientationPanelQt owns those and reports them via its own get_prefs().
+        """
         return {
-            'reset_shortcut': self.reset_shortcut,
-            'reset_shortcut_display_name': self.reset_shortcut_display_name,
-            'disengage_shortcut': self.disengage_shortcut,
-            'disengage_shortcut_display_name': self.disengage_shortcut_display_name,
-            'disengage_toggle_mode': self.disengage_toggle_mode,
             'alpha_pitch': f"{self.alpha_pitch:.3f}",
             'alpha_roll': f"{self.alpha_roll:.3f}",
             'stationary_gyro_threshold': f"{self.stationary_gyro_threshold:.1f}",
@@ -1198,9 +1062,27 @@ class PreferencesPanel(QWidget):
     
 
     
-    def connect_calibration_panel(self, calibration_panel):
-        """Connect to calibration panel for shortcut updates."""
-        self.calibration_panel = calibration_panel
+    def connect_orientation_panel(self, orientation_panel):
+        """Connect to the orientation panel for live fusion settings."""
+        self.orientation_panel = orientation_panel
+
+    def connect_control_queue(self, control_queue):
+        """Connect the fusion-control queue owned by the GUI worker."""
+        self.control_queue = control_queue
+
+    def _send_control_command(self, command, failure_message=None, success_message=None):
+        """Send a fusion control command without reaching through another panel."""
+        if not self.control_queue:
+            if failure_message:
+                _ui_log(self, failure_message)
+            return False
+        if not safe_queue_put(self.control_queue, command, timeout=QUEUE_PUT_TIMEOUT):
+            if failure_message:
+                _ui_log(self, failure_message)
+            return False
+        if success_message:
+            _ui_log(self, success_message)
+        return True
     
     def get_panel_name(self) -> str:
         """Return panel display name."""

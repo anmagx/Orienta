@@ -1,6 +1,7 @@
 import socket
 import struct
 import time
+import math
 
 from config.config import (
     DEFAULT_UDP_IP,
@@ -30,6 +31,8 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
     udp_enabled = False
     send_count = 0
     last_rate_ts = time.time()
+    # Counter to rate-limit non-finite sample logging
+    nonfinite_counter = 0
 
     try:
         while not stop_event.is_set():
@@ -61,6 +64,15 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
 
             try:
                 yaw, pitch, roll = (float(latest[0]), float(latest[1]), float(latest[2]))
+
+                # Drop non-finite samples to avoid sending NaN/Inf over UDP
+                if not (math.isfinite(yaw) and math.isfinite(pitch) and math.isfinite(roll)):
+                    nonfinite_counter += 1
+                    if nonfinite_counter % 50 == 0:
+                        log_error(logQueue, "UDP Worker", f"Dropping non-finite Euler sample #{nonfinite_counter}: yaw={yaw}, pitch={pitch}, roll={roll}")
+                    # Skip this frame
+                    continue
+
                 if udp_enabled:
                     sock.sendto(
                         struct.pack("<6d", 0.0, 0.0, 0.0, yaw, pitch, roll),
