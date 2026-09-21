@@ -8,106 +8,12 @@ status indicators) are laid out on the right.
 """
 
 from PyQt5.QtWidgets import (QLabel, QComboBox, QLineEdit, QPushButton,
-                             QFrame, QGridLayout, QSizePolicy, QStyleOptionButton)
-from PyQt5.QtGui import QFont, QFontMetrics, QPainter
-from PyQt5.QtCore import QRect, QSize
+                             QFrame, QGridLayout, QSizePolicy)
 from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QIntValidator
+from PyQt5.QtGui import QFontMetrics, QIntValidator
 
-from .base_panel import BasePanelQt
-
-# TwoLineButton: replicate the same two-line QPushButton from orientation_panel
-# so the Connection panel can display a main label plus a smaller sub-line
-# (e.g. "Start Serial" above "0.0 msg/s").
-from PyQt5.QtWidgets import QPushButton
-
-class TwoLineButton(QPushButton):
-    def __init__(self, main_text: str = "", sub_text: str = "", parent=None):
-        super().__init__(main_text, parent)
-        self._main = main_text or ""
-        self._sub = sub_text or ""
-        self.setCursor(Qt.PointingHandCursor)
-
-    def setParts(self, main: str, sub: str):
-        self._main = main or ""
-        self._sub = sub or ""
-        self.setText(self._main)
-        self.updateGeometry()
-        self.update()
-
-    def sizeHint(self):
-        base = super().sizeHint()
-        mainFont = QFont(self.font())
-        mainFont.setBold(True)
-        mainFm = QFontMetrics(mainFont)
-        mainH = mainFm.height()
-
-        subH = 0
-        width_sub = 0
-        if self._sub:
-            subFont = QFont(self.font())
-            subFont.setPointSize(max(subFont.pointSize() - 2, 8))
-            subFm = QFontMetrics(subFont)
-            subH = subFm.height()
-            width_sub = subFm.horizontalAdvance(self._sub)
-
-        vertical_padding = 12
-        interline_spacing = 2 if self._sub else 0
-
-        height = mainH + (subH + interline_spacing if self._sub else 0) + vertical_padding
-        width = max(base.width(), mainFm.horizontalAdvance(self._main) + 24, width_sub + 24)
-        return QSize(width, height)
-
-    def paintEvent(self, event):
-        opt = QStyleOptionButton()
-        opt.initFrom(self)
-        opt.text = ""
-        p = QPainter(self)
-        self.style().drawControl(self.style().CE_PushButton, opt, p, self)
-
-        rect = self.rect().adjusted(8, 6, -8, -6)
-        mainFont = QFont(self.font())
-        mainFont.setBold(True)
-        mainFm = QFontMetrics(mainFont)
-        mainH = mainFm.height()
-
-        try:
-            from PyQt5.QtGui import QPalette
-            if self.isEnabled():
-                main_pen = self.palette().color(QPalette.ButtonText)
-            else:
-                main_pen = self.palette().color(QPalette.Disabled, QPalette.ButtonText)
-        except Exception:
-            main_pen = QColor(0, 0, 0)
-
-        if self._sub:
-            subFont = QFont(self.font())
-            subFont.setPointSize(max(subFont.pointSize() - 2, 8))
-            subFm = QFontMetrics(subFont)
-            totalH = mainH + 2 + subFm.height()
-            y = rect.top() + max(0, (rect.height() - totalH) // 2)
-
-            p.setFont(mainFont)
-            p.setPen(main_pen)
-            p.drawText(QRect(rect.left(), y, rect.width(), mainH), int(Qt.AlignCenter), self._main)
-
-            p.setFont(subFont)
-            try:
-                if self.isEnabled():
-                    sub_pen = self.palette().color(QPalette.ButtonText)
-                else:
-                    sub_pen = self.palette().color(QPalette.Disabled, QPalette.ButtonText)
-            except Exception:
-                sub_pen = main_pen
-            y2 = y + mainH + 2
-            p.setPen(sub_pen)
-            p.drawText(QRect(rect.left(), y2, rect.width(), subFm.height()), int(Qt.AlignCenter), self._sub)
-        else:
-            p.setFont(mainFont)
-            p.setPen(main_pen)
-            p.drawText(rect, int(Qt.AlignCenter), self._main)
-
-        p.end()
+from .base_panel import BasePanelQt, CONTENT_MARGINS, DEFAULT_SPACING, BUTTON_EXTRA_HEIGHT, BUTTON_MIN_HEIGHT, LINE_THICKNESS
+from .two_line_button import TwoLineButton
 
 from config.config import (
     DEFAULT_SERIAL_PORT,
@@ -169,33 +75,33 @@ class ConnectionPanelQt(BasePanelQt):
     def setup_ui(self):
         """Build the combined connection panel UI."""
         main_layout = QGridLayout(self)
-        main_layout.setContentsMargins(4, 6, 4, 6)
-        main_layout.setSpacing(6)
+        main_layout.setContentsMargins(*CONTENT_MARGINS)
+        main_layout.setSpacing(DEFAULT_SPACING)
 
         # Build a compact two-column layout: left = inputs, right = buttons
         controls_frame = QFrame()
         controls_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Use consistent padding with Orientation panel
         # Reduce internal padding to match Orientation panel
-        controls_frame.setContentsMargins(4, 6, 4, 6)
+        controls_frame.setContentsMargins(*CONTENT_MARGINS)
 
         # Horizontal split: left inputs, right controls
         from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout
         outer = QHBoxLayout(controls_frame)
-        outer.setContentsMargins(4, 6, 4, 6)
-        outer.setSpacing(6)
+        outer.setContentsMargins(*CONTENT_MARGINS)
+        outer.setSpacing(DEFAULT_SPACING)
 
         # Left: inputs area split into two equal columns with a vertical divider
         left_widget = QFrame()
         left_widget_layout = QHBoxLayout(left_widget)
         left_widget_layout.setContentsMargins(0, 0, 0, 0)
-        left_widget_layout.setSpacing(6)
+        left_widget_layout.setSpacing(DEFAULT_SPACING)
 
         # Left column: Serial inputs (vertical stack)
         left_col = QFrame()
         left_col_layout = QVBoxLayout(left_col)
         left_col_layout.setContentsMargins(0, 0, 0, 0)
-        left_col_layout.setSpacing(6)
+        left_col_layout.setSpacing(DEFAULT_SPACING)
 
         # Serial row
         serial_h = QHBoxLayout()
@@ -239,7 +145,7 @@ class ConnectionPanelQt(BasePanelQt):
         right_col = QFrame()
         right_col_layout = QVBoxLayout(right_col)
         right_col_layout.setContentsMargins(0, 0, 0, 0)
-        right_col_layout.setSpacing(6)
+        right_col_layout.setSpacing(DEFAULT_SPACING)
 
         # IP row
         ip_h = QHBoxLayout()
@@ -292,7 +198,7 @@ class ConnectionPanelQt(BasePanelQt):
         vline_inputs = QFrame()
         vline_inputs.setFrameShape(QFrame.VLine)
         vline_inputs.setFrameShadow(QFrame.Sunken)
-        vline_inputs.setFixedWidth(1)
+        vline_inputs.setFixedWidth(LINE_THICKNESS)
         vline_inputs.setStyleSheet("background-color: rgba(120,120,120,0.25);")
 
         # Add columns and divider to the left widget layout
@@ -308,7 +214,7 @@ class ConnectionPanelQt(BasePanelQt):
         right_widget = QFrame()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
+        right_layout.setSpacing(DEFAULT_SPACING)
         # Top-align controls so buttons sit at the top of the right column
         right_layout.setAlignment(Qt.AlignTop)
 
@@ -316,10 +222,10 @@ class ConnectionPanelQt(BasePanelQt):
         self.toggle_button = TwoLineButton("Start Serial", self._serial_rate_text)
         # Make the button more prominent and allow it to expand to the right column width
         try:
-            desired_h = max(self.toggle_button.sizeHint().height(), 40)
-            self.toggle_button.setFixedHeight(desired_h + 6)
+            desired_h = max(self.toggle_button.sizeHint().height(), BUTTON_MIN_HEIGHT)
+            self.toggle_button.setFixedHeight(desired_h + BUTTON_EXTRA_HEIGHT)
         except Exception:
-            self.toggle_button.setMinimumHeight(40)
+            self.toggle_button.setMinimumHeight(BUTTON_MIN_HEIGHT)
         self.toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # Start in a neutral visual state (button remains pressable)
         self.toggle_button.setProperty('status', '')
@@ -330,10 +236,10 @@ class ConnectionPanelQt(BasePanelQt):
         # UDP button (hosts its status inside)
         self.udp_toggle_btn = TwoLineButton(self._udp_btn_text, self._udp_rate_text)
         try:
-            desired_h = max(self.udp_toggle_btn.sizeHint().height(), 40)
-            self.udp_toggle_btn.setFixedHeight(desired_h + 6)
+            desired_h = max(self.udp_toggle_btn.sizeHint().height(), BUTTON_MIN_HEIGHT)
+            self.udp_toggle_btn.setFixedHeight(desired_h + BUTTON_EXTRA_HEIGHT)
         except Exception:
-            self.udp_toggle_btn.setMinimumHeight(40)
+            self.udp_toggle_btn.setMinimumHeight(BUTTON_MIN_HEIGHT)
         self.udp_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         # Neutral initial visual state so button appears pressable
         self.udp_toggle_btn.setProperty('status', '')
@@ -350,7 +256,7 @@ class ConnectionPanelQt(BasePanelQt):
         vline = QFrame()
         vline.setFrameShape(QFrame.VLine)
         vline.setFrameShadow(QFrame.Sunken)
-        vline.setFixedWidth(1)
+        vline.setFixedWidth(LINE_THICKNESS)
         vline.setStyleSheet("background-color: rgba(120,120,120,0.25);")
         outer.addWidget(vline)
 

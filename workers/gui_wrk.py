@@ -29,9 +29,9 @@ from workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from workers.gui_qt.panels.about_panel import AboutPanel
 from workers.gui_qt.panels.orientation_panel import HoldPanelQt
 
-from workers.gui_qt.managers.preferences_manager import PreferencesManager
+from managers.preferences_manager import PreferencesManager
 from workers.gui_qt.helpers.icon_helper import set_window_icon
-from workers.gui_qt.managers.theme_manager import ThemeManager
+from managers.theme_manager import ThemeManager
 
 from config.config import (
     GUI_UPDATE_INTERVAL_MS, WORKER_QUEUE_CHECK_INTERVAL_MS,
@@ -172,10 +172,9 @@ class TabbedGUIWorker(QMainWindow):
                 self.signals.processing_changed.connect(self.orientation_panel.update_processing_status)
             except Exception:
                 pass
-            # For backward compatibility set calibration_panel reference to orientation_panel
-            self.calibration_panel = self.orientation_panel
+            # OrientationPanelQt is the single owner of orientation controls.
         except Exception:
-            self.calibration_panel = None
+            self.orientation_panel = None
 
         # Connection panel moved to the bottom of the widget for easier access
         self.connection_panel = ConnectionPanelQt(
@@ -224,18 +223,19 @@ class TabbedGUIWorker(QMainWindow):
             None,
             self.preferences_manager,
             self.input_command_queue,
-            self.input_response_queue
+            self.input_response_queue,
+            self.fusion_control_queue
         )
 
-        # Connect preferences panel to calibration panel for shortcuts
+        # Connect preferences panel to the orientation panel for shortcuts
         try:
-            self.preferences_panel.connect_calibration_panel(self.calibration_panel)
+            self.preferences_panel.connect_orientation_panel(self.orientation_panel)
         except Exception:
             pass
 
         # Connect calibration panel to preferences panel for sample counts
         try:
-            self.calibration_panel.connect_preferences_panel(self.preferences_panel)
+            self.orientation_panel.connect_preferences_panel(self.preferences_panel)
         except Exception:
             pass
 
@@ -401,189 +401,74 @@ class TabbedGUIWorker(QMainWindow):
                 active = 'active' in str(status).lower() or 'true' in str(status).lower()
             self.orientation_panel.update_drift_status(active)
     
-    def _handle_status_update(self, status_type: str, value):
-        """Handle specific status updates from workers."""
-        if status_type == 'processing':
-            # Update both serial panel and calibration panel with fusion processing status
-            is_active = (value == 'active')
-            if hasattr(self.connection_panel, 'update_fusion_status'):
-                try:
-                    self.connection_panel.update_fusion_status(is_active)
-                except Exception:
-                    pass
-            if hasattr(self.calibration_panel, 'update_processing_status'):
-                try:
-                    self.calibration_panel.update_processing_status(value)
-                except Exception as e:
-                        try:
-                            log_error(self.log_queue, 'GUI', f"calibration_panel.update_processing_status raised: {e}")
-                        except Exception:
-                            pass
+    def _safe_panel_call(self, panel_name: str, method_name: str, *args):
+        """Call a panel method when it exists, logging failures without duplicating dispatch code."""
+        panel = getattr(self, panel_name, None)
+        method = getattr(panel, method_name, None) if panel is not None else None
+        if not callable(method):
+            return
+        try:
+            method(*args)
+        except Exception as e:
+            try:
+                log_error(self.log_queue, 'GUI', f"{panel_name}.{method_name} raised: {e}")
+            except Exception:
+                pass
 
-            # Emit a central Qt signal for processing state so panels can react via signals
+    def _clear_orientation_indicators(self):
+        """Clear stateful orientation indicators after processing or serial stops."""
+        self._safe_panel_call('orientation_panel', 'update_drift_status', False)
+        self._safe_panel_call('orientation_panel', 'update_device_status', False)
+
+    def _route_status_update(self, status_type: str, value, *, ui_status: bool = False):
+        """Route worker status updates to panels through one dispatch table."""
+        if status_type == 'processing':
+            is_active = (value == 'active')
+            self._safe_panel_call('connection_panel', 'update_fusion_status', is_active)
+            self._safe_panel_call('orientation_panel', 'update_processing_status', value)
             try:
                 self.signals.processing_changed.emit(is_active)
             except Exception:
                 pass
-
-            # Also update the main orientation panel directly as a compatibility fallback
-            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_processing_status'):
-                try:
-                    self.orientation_panel.update_processing_status(value)
-                except Exception:
-                    pass
+            if ui_status and not is_active:
+                self._clear_orientation_indicators()
         elif status_type == 'serial_connection':
-            # Update serial panel with connection status
-            if hasattr(self.connection_panel, 'update_connection_status'):
-                self.connection_panel.update_connection_status(value)
+            self._safe_panel_call('connection_panel', 'update_connection_status', value)
+            if ui_status:
+                self._safe_panel_call('orientation_panel', 'update_serial_connection_status', value)
+                # Only clear calibration on unexpected disconnect or error. Preserve
+                # user-configured drift thresholds when the serial port is stopped
+                # intentionally.
+                if value in ['disconnected', 'error']:
+                    self._safe_panel_call('orientation_panel', 'clear_calibration_state')
+                # Regardless of stop reason, mark processing inactive and clear UI indicators
+                self._safe_panel_call('orientation_panel', 'update_processing_status', 'inactive')
+                self._clear_orientation_indicators()
+                self._safe_panel_call('connection_panel', 'update_message_rate', 0.0)
         elif status_type == 'serial_data':
-            # Update serial panel with data activity
-            if hasattr(self.connection_panel, 'update_data_activity') and value:
-                self.connection_panel.update_data_activity()
+            if value:
+                self._safe_panel_call('connection_panel', 'update_data_activity')
         elif status_type == 'gyro_calibrated':
-            if hasattr(self.calibration_panel, 'update_calibration_status'):
-                self.calibration_panel.update_calibration_status(bool(value))
+            self._safe_panel_call('orientation_panel', 'update_calibration_status', bool(value))
         elif status_type == 'gyro_calibrating':
-            if hasattr(self.calibration_panel, 'update_calibrating_status'):
-                self.calibration_panel.update_calibrating_status(bool(value))
-            # Calibration state is handled by the orientation panel's embedded indicator.
+            self._safe_panel_call('orientation_panel', 'update_calibrating_status', bool(value))
         elif status_type == 'drift_correction':
-            if hasattr(self.orientation_panel, 'update_drift_status'):
-                self.orientation_panel.update_drift_status(bool(value))
+            self._safe_panel_call('orientation_panel', 'update_drift_status', bool(value))
         elif status_type == 'msg_rate':
-            # Prefer connection panel's embedded status area; fall back if needed
-            if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_message_rate'):
-                self.connection_panel.update_message_rate(float(value))
-            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_message_rate'):
-                self.status_bar.update_message_rate(float(value))
+            self._safe_panel_call('connection_panel', 'update_message_rate', float(value))
         elif status_type == 'send_rate':
-            if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_send_rate'):
-                self.connection_panel.update_send_rate(float(value))
-            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_send_rate'):
-                self.status_bar.update_send_rate(float(value))
+            self._safe_panel_call('connection_panel', 'update_send_rate', float(value))
         elif status_type == 'stationary':
-            # Prefer showing device movement status in the orientation panel now that
-            # the indicator lives there. Fall back to connection panel or status bar.
-            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_device_status'):
-                self.orientation_panel.update_device_status(bool(value))
-            elif hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_device_status'):
-                self.connection_panel.update_device_status(bool(value))
-            elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_device_status'):
-                self.status_bar.update_device_status(bool(value))
+            self._safe_panel_call('orientation_panel', 'update_device_status', bool(value))
+
+    def _handle_status_update(self, status_type: str, value):
+        """Handle worker status updates."""
+        self._route_status_update(status_type, value, ui_status=False)
+
     def _handle_ui_status_update(self, status_type: str, value):
-        """Handle UI-specific status updates from workers."""
-        if status_type == 'processing':
-            # Update both serial panel and calibration panel with fusion processing status
-            is_active = (value == 'active')
-            try:
-                log_info(self.log_queue, 'GUI', f"_handle_status_update processing -> value={value!r}, is_active={is_active}, calibration_panel_exists={hasattr(self,'calibration_panel')}, calibration_panel_instance={type(self.calibration_panel) if hasattr(self,'calibration_panel') and self.calibration_panel else self.calibration_panel}")
-            except Exception:
-                pass
-            if hasattr(self.connection_panel, 'update_fusion_status'):
-                try:
-                    self.connection_panel.update_fusion_status(is_active)
-                except Exception:
-                    pass
-            if hasattr(self.calibration_panel, 'update_processing_status'):
-                try:
-                    self.calibration_panel.update_processing_status(value)
-                except Exception as e:
-                        try:
-                            log_error(self.log_queue, 'GUI', f"calibration_panel.update_processing_status raised: {e}")
-                        except Exception:
-                            pass
+        """Handle UI-specific worker status updates."""
+        self._route_status_update(status_type, value, ui_status=True)
 
-            # Emit a central Qt signal for processing state so panels can react via signals
-            try:
-                self.signals.processing_changed.emit(is_active)
-            except Exception:
-                pass
-
-            # Also update the main orientation panel directly as a compatibility fallback
-            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_processing_status'):
-                try:
-                    self.orientation_panel.update_processing_status(value)
-                except Exception:
-                    pass
-
-            # When processing becomes inactive, also clear drift and device indicators immediately
-            if not is_active:
-                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_drift_status'):
-                    try:
-                        self.orientation_panel.update_drift_status(False)
-                    except Exception:
-                        pass
-                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_device_status'):
-                    try:
-                        self.orientation_panel.update_device_status(False)
-                    except Exception:
-                        pass
-                if hasattr(self, 'calibration_panel') and hasattr(self.calibration_panel, 'update_drift_status'):
-                    try:
-                        self.calibration_panel.update_drift_status(False)
-                    except Exception:
-                        pass
-
-            # Embedded orientation panel handles its own hold indicator; nothing to do here.
-        elif status_type == 'serial_connection':
-            # Update serial panel with connection status
-            if hasattr(self.connection_panel, 'update_connection_status'):
-                self.connection_panel.update_connection_status(value)
-            
-            # Update calibration panel with serial connection status
-            if hasattr(self.calibration_panel, 'update_serial_connection_status'):
-                self.calibration_panel.update_serial_connection_status(value)
-            
-            # Serial connection state is forwarded to the orientation panel via
-            # update_serial_connection_status (called below on calibration_panel
-            # for backward compatibility). The embedded indicator will decide
-            # whether to blink or not.
-            
-            # When serial is disconnected/stopped, clear calibration state and reset status bar
-            if value in ['stopped', 'disconnected', 'error']:
-                if hasattr(self.calibration_panel, 'clear_calibration_state'):
-                    self.calibration_panel.clear_calibration_state()
-
-                # Immediately mark processing inactive so orientation controls disable without delay
-                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_processing_status'):
-                    try:
-                        self.orientation_panel.update_processing_status('inactive')
-                    except Exception:
-                        pass
-                if hasattr(self, 'calibration_panel') and hasattr(self.calibration_panel, 'update_processing_status'):
-                    try:
-                        self.calibration_panel.update_processing_status('inactive')
-                    except Exception:
-                        pass
-
-                # Also clear drift correction and device movement indicators immediately
-                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_drift_status'):
-                    try:
-                        self.orientation_panel.update_drift_status(False)
-                    except Exception:
-                        pass
-                if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'update_device_status'):
-                    try:
-                        self.orientation_panel.update_device_status(False)
-                    except Exception:
-                        pass
-                if hasattr(self, 'calibration_panel') and hasattr(self.calibration_panel, 'update_drift_status'):
-                    try:
-                        self.calibration_panel.update_drift_status(False)
-                    except Exception:
-                        pass
-
-                # Reset message rate in the embedded status area when serial stops
-                if hasattr(self, 'connection_panel') and hasattr(self.connection_panel, 'update_message_rate'):
-                    self.connection_panel.update_message_rate(0.0)
-                elif hasattr(self, 'status_bar') and hasattr(self.status_bar, 'update_message_rate'):
-                    self.status_bar.update_message_rate(0.0)
-        elif status_type == 'serial_data':
-            # Update serial panel with data activity
-            if hasattr(self.connection_panel, 'update_data_activity') and value:
-                self.connection_panel.update_data_activity()
-        # Add other UI status types as needed
-    
     def update_gui_elements(self):
         """Periodic GUI updates for display queues only (non-real-time data)."""
         try:
@@ -652,8 +537,7 @@ class TabbedGUIWorker(QMainWindow):
     def load_preferences(self):
         """Load saved preferences for all panels."""
         try:
-            prefs_manager = PreferencesManager()
-            prefs = prefs_manager.load()
+            prefs = self.preferences_manager.load()
             log_info(self.log_queue, 'GUI', f"load_preferences: sections={list(prefs.keys())}")
             
             # Handle both dict and string formats for preferences
@@ -673,29 +557,13 @@ class TabbedGUIWorker(QMainWindow):
                 log_info(self.log_queue, 'GUI', "Applying orientation prefs")
                 self.orientation_panel.set_prefs(prefs['orientation'])
             
-            # Avoid applying calibration prefs if calibration_panel is the same
-            # instance as orientation_panel to prevent overwriting values twice.
-            if hasattr(self.calibration_panel, 'set_prefs') and 'calibration' in prefs:
-                try:
-                    if self.calibration_panel is self.orientation_panel:
-                        # orientation prefs already applied above; skip duplicate
-                        pass
-                    else:
-                        self.calibration_panel.set_prefs(prefs['calibration'])
-                except Exception:
-                    try:
-                        self.calibration_panel.set_prefs(prefs['calibration'])
-                    except Exception:
-                        pass
-            
             # Load preferences for the preferences panel itself
             if hasattr(self.preferences_panel, 'load_preferences'):
                 self.preferences_panel.load_preferences()
             
             # Apply theme preference
-            if hasattr(self, 'preferences_manager'):
-                theme_name = self.preferences_manager.get_theme()
-                self._apply_theme(theme_name)
+            theme_name = self.preferences_manager.get_theme()
+            self._apply_theme(theme_name)
             
             
             log_info(self.log_queue, 'GUI', "Preferences loaded")
@@ -717,9 +585,9 @@ class TabbedGUIWorker(QMainWindow):
                 pass
 
         # Cleanup calibration panel resources (threads) before saving preferences
-        if hasattr(self.calibration_panel, 'cleanup'):
+        if hasattr(self.orientation_panel, 'cleanup'):
             try:
-                self.calibration_panel.cleanup()
+                self.orientation_panel.cleanup()
             except Exception:
                 pass
 
@@ -731,19 +599,14 @@ class TabbedGUIWorker(QMainWindow):
 
         # Remove cross-panel references to avoid accessing deleted C++ wrappers
         try:
-            if hasattr(self, 'orientation_panel') and hasattr(self.orientation_panel, 'calibration_panel'):
+            if hasattr(self, 'preferences_panel') and hasattr(self.preferences_panel, 'orientation_panel'):
                 try:
-                    self.orientation_panel.calibration_panel = None
-                except Exception:
-                    pass
-            if hasattr(self, 'preferences_panel') and hasattr(self.preferences_panel, 'calibration_panel'):
-                try:
-                    self.preferences_panel.calibration_panel = None
+                    self.preferences_panel.orientation_panel = None
                 except Exception:
                     pass
             # Finally drop our own reference
             try:
-                self.calibration_panel = None
+                self.orientation_panel = None
             except Exception:
                 pass
         except Exception:
@@ -777,22 +640,9 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self.orientation_panel, 'get_prefs'):
                 prefs['orientation'] = self.orientation_panel.get_prefs()
             
-            if hasattr(self.calibration_panel, 'get_prefs'):
-                prefs['calibration'] = self.calibration_panel.get_prefs()
-            
-            # Get shortcut preferences from preferences panel
-            if hasattr(self.preferences_panel, 'get_shortcut_preferences'):
-                shortcut_prefs = self.preferences_panel.get_shortcut_preferences()
-                if 'calibration' not in prefs:
-                    prefs['calibration'] = {}
-                prefs['calibration'].update(shortcut_prefs)
-            
-            # Get shortcut preferences from preferences panel
-            if hasattr(self.preferences_panel, 'get_shortcut_preferences'):
-                shortcut_prefs = self.preferences_panel.get_shortcut_preferences()
-                if 'calibration' not in prefs:
-                    prefs['calibration'] = {}
-                prefs['calibration'].update(shortcut_prefs)
+            if hasattr(self.preferences_panel, 'get_tuning_preferences'):
+                tuning_prefs = self.preferences_panel.get_tuning_preferences()
+                prefs.setdefault('orientation', {}).update(tuning_prefs)
             
             # Save GUI state
             prefs['gui'] = {
@@ -801,8 +651,7 @@ class TabbedGUIWorker(QMainWindow):
             }
             
             # Save to preferences
-            prefs_manager = PreferencesManager()
-            prefs_manager.save(prefs)
+            self.preferences_manager.save(prefs)
             
             log_info(self.log_queue, 'GUI', "Preferences saved")
             

@@ -10,7 +10,8 @@ data flow and inter-process contracts.
 |---|---|
 | `orienta.py` | Application entry point; owns the parent wait loop. |
 | `workers/` | All multiprocessing worker implementations and the process manager. |
-| `workers/gui_qt/` | PyQt5 window, panels, preference/theme managers, and icon helper. |
+| `workers/gui_qt/` | PyQt5 window, panels, and icon helper. |
+| `managers/` | Application-wide preference and theme managers used by the GUI process. |
 | `util/` | Queue/error/parsing helpers and cross-process logging API. |
 | `config/` | Static defaults and the generated user preference location. |
 | `arduino/` | Example firmware that produces compatible IMU frames. |
@@ -123,9 +124,11 @@ deliberate latency protection.
 
 This large module is the primary feature surface:
 
-* `HoldPanelQt` renders the animated “hold still” status banner.
-* `TwoLineButton` paints button primary/secondary text.
-* `KeyCaptureDialog` obtains keyboard/gamepad bindings from the input worker.
+* `OrientationPanelQt` renders the orientation UI and owns fusion controls.
+* `hold_panel.py` provides the animated `HoldPanelQt` status banner.
+* `two_line_button.py` provides the reusable shortcut-aware button.
+* `shortcut_dialog.py` owns keyboard/gamepad capture through the input worker.
+* `visualization_popup.py` owns visualization reparenting, popup geometry, and opacity.
 * `OrientationVisualizationWidget` paints orientation and drift indicators.
 * `SquareContainer` maintains a square visualization child.
 * `OrientationPanelQt` renders yaw/pitch/roll values and controls reset,
@@ -133,8 +136,9 @@ This large module is the primary feature surface:
   Monitor/Preferences/About dialogs.
 
 `OrientationPanelQt` is also the consumer of `inputResponseQueue`. It sends
-fusion controls through its `control_queue`. Its preferences methods are
-coupled to `PreferencesPanel`; update both sides when changing a setting.
+fusion controls through its `control_queue`. `PreferencesPanel` connects to it
+as `orientation_panel`; the retired `calibration_panel` alias is no longer an
+active API.
 
 ### `workers/gui_qt/panels/connection_panel.py`
 
@@ -176,7 +180,7 @@ application includes a computer-vision pipeline.
 preference hooks, and a Qt message signal. `ConnectionPanelQt` uses it; panels
 that do not share its group-box model use direct Qt base classes.
 
-### GUI managers and helper
+### Managers and GUI helper
 
 * `managers/preferences_manager.py` determines the project-local
   `config/config.cfg` path, reads nested INI sections, and writes atomically.

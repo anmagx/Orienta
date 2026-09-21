@@ -2,7 +2,48 @@
 
 from PyQt5.QtWidgets import QGroupBox, QFrame, QWidget
 from PyQt5.QtCore import pyqtSignal, QObject
+
+# Shared GUI layout/style constants used by panels for consistent visuals
+# Horizontal padding / vertical padding order: (left, top, right, bottom)
+CONTENT_MARGINS = (4, 6, 4, 6)
+DEFAULT_SPACING = 6
+DIALOG_CONTENT_MARGIN = 6
+BUTTON_EXTRA_HEIGHT = 6
+BUTTON_MIN_HEIGHT = 40
+LINE_THICKNESS = 1
+INACTIVE_OPACITY = 0.45
+
 from abc import ABC, abstractmethod
+
+
+def ui_log(owner, msg: str):
+    """Log through a panel callback when available, otherwise use stdlib logging."""
+    try:
+        cb = getattr(owner, 'message_callback', None)
+        if callable(cb):
+            try:
+                cb(msg)
+                return
+            except Exception:
+                pass
+
+        owner_panel = getattr(owner, 'owner_panel', None)
+        panel_cb = getattr(owner_panel, 'message_callback', None) if owner_panel else None
+        if callable(panel_cb):
+            try:
+                panel_cb(msg)
+                return
+            except Exception:
+                pass
+
+        import logging
+        logging.info(msg)
+    except Exception:
+        try:
+            import logging
+            logging.debug('Failed to deliver UI log', exc_info=True)
+        except Exception:
+            pass
 
 
 class BasePanelQt(QGroupBox):

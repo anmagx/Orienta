@@ -224,8 +224,12 @@ three leading zero translations.
 drains bounded batches from display/status/message queues; its 16 ms GUI timer
 refreshes widgets. It owns the single-window layout:
 
-* `OrientationPanelQt` is the primary screen and owns calibration, recenter,
-  drift-disengage, shortcut, visualization, and pop-up dialog behavior.
+* `OrientationPanelQt` is the primary screen and owns recenter,
+   drift-disengage, and orientation controls.
+* `hold_panel.py`, `two_line_button.py`, and `shortcut_dialog.py` own the
+   reusable status/button/input-dialog widgets. `visualization_popup.py` owns
+   popup reparenting and geometry persistence. The orientation panel remains
+   the coordinator and fusion-control owner.
 * `ConnectionPanelQt` starts/stops serial and UDP and displays rates/state.
 * `MessagePanelQt`, `PreferencesPanel`, and `AboutPanel` are shared instances
   opened in dialogs rather than persistent tabs.
