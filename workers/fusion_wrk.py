@@ -720,6 +720,26 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             # Logged above; skip console print
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error setting roll inversion: {e}")
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_stationary_gyro_threshold':
+                    try:
+                        new_val = float(cmd[1])
+                        if new_val >= 0.0 and new_val <= 1000.0:
+                            filter._gyro_stationary_threshold = new_val
+                            log_info(logQueue, "Fusion Worker", f"Stationary gyro threshold updated to {new_val}")
+                        else:
+                            log_warning(logQueue, "Fusion Worker", f"Invalid stationary gyro threshold: {new_val}")
+                    except Exception as e:
+                        log_warning(logQueue, "Fusion Worker", f"Error setting stationary gyro threshold: {e}")
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_stationary_debounce':
+                    try:
+                        new_val = float(cmd[1])
+                        if new_val >= 0.0 and new_val <= 10.0:
+                            filter._stationary_debounce_s = new_val
+                            log_info(logQueue, "Fusion Worker", f"Stationary debounce updated to {new_val}")
+                        else:
+                            log_warning(logQueue, "Fusion Worker", f"Invalid stationary debounce: {new_val}")
+                    except Exception as e:
+                        log_warning(logQueue, "Fusion Worker", f"Error setting stationary debounce: {e}")
                 elif (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'recalibrate_gyro_bias') or cmd == ('recalibrate_gyro_bias',):
                     # Runtime recalibration request. Optional second element: number of samples
                     try:

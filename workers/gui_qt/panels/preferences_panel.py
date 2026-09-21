@@ -19,6 +19,38 @@ from util.error_utils import (
 )
 
 
+def _ui_log(owner, msg: str):
+    """Log to the GUI message callback when available, otherwise fall back to logging.
+
+    owner: usually `self` from a panel or dialog that may expose `message_callback`.
+    """
+    try:
+        cb = getattr(owner, 'message_callback', None)
+        if callable(cb):
+            try:
+                cb(msg)
+                return
+            except Exception:
+                pass
+
+        owner_panel = getattr(owner, 'owner_panel', None)
+        if owner_panel and hasattr(owner_panel, 'message_callback') and callable(owner_panel.message_callback):
+            try:
+                owner_panel.message_callback(msg)
+                return
+            except Exception:
+                pass
+
+        import logging
+        logging.info(msg)
+    except Exception:
+        try:
+            import logging
+            logging.debug('Failed to deliver UI log', exc_info=True)
+        except Exception:
+            pass
+
+
 class PreferencesPanel(QWidget):
     """Panel for application preferences and settings."""
     
@@ -614,13 +646,17 @@ class PreferencesPanel(QWidget):
                 if hasattr(self.calibration_panel, 'control_queue'):
                     from util.error_utils import safe_queue_put
                     from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    # Note: This would need to be implemented in the fusion worker
-                    # For now, we'll store it in preferences
-                    pass
+
+                    # Send command to fusion worker to update the stationary gyro threshold
+                    control_queue = self.calibration_panel.control_queue
+                    if control_queue and not control_queue.full():
+                        safe_queue_put(control_queue, ('set_stationary_gyro_threshold', float(self._pending_stationary_gyro)), timeout=QUEUE_PUT_TIMEOUT)
+                        _ui_log(self, f"[Preferences] Sent stationary gyro threshold: {self._pending_stationary_gyro}")
+                    else:
+                        _ui_log(self, f"[Preferences] Unable to send stationary gyro threshold: queue unavailable or full")
                 self._pending_stationary_gyro = None
-            except Exception:
-                pass
+            except Exception as e:
+                _ui_log(self, f"[Preferences] Failed to apply stationary gyro threshold: {e}")
     
     def _apply_stationary_debounce(self):
         """Apply stationary debounce time to fusion worker (debounced)."""
@@ -629,13 +665,17 @@ class PreferencesPanel(QWidget):
                 if hasattr(self.calibration_panel, 'control_queue'):
                     from util.error_utils import safe_queue_put
                     from config.config import QUEUE_PUT_TIMEOUT
-                    
-                    # Note: This would need to be implemented in the fusion worker
-                    # For now, we'll store it in preferences
-                    pass
+
+                    # Send command to fusion worker to update the stationary debounce time
+                    control_queue = self.calibration_panel.control_queue
+                    if control_queue and not control_queue.full():
+                        safe_queue_put(control_queue, ('set_stationary_debounce', float(self._pending_stationary_debounce)), timeout=QUEUE_PUT_TIMEOUT)
+                        _ui_log(self, f"[Preferences] Sent stationary debounce: {self._pending_stationary_debounce}")
+                    else:
+                        _ui_log(self, f"[Preferences] Unable to send stationary debounce: queue unavailable or full")
                 self._pending_stationary_debounce = None
-            except Exception:
-                pass
+            except Exception as e:
+                _ui_log(self, f"[Preferences] Failed to apply stationary debounce: {e}")
     
     def _on_drift_smoothing_changed(self, value):
         """Handle drift smoothing time slider change with debouncing."""
@@ -1172,6 +1212,19 @@ class PreferencesPanel(QWidget):
                          ('set_invert_pitch', self.invert_pitch), timeout=QUEUE_PUT_TIMEOUT)
             safe_queue_put(self.calibration_panel.control_queue, 
                          ('set_invert_roll', self.invert_roll), timeout=QUEUE_PUT_TIMEOUT)
+            # Apply stationary detection settings if present
+            if 'stationary_gyro_threshold' in cal_prefs:
+                try:
+                    val = float(cal_prefs['stationary_gyro_threshold'])
+                    safe_queue_put(self.calibration_panel.control_queue, ('set_stationary_gyro_threshold', val), timeout=QUEUE_PUT_TIMEOUT)
+                except Exception as e:
+                    _ui_log(self, f"[Preferences] Failed to send startup stationary_gyro_threshold: {e}")
+            if 'stationary_debounce_s' in cal_prefs:
+                try:
+                    val = float(cal_prefs['stationary_debounce_s'])
+                    safe_queue_put(self.calibration_panel.control_queue, ('set_stationary_debounce', val), timeout=QUEUE_PUT_TIMEOUT)
+                except Exception as e:
+                    _ui_log(self, f"[Preferences] Failed to send startup stationary_debounce_s: {e}")
         except Exception as e:
             _ui_log(self, f"[Preferences] Error applying axis inversions to fusion worker: {e}")
     
