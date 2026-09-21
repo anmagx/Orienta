@@ -2321,23 +2321,91 @@ class OrientationPanelQt(QGroupBox):
             pass
 
     def _create_popup_window(self):
-        """Create a frameless always-on-top window to host the visualization."""
+        """Create a frameless always-on-top window to host the visualization.
+        The popup uses a translucent background and an inner rounded frame so
+        the visible window corners are rounded while preserving the current
+        application palette (theme) for the inner background color.
+        """
         try:
-            from PyQt5.QtWidgets import QWidget
+            from PyQt5.QtWidgets import QWidget, QFrame
+            from PyQt5.QtGui import QPalette
+            from PyQt5.QtCore import Qt as _Qt
+
+            # Frameless translucent top-level widget so we can draw rounded corners
             popup = QWidget(None, Qt.Window | Qt.FramelessWindowHint | Qt.Tool)
-            # Ensure the popup respects application stylesheet (theme)
             popup.setObjectName('visualizationPopup')
             popup.setAttribute(Qt.WA_StyledBackground, True)
             popup.setWindowFlags(popup.windowFlags() | Qt.WindowStaysOnTopHint)
-            popup.setAttribute(Qt.WA_TranslucentBackground, False)
+            # Allow per-pixel transparency so rounded corners are truly transparent
+            popup.setAttribute(Qt.WA_TranslucentBackground, True)
             popup.setAttribute(Qt.WA_ShowWithoutActivating, True)
-            # Create a square container for the visualization inside popup
-            square = SquareContainer(self.visualization_widget, parent=popup)
-            layout = QVBoxLayout(popup)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.addWidget(square)
-            # Position the popup. If a preferred geometry was stored use it,
-            # otherwise fall back to a sensible default in the bottom-right.
+
+            # Inner frame that will receive the rounded background and border.
+            # Give it the same object name used by the theme so global QSS
+            # selectors in the app stylesheet apply to this inner widget.
+            container = QFrame(popup)
+            container.setObjectName('visualizationPopup')
+            container.setAttribute(Qt.WA_StyledBackground, True)
+
+            # Copy the application's stylesheet (or parent window's) onto the
+            # popup so QSS rules are honored for top-level/tool windows.
+            try:
+                parent_window = None
+                try:
+                    parent_window = self.window()
+                except Exception:
+                    parent_window = None
+                app = QApplication.instance()
+                global_sheet = None
+                if parent_window is not None:
+                    try:
+                        global_sheet = parent_window.styleSheet()
+                    except Exception:
+                        global_sheet = None
+                if not global_sheet and app is not None:
+                    try:
+                        global_sheet = app.styleSheet()
+                    except Exception:
+                        global_sheet = None
+                if global_sheet:
+                    try:
+                        popup.setStyleSheet(global_sheet)
+                    except Exception:
+                        pass
+                # Also copy palette so non-QSS widgets still follow theme
+                try:
+                    if parent_window is not None:
+                        popup.setPalette(parent_window.palette())
+                        popup.setAutoFillBackground(True)
+                    elif app is not None:
+                        popup.setPalette(app.palette())
+                        popup.setAutoFillBackground(True)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Minimal inline overrides: adjust corner radius and border thickness
+            # while leaving colors to the global stylesheet so the popup follows
+            # the current theme (dark/light).
+            try:
+                radius = 10
+                container.setStyleSheet(f"border-radius: {radius}px; border: 1px solid palette(mid);")
+            except Exception:
+                container.setStyleSheet("border-radius: 10px; border: 1px solid #555555; background-color: #3c3c3c; color: #ffffff; ")
+
+            # Layout: place the rounded container inside popup with zero margins
+            outer_layout = QVBoxLayout(popup)
+            outer_layout.setContentsMargins(0, 0, 0, 0)
+            outer_layout.addWidget(container)
+
+            # Add the square visualization inside the rounded container with a small inner margin
+            inner_layout = QVBoxLayout(container)
+            inner_layout.setContentsMargins(8, 8, 8, 8)
+            square = SquareContainer(self.visualization_widget, parent=container)
+            inner_layout.addWidget(square)
+
+            # Position the popup using stored geometry or a sensible default
             screen = QApplication.primaryScreen()
             geom = screen.availableGeometry()
             try:
@@ -2356,20 +2424,21 @@ class OrientationPanelQt(QGroupBox):
                 h = 320
                 x = geom.right() - w - 24
                 y = geom.bottom() - h - 24
+
             popup.setGeometry(x, y, w, h)
-            # Apply stored opacity if available
+
+            # Apply stored opacity (applies to the whole window)
             try:
                 popup.setWindowOpacity(max(0.0, min(1.0, float(self._popup_opacity))))
             except Exception:
                 pass
+
             popup.show()
             try:
-                # Record popup geometry for future size/position control
                 self._popup_geom = popup.geometry()
             except Exception:
                 self._popup_geom = None
             try:
-                # Install event filter so moves/resizes are recorded
                 popup.installEventFilter(self)
             except Exception:
                 pass
@@ -2555,6 +2624,12 @@ class OrientationPanelQt(QGroupBox):
             dlg.setAttribute(Qt.WA_StyledBackground, True)
             dlg.setWindowTitle("Visualization Settings")
             layout = QVBoxLayout(dlg)
+            # Reduce vertical spacing and margins so the dialog is compact
+            try:
+                layout.setSpacing(6)
+                layout.setContentsMargins(6, 6, 6, 6)
+            except Exception:
+                pass
 
             # Remember the original geometry so Cancel can restore it
             orig_geom = None
@@ -2568,8 +2643,24 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 orig_geom = None
 
+            # Create a labeled group so the dialog contents match other panels
+            try:
+                group = QGroupBox("Popout Settings")
+                group.setObjectName('visualizationSettingsGroup')
+                group_layout = QVBoxLayout(group)
+                group_layout.setSpacing(6)
+                group_layout.setContentsMargins(6, 6, 6, 6)
+            except Exception:
+                group = None
+                group_layout = None
+
             # Size setting
             size_row = QHBoxLayout()
+            try:
+                size_row.setContentsMargins(0, 2, 0, 2)
+                size_row.setSpacing(6)
+            except Exception:
+                pass
             size_row.addWidget(QLabel("Popout size:"))
             self._size_slider = QSlider(Qt.Horizontal)
             self._size_slider.setMinimum(200)
@@ -2583,11 +2674,27 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 current_size = 320
             self._size_slider.setValue(current_size)
+            # Show current pixel value next to the slider so users see absolute size
+            try:
+                self._size_value_label = QLabel(f"{int(current_size)} px")
+                self._size_value_label.setMinimumWidth(64)
+                self._size_value_label.setAlignment(Qt.AlignCenter)
+            except Exception:
+                self._size_value_label = QLabel(f"{current_size} px")
             size_row.addWidget(self._size_slider, 1)
-            layout.addLayout(size_row)
+            size_row.addWidget(self._size_value_label)
+            if group_layout is not None:
+                group_layout.addLayout(size_row)
+            else:
+                layout.addLayout(size_row)
 
             # Opacity setting (0-100 mapped to 0.0-1.0)
             opacity_row = QHBoxLayout()
+            try:
+                opacity_row.setContentsMargins(0, 2, 0, 2)
+                opacity_row.setSpacing(6)
+            except Exception:
+                pass
             opacity_row.addWidget(QLabel("Popout opacity:"))
             from PyQt5.QtWidgets import QSpinBox
             self._opacity_slider = QSlider(Qt.Horizontal)
@@ -2603,39 +2710,120 @@ class OrientationPanelQt(QGroupBox):
             self._opacity_label.setMinimumWidth(48)
             self._opacity_label.setAlignment(Qt.AlignCenter)
             opacity_row.addWidget(self._opacity_label)
-            layout.addLayout(opacity_row)
+            if group_layout is not None:
+                group_layout.addLayout(opacity_row)
+            else:
+                layout.addLayout(opacity_row)
 
             # Position options
             pos_row = QHBoxLayout()
+            try:
+                pos_row.setContentsMargins(0, 2, 0, 2)
+                pos_row.setSpacing(6)
+            except Exception:
+                pass
             pos_row.addWidget(QLabel("Position:"))
             from PyQt5.QtWidgets import QComboBox
             self._pos_combo = QComboBox()
             self._pos_combo.addItems(["Top Left", "Top Right", "Bottom Left", "Bottom Right"])
-            # Try to select current popup position if available
+            # Try to select current popup position if available. Use the best
+            # available geometry (live popup, stored popup geometry, or the
+            # original geometry captured above) and pick the screen that
+            # contains that geometry so multi-monitor setups work correctly.
             try:
-                if self._popup_window and self._popup_geom is not None:
-                    screen = QApplication.primaryScreen().availableGeometry()
-                    g = self._popup_geom
-                    if g.x() < screen.center().x():
-                        # left
-                        if g.y() < screen.center().y():
-                            self._pos_combo.setCurrentIndex(0)
+                from PyQt5.QtCore import QRect, QPoint
+
+                g = None
+                # Prefer the live popup geometry when present
+                try:
+                    if getattr(self, '_popup_window', None) is not None:
+                        try:
+                            g = QRect(self._popup_window.geometry())
+                        except Exception:
+                            g = None
+                except Exception:
+                    g = None
+
+                # Fallback to stored popup geometry
+                if g is None and getattr(self, '_popup_geom', None) is not None:
+                    try:
+                        g = QRect(self._popup_geom)
+                    except Exception:
+                        g = None
+
+                # Finally, use orig_geom captured earlier if still available
+                if g is None and 'orig_geom' in locals() and orig_geom is not None:
+                    try:
+                        g = QRect(orig_geom)
+                    except Exception:
+                        g = None
+
+                if g is not None:
+                    # Use the screen that contains the center of g when possible
+                    center_point = QPoint(int(g.x() + g.width() / 2), int(g.y() + g.height() / 2))
+                    screen_geom = None
+                    try:
+                        app = QApplication.instance()
+                        # Preferred API: screenAt (available on newer Qt versions)
+                        if app is not None and hasattr(app, 'screenAt'):
+                            try:
+                                scr = app.screenAt(center_point)
+                                if scr is not None:
+                                    screen_geom = scr.availableGeometry()
+                            except Exception:
+                                screen_geom = None
+
+                        # Fallback: check all screens
+                        if screen_geom is None:
+                            try:
+                                for s in QApplication.screens():
+                                    try:
+                                        if s.geometry().contains(center_point):
+                                            screen_geom = s.availableGeometry()
+                                            break
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                screen_geom = None
+
+                        # Last resort: primary screen
+                        if screen_geom is None:
+                            screen_geom = QApplication.primaryScreen().availableGeometry()
+                    except Exception:
+                        try:
+                            screen_geom = QApplication.primaryScreen().availableGeometry()
+                        except Exception:
+                            screen_geom = None
+
+                    if screen_geom is not None:
+                        if g.x() < screen_geom.center().x():
+                            # left
+                            if g.y() < screen_geom.center().y():
+                                self._pos_combo.setCurrentIndex(0)
+                            else:
+                                self._pos_combo.setCurrentIndex(2)
                         else:
-                            self._pos_combo.setCurrentIndex(2)
-                    else:
-                        if g.y() < screen.center().y():
-                            self._pos_combo.setCurrentIndex(1)
-                        else:
-                            self._pos_combo.setCurrentIndex(3)
+                            if g.y() < screen_geom.center().y():
+                                self._pos_combo.setCurrentIndex(1)
+                            else:
+                                self._pos_combo.setCurrentIndex(3)
             except Exception:
                 pass
             pos_row.addWidget(self._pos_combo, 1)
-            layout.addLayout(pos_row)
+            if group_layout is not None:
+                group_layout.addLayout(pos_row)
+            else:
+                layout.addLayout(pos_row)
 
             # Live apply: when sliders change, update popup immediately
             def _apply_live():
                 try:
                     size = int(self._size_slider.value())
+                    try:
+                        # Update the pixel label live
+                        self._size_value_label.setText(f"{size} px")
+                    except Exception:
+                        pass
                     pos_idx = int(self._pos_combo.currentIndex())
                     screen = QApplication.primaryScreen().availableGeometry()
                     w = size
@@ -2680,6 +2868,8 @@ class OrientationPanelQt(QGroupBox):
                     pass
 
             self._size_slider.valueChanged.connect(lambda _: _apply_live())
+            # Keep the pixel label in sync as the user drags the slider
+            self._size_slider.valueChanged.connect(lambda val: self._size_value_label.setText(f"{int(val)} px"))
             self._pos_combo.currentIndexChanged.connect(lambda _: _apply_live())
             self._opacity_slider.valueChanged.connect(lambda _: _apply_opacity_live())
 
@@ -2694,6 +2884,13 @@ class OrientationPanelQt(QGroupBox):
                 pass
 
             # Buttons: OK simply closes, Cancel restores original geometry
+            # Insert the labeled group into the dialog before buttons
+            try:
+                if group is not None:
+                    layout.addWidget(group)
+            except Exception:
+                pass
+
             bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
             layout.addWidget(bb)
             def _on_ok():
@@ -2719,6 +2916,25 @@ class OrientationPanelQt(QGroupBox):
 
             bb.accepted.connect(_on_ok)
             bb.rejected.connect(_on_cancel)
+            # Make the settings dialog wider by default and enforce a smaller
+            # fixed height to remove unused vertical space between controls.
+            try:
+                hint = dlg.sizeHint()
+                w = max(700, hint.width())
+                # Use a smaller fixed height; sliders and controls fit comfortably
+                h = max(160, hint.height())
+                dlg.resize(int(w), int(h))
+                try:
+                    dlg.setFixedHeight(int(h))
+                except Exception:
+                    pass
+            except Exception:
+                dlg.resize(700, 160)
+                try:
+                    dlg.setFixedHeight(160)
+                except Exception:
+                    pass
+
             dlg.exec_()
         except Exception:
             pass
