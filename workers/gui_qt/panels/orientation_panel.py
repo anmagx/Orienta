@@ -444,7 +444,7 @@ class OrientationPanelQt(QGroupBox):
         # Shortcut button uses the same widget and styling path as every other
         # button in the panel; only its width is constrained by the row layout.
         try:
-            self.disengage_shortcut_btn = QPushButton("🔧")
+            self.disengage_shortcut_btn = QPushButton("⚙")
             self.disengage_shortcut_btn.setToolTip("Set shortcut for Disengage Drift Correction")
             try:
                 desired_h = max(self.disengage_btn.sizeHint().height(), BUTTON_MIN_HEIGHT)
@@ -578,7 +578,7 @@ class OrientationPanelQt(QGroupBox):
 
         # Shortcut button uses the same construction and height as reset_button.
         try:
-            self.reset_shortcut_btn = QPushButton("🔧")
+            self.reset_shortcut_btn = QPushButton("⚙")
             self.reset_shortcut_btn.setToolTip("Set shortcut for Reset Orientation")
             try:
                 desired_h = max(self.reset_button.sizeHint().height(), BUTTON_MIN_HEIGHT)

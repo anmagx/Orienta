@@ -83,12 +83,14 @@ class ConnectionPanelQt(BasePanelQt):
         controls_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Use consistent padding with Orientation panel
         # Reduce internal padding to match Orientation panel
-        controls_frame.setContentsMargins(*CONTENT_MARGINS)
+        # Clear widget margins here: main_layout already applies CONTENT_MARGINS
+        controls_frame.setContentsMargins(0, 0, 0, 0)
 
         # Horizontal split: left inputs, right controls
         from PyQt5.QtWidgets import QHBoxLayout, QVBoxLayout
         outer = QHBoxLayout(controls_frame)
-        outer.setContentsMargins(*CONTENT_MARGINS)
+        # Keep outer layout compact; inner widgets manage their own spacing
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(DEFAULT_SPACING)
 
         # Left: inputs area split into two equal columns with a vertical divider
@@ -100,7 +102,8 @@ class ConnectionPanelQt(BasePanelQt):
         # Left column: Serial inputs (vertical stack)
         left_col = QFrame()
         left_col_layout = QVBoxLayout(left_col)
-        left_col_layout.setContentsMargins(0, 0, 0, 0)
+        # Match orientation panel inner padding so inputs align visually with viz/value panels
+        left_col_layout.setContentsMargins(*CONTENT_MARGINS)
         left_col_layout.setSpacing(DEFAULT_SPACING)
 
         # Serial row
@@ -144,7 +147,8 @@ class ConnectionPanelQt(BasePanelQt):
         # Right column: Network inputs (vertical stack)
         right_col = QFrame()
         right_col_layout = QVBoxLayout(right_col)
-        right_col_layout.setContentsMargins(0, 0, 0, 0)
+        # Match orientation panel internal padding for symmetric layout
+        right_col_layout.setContentsMargins(*CONTENT_MARGINS)
         right_col_layout.setSpacing(DEFAULT_SPACING)
 
         # IP row
@@ -213,7 +217,8 @@ class ConnectionPanelQt(BasePanelQt):
         # Right: controls area (buttons & status stacked)
         right_widget = QFrame()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        # Apply the same content margins used by Orientation values column
+        right_layout.setContentsMargins(*CONTENT_MARGINS)
         right_layout.setSpacing(DEFAULT_SPACING)
         # Top-align controls so buttons sit at the top of the right column
         right_layout.setAlignment(Qt.AlignTop)

@@ -522,12 +522,18 @@ class TabbedGUIWorker(QMainWindow):
         max_width = 600
         target_w = min(target_w, max_width)
 
-        # Resize to the target and make it the minimum start size
+        # Resize to the target and lock the window to this fixed size to prevent resizing
         self.resize(target_w, target_h)
-        self.setMinimumSize(target_w, target_h)
-
-        # Allow immediate resizing by the user (no temporary maximum lock)
-        QTimer.singleShot(50, self._enable_resizing)
+        # Prevent user resizing: enforce fixed size equal to the chosen target
+        try:
+            self.setFixedSize(target_w, target_h)
+        except Exception:
+            # Fall back to setting min/max if setFixedSize fails in some environments
+            try:
+                self.setMinimumSize(target_w, target_h)
+                self.setMaximumSize(target_w, target_h)
+            except Exception:
+                pass
     
     def _enable_resizing(self):
         """Remove maximum size constraint to allow user resizing while preserving minimum size."""
