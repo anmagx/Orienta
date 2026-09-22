@@ -6,6 +6,8 @@ import math
 from config.config import (
     DEFAULT_UDP_IP,
     DEFAULT_UDP_PORT,
+    OUTPUT_RATE_MIN_HZ,
+    OUTPUT_RATE_MAX_HZ,
     FPS_REPORT_INTERVAL,
     QUEUE_PUT_TIMEOUT,
 )
@@ -22,6 +24,11 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
     ``(0.0, 0.0, 0.0, yaw, pitch, roll)``.
     """
     from util.log_utils import log_error, log_info
+    from util.timing_utils import enable_high_res_timer, disable_high_res_timer
+
+    # Windows rounds time.sleep() up to the ~15.6ms system clock tick unless
+    # this process requests higher resolution; must be set per-process.
+    enable_high_res_timer()
 
     udp_ip = DEFAULT_UDP_IP if udp_ip is None else udp_ip
     udp_port = DEFAULT_UDP_PORT if udp_port is None else udp_port
@@ -33,6 +40,21 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
     last_rate_ts = time.time()
     # Counter to rate-limit non-finite sample logging
     nonfinite_counter = 0
+
+    # Output rate cap: decouples the send rate from whatever rate fusion
+    # happens to produce. Defaults to unlimited (0) so behavior matches the
+    # original uncapped throughput; a cap is opt-in via ('set_rate', hz) so
+    # enabling UDP never silently caps output below what fusion can produce.
+    # Uses perf_counter (monotonic, high-resolution) rather than time.time(),
+    # whose ~15.6ms Windows clock resolution would floor any sub-16ms
+    # interval to ~60-80Hz regardless of the configured rate.
+    output_rate_hz = 0
+    min_send_interval = 0.0
+    # Fixed schedule (not "last send + interval"): computing each deadline
+    # from a running schedule instead of from when the previous packet
+    # actually went out prevents per-iteration loop overhead from
+    # accumulating into a systematic drift below the configured rate.
+    next_send_time = time.perf_counter()
 
     try:
         while not stop_event.is_set():
@@ -50,16 +72,42 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
                     udp_enabled = bool(cmd[1])
                     status = "enabled" if udp_enabled else "disabled"
                     log_info(logQueue, "UDP Worker", f"UDP sending {status}")
+                    if udp_enabled:
+                        # Start the schedule fresh so enabling never waits on
+                        # a stale deadline left over from before it was off.
+                        next_send_time = time.perf_counter()
+                elif cmd[0] == "set_rate" and len(cmd) >= 2:
+                    try:
+                        requested = float(cmd[1])
+                    except (TypeError, ValueError):
+                        requested = None
+                    if requested and requested > 0:
+                        output_rate_hz = max(OUTPUT_RATE_MIN_HZ, min(OUTPUT_RATE_MAX_HZ, requested))
+                        min_send_interval = 1.0 / output_rate_hz
+                        log_info(logQueue, "UDP Worker", f"Output rate capped at {output_rate_hz:.1f} Hz")
+                    else:
+                        output_rate_hz = 0
+                        min_send_interval = 0.0
+                        log_info(logQueue, "UDP Worker", "Output rate uncapped")
+                    # Rate changed: restart the schedule rather than reuse a
+                    # deadline computed under the old interval.
+                    next_send_time = time.perf_counter()
 
-            latest = None
-            for _ in range(10):
-                sample = safe_queue_get(eulerQueue, timeout=0.0, default=None)
-                if sample is None:
-                    break
-                latest = sample
+            # Wait for the next sample rather than non-blocking polling + a
+            # separate sleep - the same anti-pattern fixed in fusion_wrk.py's
+            # serialQueue read: a blocking get() returns as soon as data
+            # arrives, so this tracks fusion's actual push rate instead of
+            # being capped by repeated empty-queue misses and sleep rounding.
+            latest = safe_queue_get(eulerQueue, timeout=0.05, default=None)
+            if latest is not None:
+                # Drain any extra backlog that queued up, keeping only the freshest
+                for _ in range(9):
+                    newer = safe_queue_get(eulerQueue, timeout=0.0, default=None)
+                    if newer is None:
+                        break
+                    latest = newer
 
             if latest is None:
-                time.sleep(0.001)
                 continue
 
             try:
@@ -73,14 +121,25 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
                     # Skip this frame
                     continue
 
-                if udp_enabled:
+                now = time.time()
+                now_perf = time.perf_counter()
+                if udp_enabled and (min_send_interval <= 0.0 or now_perf >= next_send_time):
                     sock.sendto(
                         struct.pack("<6d", 0.0, 0.0, 0.0, yaw, pitch, roll),
                         (udp_ip, udp_port),
                     )
                     send_count += 1
+                    if min_send_interval > 0.0:
+                        next_send_time += min_send_interval
+                        # If we fell behind (e.g. a data gap), resync to now
+                        # instead of bursting out a catch-up backlog.
+                        if next_send_time < now_perf:
+                            next_send_time = now_perf
+                elif udp_enabled and min_send_interval > 0.0:
+                    remaining = next_send_time - now_perf
+                    if remaining > 0:
+                        time.sleep(remaining)
 
-                now = time.time()
                 elapsed = now - last_rate_ts
                 if elapsed >= FPS_REPORT_INTERVAL:
                     safe_queue_put(
@@ -97,3 +156,4 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
     finally:
         sock.close()
         log_info(logQueue, "UDP Worker", "Stopped")
+        disable_high_res_timer()

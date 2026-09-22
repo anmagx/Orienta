@@ -20,6 +20,8 @@ from config.config import (
     DEFAULT_SERIAL_BAUD,
     DEFAULT_UDP_IP,
     DEFAULT_UDP_PORT,
+    OUTPUT_RATE_MIN_HZ,
+    OUTPUT_RATE_MAX_HZ,
     QUEUE_PUT_TIMEOUT
 )
 from util.error_utils import safe_queue_put
@@ -62,6 +64,7 @@ class ConnectionPanelQt(BasePanelQt):
         # UDP state (same as former NetworkPanelQt)
         self._udp_ip = DEFAULT_UDP_IP
         self._udp_port = str(DEFAULT_UDP_PORT)
+        self._udp_rate_hz = "0"  # 0 = unlimited; matches the original uncapped behavior
         self.udp_enabled = False
         self._udp_btn_text = "Start UDP"
         self._udp_status_text = "UDP Disabled"
@@ -187,10 +190,29 @@ class ConnectionPanelQt(BasePanelQt):
         port_h.addWidget(self.udp_port_entry)
         right_col_layout.addLayout(port_h)
 
+        # Output rate row - caps/stabilizes the UDP send rate independent of fusion's rate
+        rate_h = QHBoxLayout()
+        rate_h.setContentsMargins(0, 0, 0, 0)
+        lbl_rate = QLabel("Rate (Hz):")
+        lbl_rate.setToolTip(f"Maximum UDP send rate, {OUTPUT_RATE_MIN_HZ}-{OUTPUT_RATE_MAX_HZ} Hz (0 = unlimited)")
+        lbl_rate.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_rate.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        rate_h.addWidget(lbl_rate)
+        rate_h.addStretch()
+
+        self.udp_rate_entry = QLineEdit()
+        self.udp_rate_entry.setText(self._udp_rate_hz)
+        self.udp_rate_entry.setValidator(QIntValidator(0, OUTPUT_RATE_MAX_HZ))
+        self.udp_rate_entry.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.udp_rate_entry.setAlignment(Qt.AlignRight)
+        self.udp_rate_entry.textChanged.connect(self._on_udp_rate_changed)
+        rate_h.addWidget(self.udp_rate_entry)
+        right_col_layout.addLayout(rate_h)
+
         # Normalize and align label widths so left labels and right labels line up neatly
         try:
             fm = QFontMetrics(lbl_serial.font())
-            labels = [lbl_serial, lbl_baud, lbl_ip, lbl_udp_port]
+            labels = [lbl_serial, lbl_baud, lbl_ip, lbl_udp_port, lbl_rate]
             maxw = max(fm.horizontalAdvance(lbl.text()) for lbl in labels) + 8
             for lbl in labels:
                 lbl.setFixedWidth(maxw)
@@ -526,6 +548,20 @@ class ConnectionPanelQt(BasePanelQt):
         """Handle UDP port entry change."""
         self._udp_port = text
 
+    def _on_udp_rate_changed(self, text):
+        """Handle UDP output rate entry change; applies live if UDP is enabled."""
+        self._udp_rate_hz = text
+        if self.udp_enabled:
+            try:
+                rate = int(text)
+            except ValueError:
+                return
+            safe_queue_put(
+                self.udp_control_queue,
+                ('set_rate', rate),
+                timeout=QUEUE_PUT_TIMEOUT
+            )
+
     def toggle_udp(self):
         """Toggle UDP sending on/off."""
         self.udp_enabled = not self.udp_enabled
@@ -557,6 +593,7 @@ class ConnectionPanelQt(BasePanelQt):
 
         self.udp_ip_entry.setEnabled(False)
         self.udp_port_entry.setEnabled(False)
+        self.udp_rate_entry.setEnabled(False)
 
         try:
             ip = str(self.udp_ip_entry.text())
@@ -572,6 +609,16 @@ class ConnectionPanelQt(BasePanelQt):
         ):
             self.log_message("Failed to send UDP configuration")
             return
+
+        try:
+            rate = int(self.udp_rate_entry.text())
+        except ValueError:
+            rate = 0
+        safe_queue_put(
+            self.udp_control_queue,
+            ('set_rate', rate),
+            timeout=QUEUE_PUT_TIMEOUT
+        )
 
         if not safe_queue_put(
             self.udp_control_queue,
@@ -607,6 +654,7 @@ class ConnectionPanelQt(BasePanelQt):
 
         self.udp_ip_entry.setEnabled(True)
         self.udp_port_entry.setEnabled(True)
+        self.udp_rate_entry.setEnabled(True)
 
         if not safe_queue_put(
             self.udp_control_queue,
@@ -679,7 +727,8 @@ class ConnectionPanelQt(BasePanelQt):
             },
             'network': {
                 'udp_ip': self.udp_ip_entry.text(),
-                'udp_port': self.udp_port_entry.text()
+                'udp_port': self.udp_port_entry.text(),
+                'output_rate_hz': self.udp_rate_entry.text()
             }
         }
 
@@ -718,6 +767,10 @@ class ConnectionPanelQt(BasePanelQt):
                 self._udp_port = network_prefs['udp_port']
                 self.udp_port_entry.setText(self._udp_port)
 
+            if 'output_rate_hz' in network_prefs and network_prefs['output_rate_hz']:
+                self._udp_rate_hz = str(network_prefs['output_rate_hz'])
+                self.udp_rate_entry.setText(self._udp_rate_hz)
+
             # Send initial configuration to UDP worker if enabled
             if self.udp_enabled and self.udp_control_queue:
                 try:
@@ -726,6 +779,11 @@ class ConnectionPanelQt(BasePanelQt):
                     safe_queue_put(
                         self.udp_control_queue,
                         ('set_udp', ip, port),
+                        timeout=QUEUE_PUT_TIMEOUT
+                    )
+                    safe_queue_put(
+                        self.udp_control_queue,
+                        ('set_rate', int(self.udp_rate_entry.text())),
                         timeout=QUEUE_PUT_TIMEOUT
                     )
                     safe_queue_put(

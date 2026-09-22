@@ -2,7 +2,6 @@
 Sensor fusion worker using complementary filter for orientation estimation.
 Reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
 """
-import numpy as np
 import time
 from queue import Empty
 import threading
@@ -81,63 +80,66 @@ class QuaternionComplementaryFilter:
         self.invert_yaw = False
         self.invert_pitch = False
         self.invert_roll = False
-        # Quaternion as [w, x, y, z]
-        self.q = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+        # Quaternion as (w, x, y, z); plain tuple, not numpy - this runs at
+        # 250Hz and numpy's per-call dispatch overhead dominates at this scale
+        # for such tiny (4-element) operations.
+        self.q = (1.0, 0.0, 0.0, 0.0)
         self.last_time = None
         self.logQueue = logQueue
 
     # --- Quaternion helper methods ---
     def _quat_normalize(self, q):
-        n = np.linalg.norm(q)
+        w, x, y, z = q
+        n = math.sqrt(w*w + x*x + y*y + z*z)
         if n == 0:
-            return np.array([1.0, 0.0, 0.0, 0.0])
-        return q / n
+            return (1.0, 0.0, 0.0, 0.0)
+        return (w / n, x / n, y / n, z / n)
 
     def _quat_mul(self, a, b):
         # Hamilton product
         w1, x1, y1, z1 = a
         w2, x2, y2, z2 = b
-        return np.array([
+        return (
             w1*w2 - x1*x2 - y1*y2 - z1*z2,
             w1*x2 + x1*w2 + y1*z2 - z1*y2,
             w1*y2 - x1*z2 + y1*w2 + z1*x2,
             w1*z2 + x1*y2 - y1*x2 + z1*w2
-        ], dtype=float)
+        )
 
     def _euler_from_quat(self, q):
         # returns (yaw, pitch, roll) in degrees
         w, x, y, z = q
         # roll (x-axis rotation)
-        t0 = +2.0 * (w * x + y * z)
-        t1 = +1.0 - 2.0 * (x * x + y * y)
-        roll = np.degrees(np.arctan2(t0, t1))
+        t0 = 2.0 * (w * x + y * z)
+        t1 = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.degrees(math.atan2(t0, t1))
 
         # pitch (y-axis)
-        t2 = +2.0 * (w * y - z * x)
-        t2 = np.clip(t2, -1.0, 1.0)
-        pitch = np.degrees(np.arcsin(t2))
+        t2 = 2.0 * (w * y - z * x)
+        t2 = max(-1.0, min(1.0, t2))
+        pitch = math.degrees(math.asin(t2))
 
         # yaw (z-axis)
-        t3 = +2.0 * (w * z + x * y)
-        t4 = +1.0 - 2.0 * (y * y + z * z)
-        yaw = np.degrees(np.arctan2(t3, t4))
+        t3 = 2.0 * (w * z + x * y)
+        t4 = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.degrees(math.atan2(t3, t4))
 
         return yaw, pitch, roll
 
     def _quat_from_euler(self, yaw, pitch, roll):
         # input degrees
-        cy = np.cos(np.radians(yaw) * 0.5)
-        sy = np.sin(np.radians(yaw) * 0.5)
-        cp = np.cos(np.radians(pitch) * 0.5)
-        sp = np.sin(np.radians(pitch) * 0.5)
-        cr = np.cos(np.radians(roll) * 0.5)
-        sr = np.sin(np.radians(roll) * 0.5)
+        cy = math.cos(math.radians(yaw) * 0.5)
+        sy = math.sin(math.radians(yaw) * 0.5)
+        cp = math.cos(math.radians(pitch) * 0.5)
+        sp = math.sin(math.radians(pitch) * 0.5)
+        cr = math.cos(math.radians(roll) * 0.5)
+        sr = math.sin(math.radians(roll) * 0.5)
 
         w = cr * cp * cy + sr * sp * sy
         x = sr * cp * cy - cr * sp * sy
         y = cr * sp * cy + sr * cp * sy
         z = cr * cp * sy - sr * sp * cy
-        return np.array([w, x, y, z], dtype=float)
+        return (w, x, y, z)
 
     def _slerp(self, a, b, t):
         """Spherical linear interpolation between quaternions for smoother drift correction.
@@ -145,22 +147,24 @@ class QuaternionComplementaryFilter:
         Provides much smoother interpolation than NLERP, especially for small corrections.
         """
         # Ensure we take the shorter path by checking dot product
-        dot = np.dot(a, b)
+        dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
         if dot < 0.0:
-            b = -b  # Flip to shorter path
+            b = (-b[0], -b[1], -b[2], -b[3])  # Flip to shorter path
             dot = -dot
         
         # If quaternions are very close, use linear interpolation to avoid division by zero
         if dot > 0.9995:
-            q = (1.0 - t) * a + t * b
+            q = tuple((1.0 - t) * ai + t * bi for ai, bi in zip(a, b))
             return self._quat_normalize(q)
         
         # Calculate angle between quaternions
-        theta = np.arccos(np.clip(dot, -1.0, 1.0))
-        sin_theta = np.sin(theta)
+        theta = math.acos(max(-1.0, min(1.0, dot)))
+        sin_theta = math.sin(theta)
         
         # Spherical interpolation
-        q = (np.sin((1.0 - t) * theta) / sin_theta) * a + (np.sin(t * theta) / sin_theta) * b
+        s0 = math.sin((1.0 - t) * theta) / sin_theta
+        s1 = math.sin(t * theta) / sin_theta
+        q = tuple(s0 * ai + s1 * bi for ai, bi in zip(a, b))
         return self._quat_normalize(q)
 
     def _nlerp(self, a, b, t):
@@ -170,12 +174,12 @@ class QuaternionComplementaryFilter:
         but have opposite signs (q and -q represent the same rotation).
         """
         # Ensure we take the shorter path by checking dot product
-        dot = np.dot(a, b)
+        dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
         if dot < 0.0:
-            b = -b  # Flip to shorter path
+            b = (-b[0], -b[1], -b[2], -b[3])  # Flip to shorter path
         
         # Linear interpolation
-        q = (1.0 - t) * a + t * b
+        q = tuple((1.0 - t) * ai + t * bi for ai, bi in zip(a, b))
         return self._quat_normalize(q)
 
     def _calculate_drift_factor(self, dt, elapsed_time):
@@ -194,9 +198,9 @@ class QuaternionComplementaryFilter:
         if self.drift_curve_type == 'exponential':
             # Exponential approach - fast start, slow finish
             # Use cumulative approach for consistency
-            target_progress = 1.0 - np.exp(-elapsed_time / self.drift_smoothing_time)
+            target_progress = 1.0 - math.exp(-elapsed_time / self.drift_smoothing_time)
             if elapsed_time > dt:
-                prev_progress = 1.0 - np.exp(-(elapsed_time - dt) / self.drift_smoothing_time)
+                prev_progress = 1.0 - math.exp(-(elapsed_time - dt) / self.drift_smoothing_time)
                 factor = min(target_progress - prev_progress, 0.4)
             else:
                 factor = min(target_progress, 0.4)
@@ -206,10 +210,10 @@ class QuaternionComplementaryFilter:
             factor = min(rate_per_second * dt, 0.1)
         elif self.drift_curve_type == 'cosine':
             # Cosine ease-in-out - smooth start and finish
-            target_progress = 0.5 * (1.0 - np.cos(np.pi * time_progress))
+            target_progress = 0.5 * (1.0 - math.cos(math.pi * time_progress))
             if elapsed_time > dt:
                 prev_time_progress = min((elapsed_time - dt) / self.drift_smoothing_time, 1.0)
-                prev_progress = 0.5 * (1.0 - np.cos(np.pi * prev_time_progress))
+                prev_progress = 0.5 * (1.0 - math.cos(math.pi * prev_time_progress))
                 factor = min(target_progress - prev_progress, 0.4)
             else:
                 factor = min(target_progress, 0.4)
@@ -224,9 +228,9 @@ class QuaternionComplementaryFilter:
                 factor = min(target_progress, 0.4)
         else:
             # Fallback to exponential
-            target_progress = 1.0 - np.exp(-elapsed_time / self.drift_smoothing_time)
+            target_progress = 1.0 - math.exp(-elapsed_time / self.drift_smoothing_time)
             if elapsed_time > dt:
-                prev_progress = 1.0 - np.exp(-(elapsed_time - dt) / self.drift_smoothing_time)
+                prev_progress = 1.0 - math.exp(-(elapsed_time - dt) / self.drift_smoothing_time)
                 factor = min(target_progress - prev_progress, 0.4)
             else:
                 factor = min(target_progress, 0.4)
@@ -239,8 +243,8 @@ class QuaternionComplementaryFilter:
 
     def _accel_to_rp(self, accel):
         ax, ay, az = accel
-        roll = np.arctan2(ay, az) * 180.0 / np.pi
-        pitch = np.arctan2(-ax, np.sqrt(ay**2 + az**2)) * 180.0 / np.pi
+        roll = math.atan2(ay, az) * 180.0 / math.pi
+        pitch = math.atan2(-ax, math.sqrt(ay*ay + az*az)) * 180.0 / math.pi
         return roll, pitch
 
     def update(self, gyro, accel, timestamp):
@@ -253,7 +257,7 @@ class QuaternionComplementaryFilter:
                 pass
             # Initialization logged via log_info; avoid console prints in worker
             self.last_time = timestamp
-            self.q = np.array([1.0, 0.0, 0.0, 0.0])
+            self.q = (1.0, 0.0, 0.0, 0.0)
             return 0.0, 0.0, 0.0, False, False
 
         dt = timestamp - self.last_time
@@ -277,16 +281,21 @@ class QuaternionComplementaryFilter:
         gz_corr = gz - self.gyro_bias_yaw
 
         # Integrate quaternion using gyro (deg/s -> rad/s)
-        omega = np.array([0.0, np.radians(gx), np.radians(gy), np.radians(gz_corr)])
+        omega = (0.0, math.radians(gx), math.radians(gy), math.radians(gz_corr))
         q = self.q
-        q_dot = 0.5 * self._quat_mul(q, omega)
-        q = q + q_dot * dt
+        qd = self._quat_mul(q, omega)
+        q = (
+            q[0] + 0.5 * qd[0] * dt,
+            q[1] + 0.5 * qd[1] * dt,
+            q[2] + 0.5 * qd[2] * dt,
+            q[3] + 0.5 * qd[3] * dt,
+        )
         q = self._quat_normalize(q)
 
         # accel-based roll/pitch correction (if accel valid)
         ax, ay, az = accel
-        accel_mag = np.sqrt(ax*ax + ay*ay + az*az)
-        gyro_mag = np.sqrt(gx*gx + gy*gy + gz*gz)
+        accel_mag = math.sqrt(ax*ax + ay*ay + az*az)
+        gyro_mag = math.sqrt(gx*gx + gy*gy + gz*gz)
 
         accel_ok = False
         if accel_mag >= 0.01:
@@ -322,11 +331,16 @@ class QuaternionComplementaryFilter:
             # Yaw stays from gyro integration (no magnetometer available)
             # Convert back to quaternion with blended roll/pitch and gyro yaw
             q = self._quat_from_euler(current_yaw, blended_pitch, blended_roll)
-        
+            # q was just built from these exact angles; reuse them instead of
+            # re-decomposing q with another round of trig calls.
+            yaw_est, pitch_est, roll_est = current_yaw, blended_pitch, blended_roll
+        else:
+            # q wasn't reconstructed from known angles here, so it must be decomposed.
+            yaw_est, pitch_est, roll_est = self._euler_from_quat(q)
+
         # Check if we're looking approximately straight ahead AFTER accel correction
         # Compare against configured center offsets so drift correction can operate
         # when a user-defined rest offset exists.
-        yaw_est, pitch_est, roll_est = self._euler_from_quat(q)
         is_near_center = (_angle_diff_fast(yaw_est, self.center_offset_yaw) < self.center_threshold_yaw and 
                  _angle_diff_fast(pitch_est, self.center_offset_pitch) < self.center_threshold_pitch and
                  _angle_diff_fast(roll_est, self.center_offset_roll) < self.center_threshold_roll)
@@ -346,7 +360,7 @@ class QuaternionComplementaryFilter:
             if self.drift_curve_type == 'exponential':
                 # Exponential: stronger correction as time progresses
                 # Use derivative to get per-frame strength
-                base_strength = (1.0 - np.exp(-3.0 * progress)) / max(progress, 0.01)
+                base_strength = (1.0 - math.exp(-3.0 * progress)) / max(progress, 0.01)
                 base_rate = base_strength * dt / self.drift_smoothing_time
                 correction_strength = min(base_rate * (self.drift_correction_strength / 0.3), 1.0)
             elif self.drift_curve_type == 'linear':
@@ -355,7 +369,7 @@ class QuaternionComplementaryFilter:
                 correction_strength = min(base_rate * (self.drift_correction_strength / 0.3), 1.0)
             elif self.drift_curve_type == 'cosine':
                 # Cosine ease: smooth variable rate
-                rate = 0.5 * np.pi * np.sin(np.pi * progress) / self.drift_smoothing_time
+                rate = 0.5 * math.pi * math.sin(math.pi * progress) / self.drift_smoothing_time
                 base_rate = rate * dt
                 correction_strength = min(base_rate * (self.drift_correction_strength / 0.3), 1.0)
             elif self.drift_curve_type == 'quadratic':
@@ -368,8 +382,9 @@ class QuaternionComplementaryFilter:
                 base_rate = dt / self.drift_smoothing_time
                 correction_strength = min(base_rate * (self.drift_correction_strength / 0.3), 1.0)
             
-            # Extract current absolute angles
-            current_yaw, current_pitch, current_roll = self._euler_from_quat(q)
+            # Extract current absolute angles (already known from above; q was
+            # either just built from these or decomposed once already).
+            current_yaw, current_pitch, current_roll = yaw_est, pitch_est, roll_est
 
             # Work in the *relative* frame defined by center offsets so drift
             # correction brings the sensor toward the user-defined rest pose.
@@ -397,7 +412,12 @@ class QuaternionComplementaryFilter:
         q = self._quat_normalize(q)
         self.q = q
 
-        yaw, pitch, roll = self._euler_from_quat(q)
+        # q above was built directly from corrected_*/yaw_est,pitch_est,roll_est
+        # in every path, so reuse those angles instead of a 3rd trig decomposition.
+        if drift_active:
+            yaw, pitch, roll = corrected_yaw, corrected_pitch, corrected_roll
+        else:
+            yaw, pitch, roll = yaw_est, pitch_est, roll_est
         # Store angles for next frame's smoothness calculation
         self._last_yaw = yaw
         self._last_pitch = pitch
@@ -420,7 +440,7 @@ class QuaternionComplementaryFilter:
 
     def reset(self):
         """Reset quaternion orientation to identity (zero rotation)."""
-        self.q = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+        self.q = (1.0, 0.0, 0.0, 0.0)
         self._drift_correction_start = None
     
     
@@ -431,6 +451,11 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
     Fusion worker that reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
     """
     from util.log_utils import log_info, log_error, log_warning
+    from util.timing_utils import enable_high_res_timer, disable_high_res_timer
+
+    # Windows rounds time.sleep() up to the ~15.6ms system clock tick unless
+    # this process requests higher resolution; must be set per-process.
+    enable_high_res_timer()
 
     # All logging should use util.log_utils (log_info/log_error). Legacy
     # print() calls have been removed; no redirecting of builtins.print is used.
@@ -471,10 +496,32 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
     malformed_counter = 0
     nonfinite_euler_counter = 0
 
+    # Loop counter used to throttle low-frequency IPC work (control polling,
+    # display-queue publishing) so it doesn't add per-frame overhead at 250Hz.
+    # Each multiprocessing.Queue call carries real OS-level sync cost on
+    # Windows; polling everything every frame was the main throughput cap.
+    loop_iteration = 0
+    CONTROL_POLL_EVERY_N = 4   # ~62Hz control responsiveness at 250Hz input
+    DISPLAY_PUBLISH_EVERY_N = 4  # ~62Hz display updates; GUI only needs ~60Hz
+
+    # --- Diagnostics: per-stage timing, logged periodically to find where
+    # the loop actually spends time (queue wait vs parse vs filter vs publish).
+    DIAG_INTERVAL_S = 2.0
+    diag_last_report = time.perf_counter()
+    diag_samples = 0
+    diag_wait_s = 0.0
+    diag_parse_s = 0.0
+    diag_update_s = 0.0
+    diag_publish_s = 0.0
+    diag_iter_s = 0.0
+
     try:
         while not stop_event.is_set():
-            # Check for control commands (non-blocking)
-            cmd = safe_queue_get(controlQueue, timeout=0.0, default=None)
+            loop_iteration += 1
+            # Check for control commands (non-blocking), throttled to reduce IPC overhead
+            cmd = None
+            if loop_iteration % CONTROL_POLL_EVERY_N == 0:
+                cmd = safe_queue_get(controlQueue, timeout=0.0, default=None)
             if cmd is not None:
                 # Support control commands: 'reset' and ('set_center_threshold', value)
                 # Accept both bare string commands and tuple/list variants
@@ -775,8 +822,8 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                                     ts, accel, gyro = parse_imu_line(line)
                                     # Only accept stationary samples: accel near 1g and gyro quiet
                                     ax, ay, az = accel
-                                    mag = np.sqrt(ax * ax + ay * ay + az * az)
-                                    gyro_mag = np.sqrt(gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2])
+                                    mag = math.sqrt(ax * ax + ay * ay + az * az)
+                                    gyro_mag = math.sqrt(gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2])
                                     if mag >= 0.01 and abs(mag - 1.0) < ACCEL_THRESHOLD and gyro_mag < STATIONARY_GYRO_THRESHOLD:
                                         samples.append(float(gyro[2]))
                                         last_ts = ts
@@ -841,8 +888,8 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                                     ts, accel, gyro = parse_imu_line(line)
                                     # Only accept stationary samples: accel near 1g and gyro quiet
                                     ax, ay, az = accel
-                                    mag = np.sqrt(ax * ax + ay * ay + az * az)
-                                    gyro_mag = np.sqrt(gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2])
+                                    mag = math.sqrt(ax * ax + ay * ay + az * az)
+                                    gyro_mag = math.sqrt(gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2])
                                     if mag >= 0.01 and abs(mag - 1.0) < ACCEL_THRESHOLD and gyro_mag < STATIONARY_GYRO_THRESHOLD:
                                         r, p = filter._accel_to_rp((ax, ay, az))
                                         roll_samples.append(float(r))
@@ -877,17 +924,26 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error during runtime center level recalibration: {e}")
             
-            # Get data from serial queue - drain queue to process most recent data
-            line = None
-            data_count = 0
-            
-            # Process multiple items per loop iteration to avoid queue backup
-            while data_count < 5:  # Limit to prevent blocking too long
-                latest_line = safe_queue_get(serialQueue, timeout=0.0, default=None)
-                if latest_line is None:
-                    break
-                line = latest_line  # Keep most recent
-                data_count += 1
+            # Get data from serial queue - wait for the next sample rather than
+            # busy-polling with non-blocking gets + a separate sleep; this lets
+            # the OS wait primitive do the waiting instead of spinning the loop.
+            # A blocking get() returns as soon as data arrives (not after the
+            # full timeout), so a longer timeout costs nothing when data is
+            # flowing - it only matters as a bound on stop_event responsiveness.
+            # A too-tight timeout here previously caused frequent unproductive
+            # timeouts on ordinary serial arrival jitter, each wasting a full
+            # timeout window before retrying and measurably capping throughput.
+            _diag_t0 = time.perf_counter()
+            line = safe_queue_get(serialQueue, timeout=0.05, default=None)
+            if line is not None:
+                # Drain any extra backlog that queued up, keeping only the freshest
+                for _ in range(4):
+                    newer = safe_queue_get(serialQueue, timeout=0.0, default=None)
+                    if newer is None:
+                        break
+                    line = newer
+            _diag_t1 = time.perf_counter()
+            diag_wait_s += (_diag_t1 - _diag_t0)
             
             if line is None:
                 # No data available - check if we should send inactive status
@@ -924,13 +980,18 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
             
             try:
                 # Parse and validate IMU data using error_utils
+                _diag_t2 = time.perf_counter()
                 timestamp, accel, gyro = parse_imu_line(line)
+                _diag_t3 = time.perf_counter()
+                diag_parse_s += (_diag_t3 - _diag_t2)
                 
                 # Update data timestamp
                 last_data_time = time.time()
                 
                 # Update filter
                 yaw, pitch, roll, drift_active, is_stationary = filter.update(gyro, accel, timestamp)
+                _diag_t4 = time.perf_counter()
+                diag_update_s += (_diag_t4 - _diag_t3)
 
                 # If a center recalibration was scheduled by a recent recenter, run it now
                 if getattr(filter, '_pending_center_cal', None):
@@ -956,8 +1017,8 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             try:
                                 ts, a2, g2 = parse_imu_line(sline)
                                 ax, ay, az = a2
-                                mag = np.sqrt(ax * ax + ay * ay + az * az)
-                                gyro_mag = np.sqrt(g2[0] * g2[0] + g2[1] * g2[1] + g2[2] * g2[2])
+                                mag = math.sqrt(ax * ax + ay * ay + az * az)
+                                gyro_mag = math.sqrt(g2[0] * g2[0] + g2[1] * g2[1] + g2[2] * g2[2])
                                 if mag >= 0.01 and abs(mag - 1.0) < ACCEL_THRESHOLD and gyro_mag < STATIONARY_GYRO_THRESHOLD:
                                     r, p = filter._accel_to_rp((ax, ay, az))
                                     roll_samples.append(float(r))
@@ -1039,6 +1100,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                 euler_data = [output_yaw, output_pitch, output_roll]
 
                 # Validate output is finite before publishing to avoid contaminating UDP
+                _diag_t5 = time.perf_counter()
                 if not (math.isfinite(output_yaw) and math.isfinite(output_pitch) and math.isfinite(output_roll)):
                     nonfinite_euler_counter += 1
                     if nonfinite_euler_counter % 50 == 0:
@@ -1052,8 +1114,10 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                         # Drop frame if queue full rather than blocking
                         pass
 
-                    # Send to display queue with queue health monitoring
-                    if eulerDisplayQueue is not None:
+                    # Send to display queue with queue health monitoring, throttled
+                    # since the GUI only redraws at ~60Hz - no need to pay the IPC
+                    # cost of qsize()+put() on every 250Hz fusion iteration.
+                    if eulerDisplayQueue is not None and loop_iteration % DISPLAY_PUBLISH_EVERY_N == 0:
                         try:
                             # Check queue health and log if getting full
                             queue_size = eulerDisplayQueue.qsize()
@@ -1082,6 +1146,24 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             if filter._error_counter % 50 == 0:  # Log every 50 errors
                                 log_error(logQueue, "Fusion", f"Display queue error #{filter._error_counter}: {e}")
                             pass
+                
+                _diag_t6 = time.perf_counter()
+                diag_publish_s += (_diag_t6 - _diag_t5)
+                diag_iter_s += (_diag_t6 - _diag_t0)
+                diag_samples += 1
+
+                if _diag_t6 - diag_last_report >= DIAG_INTERVAL_S and diag_samples > 0:
+                    n = diag_samples
+                    log_info(
+                        logQueue, "Fusion Timing",
+                        f"{n / (_diag_t6 - diag_last_report):.1f} samples/s over {n} samples - "
+                        f"avg ms: wait={1000*diag_wait_s/n:.3f} parse={1000*diag_parse_s/n:.3f} "
+                        f"update={1000*diag_update_s/n:.3f} publish={1000*diag_publish_s/n:.3f} "
+                        f"iter_total={1000*diag_iter_s/n:.3f}"
+                    )
+                    diag_last_report = _diag_t6
+                    diag_samples = 0
+                    diag_wait_s = diag_parse_s = diag_update_s = diag_publish_s = diag_iter_s = 0.0
                 
             except ValueError as e:
                 # Skip malformed/invalid lines (parse_imu_line raises ValueError)
@@ -1115,3 +1197,4 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
             pass
         log_info(logQueue, "Fusion Worker", "Stopped")
         # Stopped logged via log_info; avoid console print
+        disable_high_res_timer()

@@ -106,7 +106,7 @@ in [`config/config.py`](../config/config.py).
 | `eulerDisplayQueue` | Fusion worker | GUI worker | `[yaw, pitch, roll]`; display only |
 | `controlQueue` | GUI/Orientation/Preferences | Fusion worker | Fusion commands described below |
 | `serialControlQueue` | Connection panel | Serial worker | `('start', port, baud)` or `('stop',)` |
-| `udpControlQueue` | Connection panel | UDP worker | `('set_udp', host, port)` and `('udp_enable', bool)` |
+| `udpControlQueue` | Connection panel | UDP worker | `('set_udp', host, port)`, `('udp_enable', bool)`, and `('set_rate', hz)` |
 | `statusQueue` | Serial, fusion, UDP workers | GUI worker | `(status_name, value)` worker state/rates |
 | `uiStatusQueue` | Serial and fusion workers | GUI worker | UI-specific `('serial_connection', state)` or `('processing', state)` |
 | `messageQueue` | Serial worker | GUI worker | Human-readable connection/reconnection text |
@@ -208,7 +208,10 @@ That is intended, but means normal orientation output pauses during calibration.
 
 [`udp_wrk.py`](../workers/udp_wrk.py) drains up to ten Euler samples at a time
 and sends only the latest. UDP is disabled at worker start and enabled only by
-`('udp_enable', True)`. Each packet is exactly:
+`('udp_enable', True)`. Sends default to uncapped (matching fusion's raw
+output rate) and can optionally be capped via `('set_rate', hz)`, clamped to
+`OUTPUT_RATE_MIN_HZ..OUTPUT_RATE_MAX_HZ`; a rate of `0` restores uncapped
+sending. Each packet is exactly:
 
 ```python
 struct.pack("<6d", 0.0, 0.0, 0.0, yaw, pitch, roll)
