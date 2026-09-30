@@ -315,17 +315,17 @@ class OrientationVisualizationWidget(QWidget):
         except Exception:
             current_range = getattr(self, 'range_degrees', 25.0)
         
-        # Data is already inverted by fusion worker, so just use it directly
-        # Calculate position based on pitch/yaw
-        # Yaw maps to X axis, Pitch maps to Y axis
-        yaw_ratio = max(-1.0, min(1.0, -self.yaw / current_range))  # Negate yaw for display
-        pitch_ratio = max(-1.0, min(1.0, self.pitch / current_range))
+        # Data is already inverted by fusion worker, so just use it directly.
+        # Screen Y grows downwards, so pitch/roll are negated to match the
+        # physical sense of the reported angles.
+        yaw_ratio = max(-1.0, min(1.0, self.yaw / current_range))
+        pitch_ratio = max(-1.0, min(1.0, -self.pitch / current_range))
         
         indicator_x = center_x + yaw_ratio * (width // 2 - 10)
         indicator_y = center_y + pitch_ratio * (height // 2 - 10)
         
         # Calculate line endpoints based on roll angle
-        roll_rad = math.radians(self.roll)
+        roll_rad = math.radians(-self.roll)
         line_length = 20
         
         start_x = indicator_x - line_length * math.cos(roll_rad)

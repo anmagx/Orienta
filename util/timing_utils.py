@@ -36,4 +36,24 @@ def disable_high_res_timer():
         ctypes.windll.winmm.timeEndPeriod(1)
     except Exception:
         pass
+
+
+def raise_process_priority():
+    """Raise the current process's OS scheduling priority (Windows only).
+
+    Serial/fusion/UDP are lightweight but latency-critical: under default
+    priority they compete evenly with a CPU-heavy game for timeslices, which
+    is what causes visible tracking desync when the game spikes CPU usage.
+    ABOVE_NORMAL asks the scheduler to favor them without starving anything
+    else, since these processes barely use any CPU themselves.
+    """
+    if sys.platform != 'win32':
+        return False
+    try:
+        import ctypes
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        return bool(ctypes.windll.kernel32.SetPriorityClass(handle, ABOVE_NORMAL_PRIORITY_CLASS))
+    except Exception:
+        return False
     _active = False

@@ -75,7 +75,9 @@ def serial_thread(messageQueue=None, serialQueue=None, serialDisplayQueue=None, 
     can be cancelled via the control queue.
     """
     from util.log_utils import log_info, log_error
-    
+    from util.timing_utils import raise_process_priority
+
+    raise_process_priority()
     log_info(logQueue, "Serial Worker", "Serial thread started")
     
     ser = None

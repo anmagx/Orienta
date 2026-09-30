@@ -280,8 +280,10 @@ class QuaternionComplementaryFilter:
         # apply bias to gz
         gz_corr = gz - self.gyro_bias_yaw
 
-        # Integrate quaternion using gyro (deg/s -> rad/s)
-        omega = (0.0, math.radians(gx), math.radians(gy), math.radians(gz_corr))
+        # Integrate quaternion using gyro (deg/s -> rad/s).
+        # gz is negated because the IMU's yaw axis points opposite the
+        # application's yaw convention in the shipped sensor mounting.
+        omega = (0.0, math.radians(gx), math.radians(gy), math.radians(-gz_corr))
         q = self.q
         qd = self._quat_mul(q, omega)
         q = (
@@ -451,11 +453,12 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
     Fusion worker that reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
     """
     from util.log_utils import log_info, log_error, log_warning
-    from util.timing_utils import enable_high_res_timer, disable_high_res_timer
+    from util.timing_utils import enable_high_res_timer, disable_high_res_timer, raise_process_priority
 
     # Windows rounds time.sleep() up to the ~15.6ms system clock tick unless
     # this process requests higher resolution; must be set per-process.
     enable_high_res_timer()
+    raise_process_priority()
 
     # All logging should use util.log_utils (log_info/log_error). Legacy
     # print() calls have been removed; no redirecting of builtins.print is used.
@@ -936,8 +939,14 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
             _diag_t0 = time.perf_counter()
             line = safe_queue_get(serialQueue, timeout=0.05, default=None)
             if line is not None:
-                # Drain any extra backlog that queued up, keeping only the freshest
-                for _ in range(4):
+                # Drain the ENTIRE backlog to the true latest sample, not just a
+                # few items. If this process was starved of CPU time (e.g. by a
+                # demanding game) while data kept arriving, a small capped drain
+                # would only claw back a handful of samples per iteration,
+                # forcing many iterations to grind through a stale backlog
+                # before catching up to real time - this is the "desync"/replay
+                # lag under load. serialQueue's maxsize bounds this loop already.
+                while True:
                     newer = safe_queue_get(serialQueue, timeout=0.0, default=None)
                     if newer is None:
                         break

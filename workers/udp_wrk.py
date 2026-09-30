@@ -24,11 +24,12 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
     ``(0.0, 0.0, 0.0, yaw, pitch, roll)``.
     """
     from util.log_utils import log_error, log_info
-    from util.timing_utils import enable_high_res_timer, disable_high_res_timer
+    from util.timing_utils import enable_high_res_timer, disable_high_res_timer, raise_process_priority
 
     # Windows rounds time.sleep() up to the ~15.6ms system clock tick unless
     # this process requests higher resolution; must be set per-process.
     enable_high_res_timer()
+    raise_process_priority()
 
     udp_ip = DEFAULT_UDP_IP if udp_ip is None else udp_ip
     udp_port = DEFAULT_UDP_PORT if udp_port is None else udp_port
@@ -100,8 +101,12 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
             # being capped by repeated empty-queue misses and sleep rounding.
             latest = safe_queue_get(eulerQueue, timeout=0.05, default=None)
             if latest is not None:
-                # Drain any extra backlog that queued up, keeping only the freshest
-                for _ in range(9):
+                # Drain the ENTIRE backlog to the true latest sample. A capped
+                # drain would only claw back a few samples per iteration after
+                # this process was starved of CPU time (e.g. by a demanding
+                # game), forcing many iterations to grind through stale data
+                # before catching up - eulerQueue's maxsize bounds this loop.
+                while True:
                     newer = safe_queue_get(eulerQueue, timeout=0.0, default=None)
                     if newer is None:
                         break
