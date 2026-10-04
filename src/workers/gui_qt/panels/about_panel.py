@@ -122,7 +122,6 @@ class AboutPanel(QWidget):
             """
             <ul style="margin:0; padding-left:14px;">
               <li>PyQt5 - Cross-platform GUI</li>
-              <li>NumPy - Numerical computing</li>
               <li>keyboard -Global hotkeys</li>
               <li>pygame - Gamepad support</li>
               <li>pyserial - Serial communication</li>

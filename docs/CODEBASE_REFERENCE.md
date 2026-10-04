@@ -255,8 +255,8 @@ point or virtual-environment layout change.
 ## Documentation and dependency files
 
 `README.md` is the end-user guide and describes hardware framing, setup, and
-opentrack operation. `requirements.txt` currently declares NumPy, pyserial,
-keyboard, PyQt5, and pygame. `LICENSE` is MIT; `.gitignore` excludes virtual
+opentrack operation. `requirements.txt` currently declares pyserial, keyboard,
+PyQt5, and pygame. `LICENSE` is MIT; `.gitignore` excludes virtual
 environments, caches, generated logs, preference files, and other local
 artifacts.
 

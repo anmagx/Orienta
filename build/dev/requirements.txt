@@ -1,6 +1,5 @@
 # Python 3.8-3.13 supported with binary wheels
-# Python 3.14+ may require building from source (experimental)
-numpy>=1.26.0
+# Python 3.14+ support has not been verified
 pyserial>=3.5
 keyboard>=0.13.5
 PyQt5>=5.15.0,<6.0.0

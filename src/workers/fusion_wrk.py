@@ -80,9 +80,7 @@ class QuaternionComplementaryFilter:
         self.invert_yaw = False
         self.invert_pitch = False
         self.invert_roll = False
-        # Quaternion as (w, x, y, z); plain tuple, not numpy - this runs at
-        # 250Hz and numpy's per-call dispatch overhead dominates at this scale
-        # for such tiny (4-element) operations.
+        # Quaternion as a plain 4-element tuple keeps the 250Hz update loop light.
         self.q = (1.0, 0.0, 0.0, 0.0)
         self.last_time = None
         self.logQueue = logQueue

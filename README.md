@@ -64,7 +64,6 @@ in [User data](#user-data).
 
 - Windows Operating System
 - Python
-- NumPy
 - PySerial
 - PyQt5
 - Keyboard
