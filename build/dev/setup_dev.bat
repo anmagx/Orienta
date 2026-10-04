@@ -67,7 +67,7 @@ set "LAUNCH_SCRIPT=%INSTALL_DIR%\launch_orienta.bat"
     echo @echo off
     echo REM Orienta Launcher
     echo cd /d "%%~dp0"
-    echo "%%~dp0\.venv\Scripts\python.exe" "%%~dp0\orienta.py"
+    echo "%%~dp0\.venv\Scripts\python.exe" "%%~dp0\..\..\orienta.py"
     echo if errorlevel 1 pause
 ) > "%LAUNCH_SCRIPT%"
 echo Launch script created: launch_orienta.bat
@@ -79,7 +79,7 @@ if errorlevel 2 goto :skip_shortcut
 
 REM Create desktop shortcut using PowerShell
 echo Creating desktop shortcut...
-powershell -ExecutionPolicy Bypass -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\Orienta.lnk'); $Shortcut.TargetPath = '%LAUNCH_SCRIPT%'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.IconLocation = '%INSTALL_DIR%\src\img\icon.ico'; $Shortcut.Description = 'Launch Orienta Headtracker'; $Shortcut.Save()"
+powershell -ExecutionPolicy Bypass -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\Orienta(Dev).lnk'); $Shortcut.TargetPath = '%LAUNCH_SCRIPT%'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.IconLocation = '%INSTALL_DIR%\..\..\src\img\icon.ico'; $Shortcut.Description = 'Launch Orienta Headtracker'; $Shortcut.Save()"
 if errorlevel 1 (
     echo WARNING: Failed to create desktop shortcut
 ) else (

@@ -8,6 +8,7 @@ build/*
 !build/orienta.spec
 !build/build_exe.bat
 !build/requirements-build.txt
+!build/dev
 develop-eggs/
 dist/
 downloads/
