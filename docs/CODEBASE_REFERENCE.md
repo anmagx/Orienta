@@ -9,14 +9,15 @@ data flow and inter-process contracts.
 | Path | Role |
 |---|---|
 | `orienta.py` | Application entry point; owns the parent wait loop. |
-| `workers/` | All multiprocessing worker implementations and the process manager. |
-| `workers/gui_qt/` | PyQt5 window, panels, and icon helper. |
-| `managers/` | Application-wide preference and theme managers used by the GUI process. |
-| `util/` | Queue/error/parsing helpers and cross-process logging API. |
+| `src/` | Python source package and runtime assets. |
+| `src/workers/` | All multiprocessing worker implementations and the process manager. |
+| `src/workers/gui_qt/` | PyQt5 window, panels, and icon helper. |
+| `src/managers/` | Application-wide preference and theme managers used by the GUI process. |
+| `src/util/` | Queue/error/parsing helpers and cross-process logging API. |
 | `config/` | Static defaults and the generated user preference location. |
 | `arduino/` | Example firmware that produces compatible IMU frames. |
-| `themes/` | Application-wide light/dark Qt style sheets. |
-| `img/` | Window icon and application logo. |
+| `src/themes/` | Application-wide light/dark Qt style sheets. |
+| `src/img/` | Window icon and application logo. |
 | `install.bat`, `launch_orienta.bat` | Windows installation and launch helpers. |
 | `README.md` | End-user installation, hardware protocol, and operation guide. |
 | `requirements.txt` | Python runtime dependencies. |
@@ -29,7 +30,7 @@ data flow and inter-process contracts.
 Python 3.14+, starts `ProcessHandler`, and waits on its shared stop event. All
 lifecycle policy belongs in the process manager, not in this file.
 
-### `workers/process_man.py`
+### `src/workers/process_man.py`
 
 `ProcessHandler` is the ownership boundary for:
 
@@ -45,7 +46,7 @@ configuration for automatic restart. `get_queue_health_report()` and
 `log_queue_health()` expose best-effort queue sizing diagnostics; `qsize()` is
 not a correctness mechanism.
 
-### `workers/serial_wrk.py`
+### `src/workers/serial_wrk.py`
 
 `open_serial()` retries `serial.Serial` creation while honoring stop/control
 signals. `serial_thread()` drains serial controls before reading, copies raw
@@ -56,7 +57,7 @@ The reader decodes with `errors='ignore'`; malformed-but-decodable data is
 rejected later by fusion parsing. Serial reconnection after a read failure
 requires another start command because the worker returns to its idle state.
 
-### `workers/fusion_wrk.py`
+### `src/workers/fusion_wrk.py`
 
 This is the core orientation implementation. `QuaternionComplementaryFilter`
 contains quaternion math, accelerometer-derived roll/pitch, stationary
@@ -83,7 +84,7 @@ curve's per-frame correction calculation directly. Preserve math units:
 gyroscope input is degrees/second, quaternion integration converts it to
 radians/second, and all user-facing values are degrees.
 
-### `workers/udp_wrk.py`
+### `src/workers/udp_wrk.py`
 
 `run_worker()` owns one IPv4 UDP socket. It drains to a latest sample, handles
 target/enabled controls, serializes opentrack's six-double packet, reports send
@@ -92,7 +93,7 @@ UI enables output. The UDP worker also validates that Euler values are finite
 and will drop any NaN/Infinity samples before sending, with rate-limited
 logging to avoid log spam.
 
-### `workers/input_wrk.py`
+### `src/workers/input_wrk.py`
 
 `PygameManager` is a per-process singleton for joystick initialization.
 `InputWorker` owns shortcut state, input-capture mode, an internal command
@@ -105,7 +106,7 @@ the entire application.
 ownership within this module; another listener in the same process would
 interfere with it.
 
-### `workers/gui_wrk.py`
+### `src/workers/gui_wrk.py`
 
 `TabbedGUIWorker` is the actual main window despite the historical name. It
 constructs the orientation-first layout, creates dialog-backed support panels,
@@ -120,7 +121,7 @@ deliberate latency protection.
 
 ## GUI components
 
-### `workers/gui_qt/panels/orientation_panel.py`
+### `src/workers/gui_qt/panels/orientation_panel.py`
 
 This large module is the primary feature surface:
 
@@ -140,7 +141,7 @@ fusion controls through its `control_queue`. `PreferencesPanel` connects to it
 as `orientation_panel`; the retired `calibration_panel` alias is no longer an
 active API.
 
-### `workers/gui_qt/panels/connection_panel.py`
+### `src/workers/gui_qt/panels/connection_panel.py`
 
 `ConnectionPanelQt` combines former serial and network screens. It validates
 and stores port/baud/IP/UDP-port UI values, produces serial/UDP commands,
@@ -148,7 +149,7 @@ tracks live state and rates, and serializes the `serial`/`network` preference
 sections. `TwoLineButton` is a local rendering implementation, separate from
 the similarly named orientation class.
 
-### `workers/gui_qt/panels/preferences_panel.py`
+### `src/workers/gui_qt/panels/preferences_panel.py`
 
 `PreferencesPanel` supplies theme, fusion tuning, stationary/drift behavior,
 gyro calibration sample count, axis inversion, and disengage-mode controls.
@@ -161,20 +162,20 @@ UI state back to runtime commands. New persisted fusion options need:
 3. a command from this panel,
 4. fusion command validation/application.
 
-### `workers/gui_qt/panels/message_panel.py`
+### `src/workers/gui_qt/panels/message_panel.py`
 
 `MessagePanelQt` batches raw serial and application messages in capped Python
 lists, then writes them to read-only text widgets only when visible. Its parent
 is initially `None` so dialog code can reparent it. It is not a logging
 transport; `logQueue` remains the durable cross-process log transport.
 
-### `workers/gui_qt/panels/about_panel.py`
+### `src/workers/gui_qt/panels/about_panel.py`
 
 `AboutPanel` renders metadata, logo, project link, and dependency attribution.
 It is visual only. Its mention of “IMU + CV” is UI text, not evidence that the
 application includes a computer-vision pipeline.
 
-### `workers/gui_qt/panels/base_panel.py`
+### `src/workers/gui_qt/panels/base_panel.py`
 
 `BasePanelQt` is a light `QGroupBox` base with optional message callback,
 preference hooks, and a Qt message signal. `ConnectionPanelQt` uses it; panels
@@ -182,16 +183,16 @@ that do not share its group-box model use direct Qt base classes.
 
 ### Managers and GUI helper
 
-* `managers/preferences_manager.py` determines the project-local
+* `src/managers/preferences_manager.py` determines the project-local
   `config/config.cfg` path, reads nested INI sections, and writes atomically.
   Its older flat-key helpers coexist with the nested GUI format.
-* `managers/theme_manager.py` searches upward for `themes/`, reads a requested
+* `src/managers/theme_manager.py` searches upward for `src/themes/`, reads a requested
   QSS file, and applies it to `QApplication`.
-* `helpers/icon_helper.py` searches upward for `img/icon.ico` (or `icon.png`)
+* `helpers/icon_helper.py` searches upward for `src/img/icon.ico` (or `icon.png`)
   and applies it to a window.
 
-The package `__init__.py` files in `workers/`, `workers/gui_qt/`, its
-subdirectories, `config/`, and `util/` document/import package APIs. They have
+The package `__init__.py` files in `src/workers/`, `src/workers/gui_qt/`, its
+subdirectories, `config/`, and `src/util/` document/import package APIs. They have
 no independent runtime loop, but their exports affect import compatibility.
 
 ## Shared configuration and utilities
@@ -204,7 +205,7 @@ timeouts, restart policy, complementary-filter tuning, calibration constants,
 display limits, logging rotation, and preference filename. The duplicate
 `THRESH_DEBOUNCE_MS` definition currently resolves to the same `150` value.
 
-### `util/error_utils.py`
+### `src/util/error_utils.py`
 
 The shared defensive helpers are:
 
@@ -218,7 +219,7 @@ These helpers intentionally return failure/default values in availability
 paths. Do not use them where silent loss would violate a new correctness
 requirement without adding explicit reporting at the caller.
 
-### `util/log_utils.py`
+### `src/util/log_utils.py`
 
 `log_info`, `log_warning`, and `log_error` wrap `log()`, which sends the
 standard three-part log tuple. It must remain safe when the log queue is
@@ -237,9 +238,9 @@ must select the firmware's actual port and baud in the UI.
 
 ### Themes and images
 
-`themes/light.qss` and `themes/dark.qss` are the application style sources.
-`img/icon.ico` is used for native window/shortcut branding and
-`img/orienta_logo.png` is displayed by the About panel and README. Treat them
+`src/themes/light.qss` and `src/themes/dark.qss` are the application style sources.
+`src/img/icon.ico` is used for native window/shortcut branding and
+`src/img/orienta_logo.png` is displayed by the About panel and README. Treat them
 as assets, not generated build output.
 
 ### Windows scripts

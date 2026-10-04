@@ -21,23 +21,23 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QIcon
 
-from workers.gui_qt.panels.connection_panel import ConnectionPanelQt
-from workers.gui_qt.panels.message_panel import MessagePanelQt
-from workers.gui_qt.panels.orientation_panel import OrientationPanelQt
+from src.workers.gui_qt.panels.connection_panel import ConnectionPanelQt
+from src.workers.gui_qt.panels.message_panel import MessagePanelQt
+from src.workers.gui_qt.panels.orientation_panel import OrientationPanelQt
 # CalibrationPanelQt removed; orientation_panel now hosts calibration UI/logic
-from workers.gui_qt.panels.preferences_panel import PreferencesPanel
-from workers.gui_qt.panels.about_panel import AboutPanel
-from workers.gui_qt.panels.orientation_panel import HoldPanelQt
+from src.workers.gui_qt.panels.preferences_panel import PreferencesPanel
+from src.workers.gui_qt.panels.about_panel import AboutPanel
+from src.workers.gui_qt.panels.orientation_panel import HoldPanelQt
 
-from managers.preferences_manager import PreferencesManager
-from workers.gui_qt.helpers.icon_helper import set_window_icon
-from managers.theme_manager import ThemeManager
+from src.managers.preferences_manager import PreferencesManager
+from src.workers.gui_qt.helpers.icon_helper import set_window_icon
+from src.managers.theme_manager import ThemeManager
 
 from config.config import (
     GUI_UPDATE_INTERVAL_MS, WORKER_QUEUE_CHECK_INTERVAL_MS,
     APP_NAME, APP_VERSION
 )
-from util.log_utils import log_info, log_warning, log_error
+from src.util.log_utils import log_info, log_warning, log_error
 
 
 class TabbedGUISignals(QObject):

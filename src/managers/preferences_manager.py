@@ -39,7 +39,9 @@ class PreferencesManager:
             return os.path.join(config_dir, PREFS_FILE_NAME)
 
         try:
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            project_root = os.path.dirname(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
             cfg_dir = os.path.join(project_root, "config")
             return os.path.join(cfg_dir, PREFS_FILE_NAME)
         except Exception:
@@ -75,7 +77,7 @@ class PreferencesManager:
             return result
         except Exception as e:
             try:
-                from util.log_utils import log_error
+                from src.util.log_utils import log_error
                 log_error(None, "PreferencesManager", f"Error loading preferences: {e}")
             except Exception:
                 pass
@@ -126,7 +128,7 @@ class PreferencesManager:
 
         except Exception as e:
             try:
-                from util.log_utils import log_error
+                from src.util.log_utils import log_error
                 log_error(None, "PreferencesManager", f"Error saving preferences: {e}")
             except Exception:
                 pass

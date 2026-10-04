@@ -20,11 +20,11 @@ def run_tests():
 
     # Use a temporary directory for preferences so we don't touch real config
     tmpdir = tempfile.mkdtemp(prefix='orienta_test_')
-    from managers.preferences_manager import PreferencesManager
+    from src.managers.preferences_manager import PreferencesManager
     pm = PreferencesManager(config_dir=tmpdir)
 
     # Create a PreferencesPanel and set tuning values
-    from workers.gui_qt.panels.preferences_panel import PreferencesPanel
+    from src.workers.gui_qt.panels.preferences_panel import PreferencesPanel
     prefs_panel = PreferencesPanel(parent=None, preferences_manager=pm)
 
     # Assign some non-default tuning values
@@ -54,7 +54,7 @@ def run_tests():
             failures.append(f"Mismatch for {k}: saved={v} loaded={loaded_orient.get(k)}")
 
     # Test OrientationPanel queue commands and clear_calibration_state preserving sliders
-    from workers.gui_qt.panels.orientation_panel import OrientationPanelQt
+    from src.workers.gui_qt.panels.orientation_panel import OrientationPanelQt
 
     control_q = queue.Queue()
     messages = []

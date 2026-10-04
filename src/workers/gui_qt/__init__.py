@@ -6,6 +6,6 @@ Maintains identical interface for worker communication.
 """
 from . import panels
 from . import helpers
-from managers.theme_manager import ThemeManager
+from src.managers.theme_manager import ThemeManager
 
 __all__ = ['panels', 'helpers', 'ThemeManager']

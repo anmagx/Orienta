@@ -24,7 +24,7 @@ from config.config import (
     OUTPUT_RATE_MAX_HZ,
     QUEUE_PUT_TIMEOUT
 )
-from util.error_utils import safe_queue_put
+from src.util.error_utils import safe_queue_put
 
 
 class ConnectionPanelQt(BasePanelQt):

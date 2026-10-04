@@ -11,7 +11,7 @@ from config.config import (
     FPS_REPORT_INTERVAL,
     QUEUE_PUT_TIMEOUT,
 )
-from util.error_utils import safe_queue_get, safe_queue_put
+from src.util.error_utils import safe_queue_get, safe_queue_put
 
 
 def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
@@ -23,8 +23,8 @@ def run_worker(eulerQueue, stop_event, udp_ip=None, udp_port=None,
     orientation-only application always emits zero translation:
     ``(0.0, 0.0, 0.0, yaw, pitch, roll)``.
     """
-    from util.log_utils import log_error, log_info
-    from util.timing_utils import enable_high_res_timer, disable_high_res_timer, raise_process_priority
+    from src.util.log_utils import log_error, log_info
+    from src.util.timing_utils import enable_high_res_timer, disable_high_res_timer, raise_process_priority
 
     # Windows rounds time.sleep() up to the ~15.6ms system clock tick unless
     # this process requests higher resolution; must be set per-process.
