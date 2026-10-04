@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from config.config import LOG_FILE_NAME, PREFS_FILE_NAME
+from src.config.config import LOG_FILE_NAME, PREFS_FILE_NAME
 from src.managers.preferences_manager import PreferencesManager
 from src.util.paths import get_app_data_dir
 from src.workers.gui_wrk import TabbedGUIWorker

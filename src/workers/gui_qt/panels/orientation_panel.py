@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QStackedWidget, QDialogButtonBox)
 from PyQt5.QtCore import Qt, QTimer, QRect, QEvent
 
-from config.config import QUEUE_PUT_TIMEOUT
+from src.config.config import QUEUE_PUT_TIMEOUT
 from src.util.error_utils import safe_queue_put
 from src.workers.gui_qt.panels.about_panel import AboutPanel
 from .base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, CONTENT_MARGINS, BUTTON_MIN_HEIGHT, BUTTON_EXTRA_HEIGHT, DIALOG_CONTENT_MARGIN
@@ -57,7 +57,7 @@ class OrientationPanelQt(QGroupBox):
         self.roll_value_label = None
 
         # Drift angle values (defaults)
-        from config.config import DEFAULT_CENTER_THRESHOLD, THRESH_DEBOUNCE_MS
+        from src.config.config import DEFAULT_CENTER_THRESHOLD, THRESH_DEBOUNCE_MS
         self.drift_angle_yaw_value = DEFAULT_CENTER_THRESHOLD
         self.drift_angle_pitch_value = DEFAULT_CENTER_THRESHOLD
         self.drift_angle_roll_value = DEFAULT_CENTER_THRESHOLD
@@ -2429,7 +2429,7 @@ class OrientationPanelQt(QGroupBox):
         # Restart debounce timer
         try:
             self._drift_yaw_send_timer.stop()
-            from config.config import THRESH_DEBOUNCE_MS
+            from src.config.config import THRESH_DEBOUNCE_MS
             self._drift_yaw_send_timer.start(THRESH_DEBOUNCE_MS)
         except Exception:
             pass
@@ -2470,7 +2470,7 @@ class OrientationPanelQt(QGroupBox):
         # Restart debounce timer
         try:
             self._drift_pitch_send_timer.stop()
-            from config.config import THRESH_DEBOUNCE_MS
+            from src.config.config import THRESH_DEBOUNCE_MS
             self._drift_pitch_send_timer.start(THRESH_DEBOUNCE_MS)
         except Exception:
             pass
@@ -2511,7 +2511,7 @@ class OrientationPanelQt(QGroupBox):
         # Restart debounce timer
         try:
             self._drift_roll_send_timer.stop()
-            from config.config import THRESH_DEBOUNCE_MS
+            from src.config.config import THRESH_DEBOUNCE_MS
             self._drift_roll_send_timer.start(THRESH_DEBOUNCE_MS)
         except Exception:
             pass

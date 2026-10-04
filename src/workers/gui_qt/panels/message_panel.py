@@ -13,7 +13,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QTextCursor
 
 from .base_panel import BasePanelQt
-from config.config import MAX_TEXT_BUFFER_LINES
+from src.config.config import MAX_TEXT_BUFFER_LINES
 
 
 class MessagePanelQt(QFrame):

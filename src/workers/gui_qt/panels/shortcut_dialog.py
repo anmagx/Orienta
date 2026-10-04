@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QApplication, QDialog, QDialogButtonBox, QVBoxLayout
 from PyQt5.QtCore import QTimer, Qt
 
 from src.util.error_utils import safe_queue_put
-from config.config import QUEUE_PUT_TIMEOUT
+from src.config.config import QUEUE_PUT_TIMEOUT
 from .base_panel import DEFAULT_SPACING, DIALOG_CONTENT_MARGIN
 
 

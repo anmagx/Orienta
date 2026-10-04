@@ -10,7 +10,7 @@ import logging
 import os
 from typing import Dict, Optional
 
-from config.config import DEFAULT_THEME, PREFS_FILE_NAME
+from src.config.config import DEFAULT_THEME, PREFS_FILE_NAME
 from src.util.paths import get_app_data_dir
 
 

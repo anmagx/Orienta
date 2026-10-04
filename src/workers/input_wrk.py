@@ -18,7 +18,7 @@ import traceback
 import os
 
 from src.util.error_utils import safe_queue_put
-from config.config import QUEUE_PUT_TIMEOUT
+from src.config.config import QUEUE_PUT_TIMEOUT
 from src.util.log_utils import log_info, log_warning, log_error
 
 # Optional pygame support

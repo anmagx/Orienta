@@ -43,7 +43,7 @@ python orienta.py
 
 ### Portable executable
 
-After creating the virtual environment, build a single-file, windowed executable with:
+After running `build\dev\setup_dev.bat`, build a single-file, windowed executable with:
 
 ```powershell
 build\build_exe.bat
@@ -104,7 +104,7 @@ and packaged executable runs. The directory is created automatically:
 
 If `LOCALAPPDATA` is unset, Orienta uses `AppData\Local\Orienta` under your home
 directory. Existing project-local files are not migrated automatically. To keep
-your previous settings, close Orienta and copy `config\config.cfg` to
+your previous settings from an older version, close Orienta and copy `config\config.cfg` to
 `%LOCALAPPDATA%\Orienta\config.cfg` before launching the updated application.
 
 ## License

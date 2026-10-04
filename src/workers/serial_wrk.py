@@ -4,7 +4,7 @@ import sys
 from serial import SerialException
 from queue import Empty
 
-from config.config import (
+from src.config.config import (
     DEFAULT_SERIAL_BAUD,
     SERIAL_RETRY_DELAY,
     SERIAL_TIMEOUT,

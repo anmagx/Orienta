@@ -23,7 +23,7 @@ class OrientationVisualizationWidget(QWidget):
         super().__init__(parent)
         # Use config value if not specified, allows for dynamic updates
         try:
-            from config.config import VISUALIZATION_RANGE, VISUALIZATION_SIZE
+            from src.config.config import VISUALIZATION_RANGE, VISUALIZATION_SIZE
             self.range_degrees = range_degrees if range_degrees is not None else VISUALIZATION_RANGE
             # Allow the visualization to expand to fill available space; keep a reasonable minimum
             self.setMinimumSize(int(VISUALIZATION_SIZE * 0.5), int(VISUALIZATION_SIZE * 0.5))
@@ -202,7 +202,7 @@ class OrientationVisualizationWidget(QWidget):
         
         # Get current range from config (allows dynamic updates)
         try:
-            from config.config import VISUALIZATION_RANGE
+            from src.config.config import VISUALIZATION_RANGE
             current_range = VISUALIZATION_RANGE
         except Exception:
             current_range = getattr(self, 'range_degrees', 25.0)
@@ -310,7 +310,7 @@ class OrientationVisualizationWidget(QWidget):
         
         # Get current range from config (allows dynamic updates)
         try:
-            from config.config import VISUALIZATION_RANGE
+            from src.config.config import VISUALIZATION_RANGE
             current_range = VISUALIZATION_RANGE
         except Exception:
             current_range = getattr(self, 'range_degrees', 25.0)
@@ -369,7 +369,7 @@ class OrientationVisualizationWidget(QWidget):
         
         # Get current range from config (allows dynamic updates)
         try:
-            from config.config import VISUALIZATION_RANGE
+            from src.config.config import VISUALIZATION_RANGE
             current_range = VISUALIZATION_RANGE
         except Exception:
             current_range = getattr(self, 'range_degrees', 25.0)

@@ -7,7 +7,7 @@ from queue import Empty
 import threading
 import math
 
-from config.config import (
+from src.config.config import (
      ACCEL_THRESHOLD,
      DEFAULT_CENTER_THRESHOLD,
      ALPHA_YAW,

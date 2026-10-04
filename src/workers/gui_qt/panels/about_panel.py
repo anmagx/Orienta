@@ -12,7 +12,7 @@ from PyQt5.QtGui import QFont, QPixmap, QPalette
 
 import os
 
-from config.config import APP_NAME, APP_VERSION
+from src.config.config import APP_NAME, APP_VERSION
 
 
 class AboutPanel(QWidget):

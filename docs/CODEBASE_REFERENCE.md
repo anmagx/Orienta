@@ -14,7 +14,8 @@ data flow and inter-process contracts.
 | `src/workers/gui_qt/` | PyQt5 window, panels, and icon helper. |
 | `src/managers/` | Application-wide preference and theme managers used by the GUI process. |
 | `src/util/` | Queue/error/parsing helpers and cross-process logging API. |
-| `config/` | Static defaults and the generated user preference location. |
+| `src/config/` | Static application defaults. |
+| `src/tests/` | Automated regression tests. |
 | `arduino/` | Example firmware that produces compatible IMU frames. |
 | `src/themes/` | Application-wide light/dark Qt style sheets. |
 | `src/img/` | Window icon and application logo. |
@@ -192,12 +193,12 @@ that do not share its group-box model use direct Qt base classes.
   and applies it to a window.
 
 The package `__init__.py` files in `src/workers/`, `src/workers/gui_qt/`, its
-subdirectories, `config/`, and `src/util/` document/import package APIs. They have
+subdirectories, `src/config/`, and `src/util/` document/import package APIs. They have
 no independent runtime loop, but their exports affect import compatibility.
 
 ## Shared configuration and utilities
 
-### `config/config.py`
+### `src/config/config.py`
 
 Static defaults only; it must not accumulate mutable runtime state. It defines
 application version, timer periods, serial/network defaults, queue capacities,

@@ -21,8 +21,8 @@ import os
 import logging
 
 # Import config constants
-from config import config
-from config.config import (
+from src.config import config
+from src.config.config import (
     QUEUE_SIZE_DATA,
     QUEUE_SIZE_DISPLAY,
     QUEUE_SIZE_CONTROL,

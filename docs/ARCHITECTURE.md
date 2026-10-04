@@ -96,7 +96,7 @@ queue instead.
 ## Queue contract
 
 All queues are created by `ProcessHandler`; their configuration defaults are
-in [`config/config.py`](../config/config.py).
+in [`src/config/config.py`](../src/config/config.py).
 
 | Queue | Writer(s) | Reader(s) | Payload / meaning |
 |---|---|---|---|

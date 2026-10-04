@@ -33,7 +33,7 @@ from src.managers.preferences_manager import PreferencesManager
 from src.workers.gui_qt.helpers.icon_helper import set_window_icon
 from src.managers.theme_manager import ThemeManager
 
-from config.config import (
+from src.config.config import (
     GUI_UPDATE_INTERVAL_MS, WORKER_QUEUE_CHECK_INTERVAL_MS,
     APP_NAME, APP_VERSION
 )

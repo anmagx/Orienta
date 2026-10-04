@@ -15,7 +15,7 @@ from PyQt5.QtGui import QFontMetrics, QIntValidator
 from .base_panel import BasePanelQt, CONTENT_MARGINS, DEFAULT_SPACING, BUTTON_EXTRA_HEIGHT, BUTTON_MIN_HEIGHT, LINE_THICKNESS
 from .two_line_button import TwoLineButton
 
-from config.config import (
+from src.config.config import (
     DEFAULT_SERIAL_PORT,
     DEFAULT_SERIAL_BAUD,
     DEFAULT_UDP_IP,

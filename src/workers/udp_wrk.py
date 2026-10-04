@@ -3,7 +3,7 @@ import struct
 import time
 import math
 
-from config.config import (
+from src.config.config import (
     DEFAULT_UDP_IP,
     DEFAULT_UDP_PORT,
     OUTPUT_RATE_MIN_HZ,

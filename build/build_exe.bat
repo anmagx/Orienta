@@ -1,10 +1,9 @@
 @echo off
 setlocal
-set "ROOT=%~dp0.."
-set "PYTHON=%ROOT%\.venv\Scripts\python.exe"
+set "PYTHON=%~dp0dev\.venv\Scripts\python.exe"
 
 if not exist "%PYTHON%" (
-    echo Virtual environment not found. Run install.bat first.
+    echo Virtual environment not found. Run build\dev\setup_dev.bat first.
     exit /b 1
 )
 
