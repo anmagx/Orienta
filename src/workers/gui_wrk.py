@@ -657,7 +657,9 @@ class TabbedGUIWorker(QMainWindow):
             }
             
             # Save to preferences
-            self.preferences_manager.save(prefs)
+            if not self.preferences_manager.save(prefs):
+                log_error(self.log_queue, 'GUI', "Failed to save preferences")
+                return
             
             log_info(self.log_queue, 'GUI', "Preferences saved")
             

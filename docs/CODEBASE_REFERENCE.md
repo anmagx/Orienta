@@ -183,8 +183,8 @@ that do not share its group-box model use direct Qt base classes.
 
 ### Managers and GUI helper
 
-* `src/managers/preferences_manager.py` determines the project-local
-  `config/config.cfg` path, reads nested INI sections, and writes atomically.
+* `src/managers/preferences_manager.py` uses `src/util/paths.py` to locate
+  `%LOCALAPPDATA%\Orienta\config.cfg`, reads nested INI sections, and writes atomically.
   Its older flat-key helpers coexist with the nested GUI format.
 * `src/managers/theme_manager.py` searches upward for `src/themes/`, reads a requested
   QSS file, and applies it to `QApplication`.

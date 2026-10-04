@@ -265,7 +265,8 @@ then changes fusion thresholds accordingly.
 
 `util.log_utils` is the normal cross-process logging API. It sends a tuple to
 `logQueue`; the parent `_log_writer` timestamps and appends it to
-`orienta.log`, rotating the file at 5 MB. Logging is best-effort: a full log
+`%LOCALAPPDATA%\Orienta\orienta.log`, rotating the file at 5 MB within the same
+directory. Logging is best-effort: a full log
 queue drops entries rather than stalling real-time work.
 
 `util.error_utils` supplies the shared queue helpers, IMU parser, bounds
@@ -280,11 +281,16 @@ silently has no UI effect.
 
 ## Persistence and assets
 
-`PreferencesManager` reads/writes `config/config.cfg`, which is a runtime
+`PreferencesManager` reads/writes `%LOCALAPPDATA%\Orienta\config.cfg`, which is a runtime
 file rather than a tracked source file. It uses a `.tmp` file and
 `os.replace()` to avoid partial writes. Preferences include serial/network
 values, theme, orientation settings, calibration settings, and shortcuts.
 Themes are QSS files in `src/themes/`; application images are in `src/img/`.
+The shared `util.paths.get_app_data_dir()` helper creates the per-user directory
+without depending on the working directory, source tree, or PyInstaller bundle.
+If `LOCALAPPDATA` is unset, it uses `~/AppData/Local/Orienta`. An explicit
+`PreferencesManager(config_dir=...)` still overrides the default preferences
+directory. Existing project-local preferences are not automatically migrated.
 
 ## Change safety checklist
 

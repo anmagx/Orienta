@@ -1,15 +1,17 @@
 """
 Preferences Manager for centralized preference persistence.
 
-Handles loading and saving user preferences to config/config.cfg file.
+Handles loading and saving user preferences to %LOCALAPPDATA%\\Orienta\\config.cfg.
 Uses atomic writes to prevent corruption if process is killed during save.
 """
 
 import configparser
+import logging
 import os
 from typing import Dict, Optional
 
 from config.config import DEFAULT_THEME, PREFS_FILE_NAME
+from src.util.paths import get_app_data_dir
 
 
 class PreferencesManager:
@@ -20,8 +22,8 @@ class PreferencesManager:
         Initialize preferences manager.
 
         Args:
-            config_dir: Optional path to config directory. If None, will auto-detect
-                       relative to the repository root.
+            config_dir: Optional path to config directory. If None, uses
+                       %LOCALAPPDATA%\\Orienta.
         """
         self.config_path = self._determine_config_path(config_dir)
         self._ensure_config_dir()
@@ -38,23 +40,13 @@ class PreferencesManager:
         if config_dir:
             return os.path.join(config_dir, PREFS_FILE_NAME)
 
-        try:
-            project_root = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
-            cfg_dir = os.path.join(project_root, "config")
-            return os.path.join(cfg_dir, PREFS_FILE_NAME)
-        except Exception:
-            return PREFS_FILE_NAME
+        return os.path.join(get_app_data_dir(), PREFS_FILE_NAME)
 
     def _ensure_config_dir(self):
         """Ensure the config directory exists."""
         config_dir = os.path.dirname(self.config_path)
-        if config_dir and not os.path.exists(config_dir):
-            try:
-                os.makedirs(config_dir, exist_ok=True)
-            except Exception:
-                pass
+        if config_dir:
+            os.makedirs(config_dir, exist_ok=True)
 
     def load(self) -> Dict[str, str]:
         """Load preferences from config file.
@@ -76,11 +68,7 @@ class PreferencesManager:
 
             return result
         except Exception as e:
-            try:
-                from src.util.log_utils import log_error
-                log_error(None, "PreferencesManager", f"Error loading preferences: {e}")
-            except Exception:
-                pass
+            logging.exception("Error loading preferences from %s: %s", self.config_path, e)
             return {}
 
     def save(self, preferences: Dict[str, str]) -> bool:
@@ -127,11 +115,7 @@ class PreferencesManager:
             return True
 
         except Exception as e:
-            try:
-                from src.util.log_utils import log_error
-                log_error(None, "PreferencesManager", f"Error saving preferences: {e}")
-            except Exception:
-                pass
+            logging.exception("Error saving preferences to %s: %s", self.config_path, e)
             try:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)

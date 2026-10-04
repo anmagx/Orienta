@@ -81,6 +81,19 @@ You will obviously need to find a way to mount your sensor on your head. In the 
 
 Orienta always sends zero translation and orientation as yaw, pitch, and roll.
 
+### User data
+
+Preferences and logs are stored in `%LOCALAPPDATA%\Orienta`, for both source
+and packaged executable runs. The directory is created automatically:
+
+- `config.cfg` stores user preferences.
+- `orienta.log` stores application logs; rotated logs remain in this directory.
+
+If `LOCALAPPDATA` is unset, Orienta uses `AppData\Local\Orienta` under your home
+directory. Existing project-local files are not migrated automatically. To keep
+your previous settings, close Orienta and copy `config\config.cfg` to
+`%LOCALAPPDATA%\Orienta\config.cfg` before launching the updated application.
+
 ## License
 
 Orienta is distributed under the [MIT License](LICENSE).

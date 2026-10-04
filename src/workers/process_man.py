@@ -5,7 +5,7 @@ This module exposes `ProcessHandler`, a convenience class that initializes
 the multiprocessing queues, starts worker processes (GUI, Serial, Fusion,
 UDP), and provides a safe shutdown path. The manager also runs a
 background log writer thread that drains `logQueue` and writes messages to
-`LOG_FILE_NAME`.
+`LOG_FILE_NAME` under `%LOCALAPPDATA%\\Orienta`.
 
 The implementation focuses on robustness: queues have limited size, workers
 are started as separate processes, and `stop_workers()` uses a shutdown
@@ -18,6 +18,7 @@ import sys
 import time
 import threading
 import os
+import logging
 
 # Import config constants
 from config import config
@@ -32,6 +33,7 @@ from config.config import (
     MAX_WORKER_RESTART_ATTEMPTS
 )
 from src.util.log_utils import log_info, log_warning, log_error
+from src.util.paths import get_app_data_dir
 
 class ProcessHandler:
     """Manager for application worker processes and shared queues.
@@ -98,7 +100,8 @@ class ProcessHandler:
 
         This thread runs in the main process (not a worker) and listens for
         tuples of the form `(level, worker_name, message)` put into
-        `self.logQueue`. Entries are timestamped and appended to `LOG_FILE_NAME`.
+        `self.logQueue`. Entries are timestamped and appended to `LOG_FILE_NAME`
+        under `%LOCALAPPDATA%\\Orienta`.
 
         The writer attempts a simple log rotation based on `LOG_FILE_MAX_SIZE`.
         It is robust to transient IO errors and will silently drop malformed
@@ -107,17 +110,21 @@ class ProcessHandler:
         from datetime import datetime
         from queue import Empty
         
-        log_file = LOG_FILE_NAME  # Use constant from config
-        
-        # Rotate log if it gets too large
         try:
-            if os.path.exists(log_file) and os.path.getsize(log_file) > LOG_FILE_MAX_SIZE:
-                backup = f"orienta_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-                os.rename(log_file, backup)
-        except Exception:
-            pass
-        
-        try:
+            app_data_dir = get_app_data_dir()
+            log_file = os.path.join(app_data_dir, LOG_FILE_NAME)
+
+            # Rotate log if it gets too large
+            try:
+                if os.path.exists(log_file) and os.path.getsize(log_file) > LOG_FILE_MAX_SIZE:
+                    backup = os.path.join(
+                        app_data_dir,
+                        f"orienta_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+                    )
+                    os.rename(log_file, backup)
+            except OSError:
+                logging.exception("Unable to rotate log file %s", log_file)
+
             with open(log_file, 'a', encoding='utf-8') as f:
                 while not self.stop_event.is_set():
                     try:
@@ -136,6 +143,7 @@ class ProcessHandler:
                     except Exception:
                         pass
         except Exception as e:
+            logging.exception("Log writer error: %s", e)
             log_error(self.logQueue, 'ProcessHandler', f"Log writer error: {e}")
     
     def _worker_monitor(self):
