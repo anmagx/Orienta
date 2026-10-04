@@ -4,7 +4,11 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+build/*
+!build/orienta.spec
+!build/build_exe.bat
+!build/requirements-build.txt
+!build/dev
 develop-eggs/
 dist/
 downloads/
@@ -52,7 +56,7 @@ desktop.ini
 *.log
 orienta_*.log
 
-# Configuration (keep template, ignore user config)
+# Legacy preferences location; preferences now live in %LOCALAPPDATA%\Orienta
 config/config.cfg
 
 # Testing

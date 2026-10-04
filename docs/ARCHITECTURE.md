@@ -39,7 +39,7 @@ to a process must be picklable.
 
 1. [`orienta.py`](../orienta.py) validates the Python version, constructs
    `ProcessHandler`, and calls `start_workers()`.
-2. [`ProcessHandler`](../workers/process_man.py) creates every
+2. [`ProcessHandler`](../src/workers/process_man.py) creates every
    `multiprocessing.Queue` and the one shared `Event`. It starts its log writer
    and monitoring threads before starting the five workers.
 3. The GUI process owns all Qt widgets. It loads preferences and starts its
@@ -96,7 +96,7 @@ queue instead.
 ## Queue contract
 
 All queues are created by `ProcessHandler`; their configuration defaults are
-in [`config/config.py`](../config/config.py).
+in [`src/config/config.py`](../src/config/config.py).
 
 | Queue | Writer(s) | Reader(s) | Payload / meaning |
 |---|---|---|---|
@@ -106,7 +106,7 @@ in [`config/config.py`](../config/config.py).
 | `eulerDisplayQueue` | Fusion worker | GUI worker | `[yaw, pitch, roll]`; display only |
 | `controlQueue` | GUI/Orientation/Preferences | Fusion worker | Fusion commands described below |
 | `serialControlQueue` | Connection panel | Serial worker | `('start', port, baud)` or `('stop',)` |
-| `udpControlQueue` | Connection panel | UDP worker | `('set_udp', host, port)` and `('udp_enable', bool)` |
+| `udpControlQueue` | Connection panel | UDP worker | `('set_udp', host, port)`, `('udp_enable', bool)`, and `('set_rate', hz)` |
 | `statusQueue` | Serial, fusion, UDP workers | GUI worker | `(status_name, value)` worker state/rates |
 | `uiStatusQueue` | Serial and fusion workers | GUI worker | UI-specific `('serial_connection', state)` or `('processing', state)` |
 | `messageQueue` | Serial worker | GUI worker | Human-readable connection/reconnection text |
@@ -121,7 +121,7 @@ failure, rather than assuming a command was applied.
 
 ## Serial input contract
 
-[`serial_wrk.py`](../workers/serial_wrk.py) owns pyserial. It is idle until it
+[`serial_wrk.py`](../src/workers/serial_wrk.py) owns pyserial. It is idle until it
 receives `('start', port, baud)`. Opening retries every
 `SERIAL_RETRY_DELAY` seconds and can be cancelled by a stop command or the
 shared event. Once open, each non-empty UTF-8 line is:
@@ -143,7 +143,7 @@ centralized in fusion; the serial worker deliberately transports raw payloads.
 
 ## Fusion contract
 
-[`QuaternionComplementaryFilter`](../workers/fusion_wrk.py) represents
+[`QuaternionComplementaryFilter`](../src/workers/fusion_wrk.py) represents
 orientation as a normalized `[w, x, y, z]` quaternion. Its public update
 result is:
 
@@ -206,9 +206,12 @@ That is intended, but means normal orientation output pauses during calibration.
 
 ### UDP
 
-[`udp_wrk.py`](../workers/udp_wrk.py) drains up to ten Euler samples at a time
-and sends only the latest. UDP is disabled at worker start and enabled only by
-`('udp_enable', True)`. Each packet is exactly:
+[`udp_wrk.py`](../src/workers/udp_wrk.py) drains the available Euler backlog
+and sends only the latest sample. UDP is disabled at worker start and enabled only by
+`('udp_enable', True)`. Sends default to uncapped (matching fusion's raw
+output rate) and can optionally be capped via `('set_rate', hz)`, clamped to
+`OUTPUT_RATE_MIN_HZ..OUTPUT_RATE_MAX_HZ`; a rate of `0` restores uncapped
+sending. Each packet is exactly:
 
 ```python
 struct.pack("<6d", 0.0, 0.0, 0.0, yaw, pitch, roll)
@@ -220,7 +223,7 @@ three leading zero translations.
 
 ### GUI
 
-[`gui_wrk.py`](../workers/gui_wrk.py) is a Qt process. Its 25 ms queue timer
+[`gui_wrk.py`](../src/workers/gui_wrk.py) is a Qt process. Its 25 ms queue timer
 drains bounded batches from display/status/message queues; its 16 ms GUI timer
 refreshes widgets. It owns the single-window layout:
 
@@ -242,7 +245,7 @@ widget access are redesigned together.
 
 ### Input worker
 
-[`input_wrk.py`](../workers/input_wrk.py) wraps optional `keyboard` and
+[`input_wrk.py`](../src/workers/input_wrk.py) wraps optional `keyboard` and
 `pygame` global input APIs. Its process has a command-loop thread and starts
 keyboard/gamepad listener threads only when a shortcut or capture mode needs
 them.
@@ -262,7 +265,8 @@ then changes fusion thresholds accordingly.
 
 `util.log_utils` is the normal cross-process logging API. It sends a tuple to
 `logQueue`; the parent `_log_writer` timestamps and appends it to
-`orienta.log`, rotating the file at 5 MB. Logging is best-effort: a full log
+`%LOCALAPPDATA%\Orienta\orienta.log`, rotating the file at 5 MB within the same
+directory. Logging is best-effort: a full log
 queue drops entries rather than stalling real-time work.
 
 `util.error_utils` supplies the shared queue helpers, IMU parser, bounds
@@ -277,11 +281,16 @@ silently has no UI effect.
 
 ## Persistence and assets
 
-`PreferencesManager` reads/writes `config/config.cfg`, which is a runtime
+`PreferencesManager` reads/writes `%LOCALAPPDATA%\Orienta\config.cfg`, which is a runtime
 file rather than a tracked source file. It uses a `.tmp` file and
 `os.replace()` to avoid partial writes. Preferences include serial/network
 values, theme, orientation settings, calibration settings, and shortcuts.
-Themes are QSS files in `themes/`; application images are in `img/`.
+Themes are QSS files in `src/themes/`; application images are in `src/img/`.
+The shared `util.paths.get_app_data_dir()` helper creates the per-user directory
+without depending on the working directory, source tree, or PyInstaller bundle.
+If `LOCALAPPDATA` is unset, it uses `~/AppData/Local/Orienta`. An explicit
+`PreferencesManager(config_dir=...)` still overrides the default preferences
+directory. Existing project-local preferences are not automatically migrated.
 
 ## Change safety checklist
 
