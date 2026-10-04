@@ -697,7 +697,7 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
     
     # Set application icon
     try:
-        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'img', 'icon.ico'))
+        icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'img', 'icon.ico'))
         if os.path.exists(icon_path):
             app_icon = QIcon(icon_path)
             if not app_icon.isNull():

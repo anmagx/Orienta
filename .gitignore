@@ -4,7 +4,10 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+build/*
+!build/orienta.spec
+!build/build_exe.bat
+!build/requirements-build.txt
 develop-eggs/
 dist/
 downloads/

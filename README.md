@@ -41,6 +41,19 @@ python -m pip install -r requirements.txt
 python orienta.py
 ```
 
+### Portable executable
+
+After creating the virtual environment, build a single-file, windowed executable with:
+
+```powershell
+build\build_exe.bat
+```
+
+The script installs the pinned build requirements and creates `build\dist\Orienta.exe`
+from `build\orienta.spec`. The executable includes the application icon, logo,
+and themes. Preferences and logs are stored outside the executable, as described
+in [User data](#user-data).
+
 ## Requirements
 
 ### Software

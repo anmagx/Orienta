@@ -1,25 +1,31 @@
+import multiprocessing
 import sys
-from src.workers.process_man import ProcessHandler
 
-# Require Python 3.8 or higher
-if sys.version_info < (3, 8):
-    print("Error: Python 3.8 or higher is required")
-    print(f"Current version: {sys.version}")
-    sys.exit(1)
 
-# Warn about Python 3.14+ (experimental NumPy support)
-if sys.version_info >= (3, 14):
-    print("WARNING: Python 3.14+ detected. NumPy may be unstable (experimental MINGW build).")
-    print("For production use, Python 3.13 or earlier is recommended.")
-    print("Press Ctrl+C to abort, or wait 3 seconds to continue...")
-    try:
-        import time
-        time.sleep(3)
-    except KeyboardInterrupt:
-        print("\nAborted.")
-        sys.exit(0)
+def check_python_version():
+    if sys.version_info < (3, 8):
+        print("Error: Python 3.8 or higher is required")
+        print(f"Current version: {sys.version}")
+        sys.exit(1)
+
+    if sys.version_info >= (3, 14):
+        print("WARNING: Python 3.14+ detected. NumPy may be unstable (experimental MINGW build).")
+        print("For production use, Python 3.13 or earlier is recommended.")
+        print("Press Ctrl+C to abort, or wait 3 seconds to continue...")
+        try:
+            import time
+            time.sleep(3)
+        except KeyboardInterrupt:
+            print("\nAborted.")
+            sys.exit(0)
+
 
 def main():
+    check_python_version()
+    multiprocessing.set_start_method("spawn", force=True)
+
+    from src.workers.process_man import ProcessHandler
+
     handler = ProcessHandler()
     handler.start_workers()
     try:
@@ -32,4 +38,6 @@ def main():
         handler.stop_workers()
 
 if __name__ == "__main__":
+    # Must run before startup work so frozen worker processes dispatch correctly.
+    multiprocessing.freeze_support()
     main()
