@@ -224,7 +224,8 @@ class TabbedGUIWorker(QMainWindow):
             self.preferences_manager,
             self.input_command_queue,
             self.input_response_queue,
-            self.fusion_control_queue
+            self.fusion_control_queue,
+            udp_control_queue=self.udp_control_queue
         )
 
         # Connect preferences panel to the orientation panel for shortcuts
@@ -649,6 +650,10 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self.preferences_panel, 'get_tuning_preferences'):
                 tuning_prefs = self.preferences_panel.get_tuning_preferences()
                 prefs.setdefault('orientation', {}).update(tuning_prefs)
+
+            if hasattr(self.preferences_panel, 'get_send_rate_preferences'):
+                send_rate_prefs = self.preferences_panel.get_send_rate_preferences()
+                prefs.setdefault('network', {}).update(send_rate_prefs)
             
             # Save GUI state
             prefs['gui'] = {

@@ -74,14 +74,14 @@ class AboutPanel(QWidget):
         info_col.addLayout(title_row)
 
         # Short description
-        desc = QLabel("Compact real-time head tracking using IMU + CV")
+        desc = QLabel("Compact real-time head tracking using IMU sensor data")
         desc.setWordWrap(True)
         desc.setMaximumHeight(48)
         info_col.addWidget(desc)
 
         # Author and repo link
         author_row = QHBoxLayout()
-        author_lbl = QLabel("By anmagx")
+        author_lbl = QLabel("maintained by anmagx")
         author_font = QFont()
         author_font.setBold(True)
         author_lbl.setFont(author_font)
@@ -121,11 +121,12 @@ class AboutPanel(QWidget):
         packages_label.setText(
             """
             <ul style="margin:0; padding-left:14px;">
-              <li>PyQt5 — Cross-platform GUI</li>
-              <li>NumPy — Numerical computing</li>
-              <li>keyboard — Global hotkeys</li>
-              <li>pygame — Gamepad support</li>
-              <li>pyserial — Serial communication</li>
+              <li>PyQt5 - Cross-platform GUI</li>
+              <li>NumPy - Numerical computing</li>
+              <li>keyboard -Global hotkeys</li>
+              <li>pygame - Gamepad support</li>
+              <li>pyserial - Serial communication</li>
+              <li>pyInstaller - Application bundling</li>
             </ul>
             """
         )

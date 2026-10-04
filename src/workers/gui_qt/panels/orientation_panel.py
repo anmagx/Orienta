@@ -1043,7 +1043,15 @@ class OrientationPanelQt(QGroupBox):
             if prefs_widget is None:
                 try:
                     # Create a new PreferencesPanel using available queues/managers
-                    prefs_widget = PreferencesPanel(dialog)
+                    prefs_widget = PreferencesPanel(
+                        dialog,
+                        getattr(parent_window, 'preferences_manager', None),
+                        getattr(parent_window, 'input_command_queue', None),
+                        getattr(parent_window, 'input_response_queue', None),
+                        getattr(parent_window, 'fusion_control_queue', None),
+                        udp_control_queue=getattr(parent_window, 'udp_control_queue', None)
+                    )
+                    prefs_widget.load_preferences()
                 except Exception:
                     prefs_widget = None
 
@@ -3021,6 +3029,21 @@ class OrientationPanelQt(QGroupBox):
             pass
 
         # End connect_preferences_panel
+
+    def set_invert_yaw(self, invert):
+        """Apply yaw inversion to the orientation visualization."""
+        if hasattr(self.visualization_widget, 'set_invert_yaw'):
+            self.visualization_widget.set_invert_yaw(invert)
+
+    def set_invert_pitch(self, invert):
+        """Apply pitch inversion to the orientation visualization."""
+        if hasattr(self.visualization_widget, 'set_invert_pitch'):
+            self.visualization_widget.set_invert_pitch(invert)
+
+    def set_invert_roll(self, invert):
+        """Apply roll inversion to the orientation visualization."""
+        if hasattr(self.visualization_widget, 'set_invert_roll'):
+            self.visualization_widget.set_invert_roll(invert)
 
     def _request_pref_save(self):
         """Request a debounced preferences save via the connected PreferencesPanel.

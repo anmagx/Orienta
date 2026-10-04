@@ -1,7 +1,7 @@
 """
 Preferences panel for orienta GUI.
 
-Provides user interface for application settings including theme selection.
+Provides user interface for application settings including send-rate limits.
 """
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QPalette
@@ -29,7 +29,7 @@ class PreferencesPanel(QWidget):
     
     def __init__(self, parent=None, preferences_manager=None,
                  input_command_queue=None, input_response_queue=None,
-                 control_queue=None):
+                 control_queue=None, udp_control_queue=None):
         """
         Initialize preferences panel.
         
@@ -39,6 +39,7 @@ class PreferencesPanel(QWidget):
             input_command_queue: Queue for sending commands to input worker
             input_response_queue: Queue for receiving responses from input worker
             control_queue: Queue for sending fusion setting commands
+            udp_control_queue: Queue for sending UDP worker commands
         """
         super().__init__(parent)
         self.prefs_manager = preferences_manager or PreferencesManager()
@@ -47,6 +48,8 @@ class PreferencesPanel(QWidget):
         self.disengage_toggle_mode = False  # False = hold to disengage, True = toggle on/off
         self.orientation_panel = None  # Will be set by parent
         self.control_queue = control_queue
+        self.udp_control_queue = udp_control_queue
+        self.send_rate_hz = 0
         
         # Store input worker queues
         self.input_command_queue = input_command_queue
@@ -158,6 +161,21 @@ class PreferencesPanel(QWidget):
             
             theme_group.setLayout(theme_layout)
             layout.addWidget(theme_group)
+
+        send_rate_group = QGroupBox("Limit Send Rate")
+        send_rate_layout = QHBoxLayout()
+        send_rate_label = QLabel("Maximum UDP send rate (Hz):")
+        self.send_rate_combo = QComboBox()
+        self.send_rate_combo.addItem("0 (Unlimited)", 0)
+        self.send_rate_combo.addItem("60", 60)
+        self.send_rate_combo.addItem("120", 120)
+        self.send_rate_combo.addItem("240", 240)
+        self.send_rate_combo.currentIndexChanged.connect(self._on_send_rate_changed)
+        send_rate_layout.addWidget(send_rate_label)
+        send_rate_layout.addWidget(self.send_rate_combo)
+        send_rate_layout.addStretch()
+        send_rate_group.setLayout(send_rate_layout)
+        layout.addWidget(send_rate_group)
         
         # Keyboard shortcuts group
         # Note: The actual "Set Shortcut..." controls for Reset Orientation and
@@ -447,6 +465,7 @@ class PreferencesPanel(QWidget):
     
     def load_preferences(self):
         """Load all preferences from config file via PreferencesManager, update UI, and sync with fusion worker."""
+        self._loading = True
         # Load all preferences using PreferencesManager
         prefs = self.prefs_manager.load()
         
@@ -456,6 +475,23 @@ class PreferencesPanel(QWidget):
             index = self.theme_combo.findText(current_theme)
             if index >= 0:
                 self.theme_combo.setCurrentIndex(index)
+
+        network_prefs = prefs.get('network', {})
+        if isinstance(network_prefs, dict) and network_prefs.get('output_rate_hz'):
+            try:
+                saved_rate = int(network_prefs['output_rate_hz'])
+            except (TypeError, ValueError):
+                _ui_log(self, "[Preferences] Ignoring invalid saved UDP send rate")
+            else:
+                index = self.send_rate_combo.findData(saved_rate)
+                if index < 0:
+                    _ui_log(
+                        self,
+                        f"[Preferences] Unsupported saved UDP send rate {saved_rate}; using unlimited"
+                    )
+                    index = self.send_rate_combo.findData(0)
+                self.send_rate_combo.setCurrentIndex(index)
+        self.send_rate_hz = int(self.send_rate_combo.currentData())
         
         # These settings are persisted into the 'orientation' section by the GUI
         # worker; 'calibration' is only read to migrate older config files.
@@ -472,9 +508,34 @@ class PreferencesPanel(QWidget):
         
         # Send settings to fusion worker
         self._apply_settings_to_fusion_worker(cal_prefs)
+
+        self._apply_send_rate_to_worker()
         
         # Clear loading flag after initial load is complete
         self._loading = False
+
+    def _on_send_rate_changed(self, index):
+        """Apply a send-rate selection and persist it with the other preferences."""
+        rate_hz = self.send_rate_combo.itemData(index)
+        if rate_hz is None:
+            return
+        self.send_rate_hz = int(rate_hz)
+        if not self._loading:
+            self._apply_send_rate_to_worker()
+            self._trigger_preference_save()
+
+    def _apply_send_rate_to_worker(self):
+        """Send the selected UDP rate limit to the UDP worker."""
+        if self.udp_control_queue is not None and not safe_queue_put(
+            self.udp_control_queue,
+            ('set_rate', self.send_rate_hz),
+            timeout=QUEUE_PUT_TIMEOUT
+        ):
+            _ui_log(self, "[Preferences] Failed to send UDP send rate")
+
+    def get_send_rate_preferences(self):
+        """Get the UDP send-rate preference for the existing network config section."""
+        return {'output_rate_hz': str(self.send_rate_hz)}
 
     def _on_close_clicked(self):
         """Handle Close button - close containing dialog or top-level window."""
@@ -793,6 +854,14 @@ class PreferencesPanel(QWidget):
         
         # Reset gyro calibration parameters to defaults
         self.gyro_bias_cal_samples = GYRO_BIAS_CAL_SAMPLES
+
+        # Reset the UDP send-rate limit to unlimited
+        unlimited_index = self.send_rate_combo.findData(0)
+        rate_changed = self.send_rate_combo.currentIndex() != unlimited_index
+        self.send_rate_combo.setCurrentIndex(unlimited_index)
+        self.send_rate_hz = 0
+        if not rate_changed:
+            self._apply_send_rate_to_worker()
         
         # Reset axis inversions to defaults
         self.invert_yaw = False

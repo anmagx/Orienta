@@ -1,6 +1,7 @@
 # Orienta
 
-![Orienta logo](src/img/orienta_logo.png)
+![Orienta logo](src/img/orienta_banner.png)
+![Orienta logo](src/img/orienta_screenshot.png)
 
 Orienta is a 3-DOF head-tracking application for Windows.
 It reads accelerometer and gyroscope data from a serial-connected IMU, estimates
@@ -12,7 +13,7 @@ The idea is to be able to track your head movements in games. Some huge names in
 
 While you can build your own kit, you would typically need an IR-sensitive camera with a high frame rate, carefully consider camera distance to head, design a clip for holding the 3 LEDs - it's possible, but can be tricky to get good results with. 
 
-The space between these options is where Orienta could work for you. While there are some shortcomings to using an IMU, the arguments for it are compelling: You can build your own for probably under 15$, are completely free of any camera or viewing angle calculations, works the same wether your room is brightly lit or pitch black, and can track your head movements at over 120hz, giving you a buttery smooth experience. 
+The space between these options is where Orienta could work for you. While there are some shortcomings to using an IMU, the arguments for it are compelling: You can build your own for probably under 15$, are completely free of any camera or viewing angle calculations, it works the same whether your room is brightly lit or pitch black, and can track your head movements at over 240hz, giving you a buttery smooth experience. 
 
 The only diy required is soldering up your sensor and your board and mounting it to your headset. Example included further below. 
 
@@ -26,18 +27,19 @@ The only diy required is soldering up your sensor and your board and mounting it
 
 ## Installation
 
-### Install script
+### Install script for developing
 
-`install.bat` creates a virtual environment, installs dependencies, and creates a desktop shortcut, if you so desire. 
+`build\dev\setup_dev.bat` creates a virtual environment, installs dependencies, and creates a desktop shortcut, if you so desire. 
 
 ### Manual installation
 
 ```powershell
 git clone https://github.com/anmagx/Orienta
-cd Orienta
+cd Orienta\build\dev\
 python -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
+cd ..\..\
 python orienta.py
 ```
 
@@ -59,21 +61,22 @@ in [User data](#user-data).
 ### Software
 
 - Windows Operating System
-- Python 3.8 through 3.14
+- Python
 - NumPy
 - PySerial
 - PyQt5
 - Keyboard
 - Pygame
+- PyInstaller
 
 ### Hardware and serial format
 
 Any device that emits numeric CSV values on a serial port is supported.
-The bundled firmware is an Arduino Nano example using a FastIMU-supported
-MPU6500, configured to run at 500000 baud. The sensor data must be structured as follows:
+The bundled firmware is an ESP32-C3 Super Mini example using a FastIMU-supported
+MPU6500, configured to run at 500000 baud. The project prototype used an Arduino Nano. The sensor data must be structured as follows:
 
 ```text
-time_milliseconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
+time_seconds,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
 ```
 
 Accelerometer values are expected in g units and gyroscope values in degrees
@@ -84,7 +87,7 @@ Magnetometers are currently not supported.
 
 ## Usage
 
-You will obviously need to find a way to mount your sensor on your head. In the example I use a 3D-printed case for the sensor itself and the arduino nano that both clip to my headset. Many, if not most IMUs will want to be mounted a specific up-direction to give accurate accelerometer readings - tilted on the side will probably not work, but flipped 180° is fine. The app allows for flipping axis in the preferences section. 
+You will obviously need to find a way to mount your sensor on your head. In the example I use a 3D-printed case for the sensor itself and the arduino nano that both clip to my headset. Many, if not most IMUs will want to be mounted a specific up-direction to give accurate accelerometer readings - tilted on the side or on it's head will probably not work, but flipped 180° is fine. The app allows for flipping axis in the preferences section. 
 
 1. Flash the supplied Arduino sketch, or connect a compatible IMU source.
 2. Select its serial port and baud rate, then start the serial reader.
@@ -102,10 +105,11 @@ and packaged executable runs. The directory is created automatically:
 - `config.cfg` stores user preferences.
 - `orienta.log` stores application logs; rotated logs remain in this directory.
 
-If `LOCALAPPDATA` is unset, Orienta uses `AppData\Local\Orienta` under your home
-directory. Existing project-local files are not migrated automatically. To keep
-your previous settings from an older version, close Orienta and copy `config\config.cfg` to
-`%LOCALAPPDATA%\Orienta\config.cfg` before launching the updated application.
+If `LOCALAPPDATA` is unset, Orienta uses `AppData\Local\Orienta` under your home directory. 
+
+### Demonstration Video
+
+Check out the example device in action here! 
 
 ## License
 
