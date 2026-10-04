@@ -8,17 +8,6 @@ def check_python_version():
         print(f"Current version: {sys.version}")
         sys.exit(1)
 
-    if sys.version_info >= (3, 14):
-        print("WARNING: Python 3.14+ detected. NumPy may be unstable (experimental MINGW build).")
-        print("For production use, Python 3.13 or earlier is recommended.")
-        print("Press Ctrl+C to abort, or wait 3 seconds to continue...")
-        try:
-            import time
-            time.sleep(3)
-        except KeyboardInterrupt:
-            print("\nAborted.")
-            sys.exit(0)
-
 
 def main():
     check_python_version()
