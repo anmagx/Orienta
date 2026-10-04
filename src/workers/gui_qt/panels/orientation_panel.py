@@ -5,8 +5,8 @@ from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
 from PyQt5.QtCore import Qt, QTimer, QRect, QEvent
 
 from config.config import QUEUE_PUT_TIMEOUT
-from util.error_utils import safe_queue_put
-from workers.gui_qt.panels.about_panel import AboutPanel
+from src.util.error_utils import safe_queue_put
+from src.workers.gui_qt.panels.about_panel import AboutPanel
 from .base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, CONTENT_MARGINS, BUTTON_MIN_HEIGHT, BUTTON_EXTRA_HEIGHT, DIALOG_CONTENT_MARGIN
 from .preferences_panel import PreferencesPanel
 from .message_panel import MessagePanelQt

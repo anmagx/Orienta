@@ -47,7 +47,7 @@ class ThemeManager:
         """
         if theme_name not in ["light", "dark"]:
             try:
-                from util.log_utils import log_warning
+                from src.util.log_utils import log_warning
                 log_warning(None, "ThemeManager", f"Unknown theme: {theme_name}, defaulting to light")
             except Exception:
                 pass
@@ -64,26 +64,26 @@ class ThemeManager:
                     self.app.setStyleSheet(stylesheet)
                     self.current_theme = theme_name
                     try:
-                        from util.log_utils import log_info
+                        from src.util.log_utils import log_info
                         log_info(None, "ThemeManager", f"Applied {theme_name} theme")
                     except Exception:
                         pass
                 else:
                     try:
-                        from util.log_utils import log_warning
+                        from src.util.log_utils import log_warning
                         log_warning(None, "ThemeManager", "No QApplication instance available")
                     except Exception:
                         pass
             else:
                 try:
-                    from util.log_utils import log_warning
+                    from src.util.log_utils import log_warning
                     log_warning(None, "ThemeManager", f"Theme file not found: {theme_file}")
                 except Exception:
                     pass
 
         except Exception as e:
             try:
-                from util.log_utils import log_error
+                from src.util.log_utils import log_error
                 log_error(None, "ThemeManager", f"Error loading theme {theme_name}: {e}")
             except Exception:
                 pass

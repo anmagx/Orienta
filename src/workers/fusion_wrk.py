@@ -29,7 +29,7 @@ from config.config import (
      DRIFT_TRANSITION_CURVE
 
 )
-from util.error_utils import (
+from src.util.error_utils import (
     safe_queue_put,
     safe_queue_get,
     parse_imu_line,
@@ -251,7 +251,7 @@ class QuaternionComplementaryFilter:
         # Maintain same semantics as ComplementaryFilter.update
         if self.last_time is None:
             try:
-                from util.log_utils import log_info
+                from src.util.log_utils import log_info
                 log_info(self.logQueue, "Fusion", f"Initializing quaternion baseline at {timestamp}")
             except Exception:
                 pass
@@ -266,7 +266,7 @@ class QuaternionComplementaryFilter:
             return y, p, r, False, False
         if dt > DT_MAX:
             try:
-                from util.log_utils import log_warning
+                from src.util.log_utils import log_warning
                 log_warning(self.logQueue, "Fusion", f"Large dt: {dt:.3f}s, resetting quaternion baseline")
             except Exception:
                 pass
@@ -452,8 +452,8 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
     """
     Fusion worker that reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
     """
-    from util.log_utils import log_info, log_error, log_warning
-    from util.timing_utils import enable_high_res_timer, disable_high_res_timer, raise_process_priority
+    from src.util.log_utils import log_info, log_error, log_warning
+    from src.util.timing_utils import enable_high_res_timer, disable_high_res_timer, raise_process_priority
 
     # Windows rounds time.sleep() up to the ~15.6ms system clock tick unless
     # this process requests higher resolution; must be set per-process.
@@ -601,7 +601,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                         filter._last_stationary = False
                         # Log timing baseline clear for debugging
                         try:
-                            from util.log_utils import log_info
+                            from src.util.log_utils import log_info
                             log_info(logQueue, "Fusion Worker", "Cleared timing baseline and stationary debounce state on reset")
                         except Exception:
                             pass

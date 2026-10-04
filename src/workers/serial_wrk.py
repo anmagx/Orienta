@@ -11,7 +11,7 @@ from config.config import (
     FPS_REPORT_INTERVAL,
     QUEUE_PUT_TIMEOUT
 )
-from util.error_utils import safe_queue_put, safe_queue_get
+from src.util.error_utils import safe_queue_put, safe_queue_get
 
 def open_serial(port, baud, retry_delay, messageQueue, stop_event=None, serialControlQueue=None, statusQueue=None, uiStatusQueue=None):
     """Try to open serial port repeatedly until successful.
@@ -74,8 +74,8 @@ def serial_thread(messageQueue=None, serialQueue=None, serialDisplayQueue=None, 
     This thread will not block forever trying to open a port; open attempts
     can be cancelled via the control queue.
     """
-    from util.log_utils import log_info, log_error
-    from util.timing_utils import raise_process_priority
+    from src.util.log_utils import log_info, log_error
+    from src.util.timing_utils import raise_process_priority
 
     raise_process_priority()
     log_info(logQueue, "Serial Worker", "Serial thread started")
@@ -200,7 +200,7 @@ def serial_thread(messageQueue=None, serialQueue=None, serialDisplayQueue=None, 
     log_info(logQueue, "Serial Worker", "Serial thread stopped")
 
 def run_worker(messageQueue, serialQueue, serialDisplayQueue, stop_event=None, serialControlQueue=None, statusQueue=None, logQueue=None, uiStatusQueue=None):
-    from util.log_utils import log_info
+    from src.util.log_utils import log_info
     try:
         serial_thread(messageQueue, serialQueue, serialDisplayQueue, stop_event, serialControlQueue, statusQueue, logQueue, uiStatusQueue)
     except KeyboardInterrupt:

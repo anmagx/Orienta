@@ -1,9 +1,9 @@
 """Helper to set window icons consistently across GUI dialogs.
 
-Places the project's `img/icon.ico` on PyQt5 windows when available.
+Places the project's `src/img/icon.ico` on PyQt5 windows when available.
 
 Usage:
-    from workers.gui_qt.helpers.icon_helper import set_window_icon
+    from src.workers.gui_qt.helpers.icon_helper import set_window_icon
     set_window_icon(qt_window)
 """
 import os
@@ -21,7 +21,7 @@ def set_window_icon(win) -> bool:
     try:
         from PyQt5.QtGui import QIcon
         
-        # Robustly search upwards from this file for the project's img/icon.ico
+        # Robustly search upwards from this file for the project's src/img/icon.ico
         start_dir = os.path.dirname(__file__)
         ico_path = None
         png_path = None

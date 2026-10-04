@@ -31,7 +31,7 @@ from config.config import (
     WORKER_RESTART_DELAY,
     MAX_WORKER_RESTART_ATTEMPTS
 )
-from util.log_utils import log_info, log_warning, log_error
+from src.util.log_utils import log_info, log_warning, log_error
 
 class ProcessHandler:
     """Manager for application worker processes and shared queues.
@@ -261,11 +261,11 @@ class ProcessHandler:
         log_info(self.logQueue, 'ProcessHandler', "Starting workers...")
         
         ## Import worker target here to avoid circular import
-        from workers.gui_wrk import run_worker as run_gui_worker
-        from workers.serial_wrk import run_worker as run_serial_worker
-        from workers.fusion_wrk import run_worker as run_fusion_worker
-        from workers.udp_wrk import run_worker as run_udp_worker
-        from workers.input_wrk import run_worker as run_input_worker
+        from src.workers.gui_wrk import run_worker as run_gui_worker
+        from src.workers.serial_wrk import run_worker as run_serial_worker
+        from src.workers.fusion_wrk import run_worker as run_fusion_worker
+        from src.workers.udp_wrk import run_worker as run_udp_worker
+        from src.workers.input_wrk import run_worker as run_input_worker
 
         ## Input Worker (start first to handle shortcuts early)
         input_args = (self.inputCommandQueue, self.inputResponseQueue, self.stop_event, self.logQueue)
@@ -366,7 +366,7 @@ class ProcessHandler:
         
     def get_queue_health_report(self):
         """Get a comprehensive report of all queue health statistics."""
-        from util.error_utils import monitor_queue_health
+        from src.util.error_utils import monitor_queue_health
         
         queues = {
             'serialQueue': self.serialQueue,

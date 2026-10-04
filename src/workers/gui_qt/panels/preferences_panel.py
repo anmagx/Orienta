@@ -11,11 +11,11 @@ from PyQt5.QtWidgets import (
     QSpinBox, QFrame, QScrollArea
 )
 
-from managers.preferences_manager import PreferencesManager
+from src.managers.preferences_manager import PreferencesManager
 from config.config import DEFAULT_THEME, THEMES_ENABLED, ALPHA_YAW, ALPHA_ROLL, ALPHA_PITCH, THRESH_DEBOUNCE_MS, STATIONARY_GYRO_THRESHOLD, STATIONARY_DEBOUNCE_S, DRIFT_SMOOTHING_TIME, DRIFT_TRANSITION_CURVE, GYRO_BIAS_CAL_SAMPLES, QUEUE_PUT_TIMEOUT
-from workers.gui_qt.panels.base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, DIALOG_CONTENT_MARGIN
+from src.workers.gui_qt.panels.base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, DIALOG_CONTENT_MARGIN
 
-from util.error_utils import (
+from src.util.error_utils import (
     safe_queue_put
 )
 

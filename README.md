@@ -1,6 +1,6 @@
 # Orienta
 
-![Orienta logo](img/orienta_logo.png)
+![Orienta logo](src/img/orienta_logo.png)
 
 Orienta is a 3-DOF head-tracking application for Windows.
 It reads accelerometer and gyroscope data from a serial-connected IMU, estimates
