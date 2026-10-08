@@ -50,8 +50,9 @@ class OrientationPanelQt(QGroupBox):
         self.orientation_held = False
         self.orientation_hold_toggle_mode = False
         self._orientation_hold_sources = set()
-        self.reset_orientation_toggle_follow = False
-        self._reset_follow_sources = set()
+        self.reset_orientation_instantaneous = False
+        self._reset_recenter_sources = set()
+        self._reset_orientation_pressed_sources = set()
 
         # Track serial connection state reported by GUI worker ('connected', 'stopped', 'error', etc.)
         self._serial_state = None
@@ -550,7 +551,7 @@ class OrientationPanelQt(QGroupBox):
 
         self.reset_button = TwoLineButton("Reset Orientation", "")
         self.reset_button.setToolTip(
-            "Reset orientation immediately."
+            "Hold the button or shortcut; release to recenter the current pose."
         )
         # Size to match width of column
         self.reset_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -2306,7 +2307,13 @@ class OrientationPanelQt(QGroupBox):
                         w.setProperty(
                             'status',
                             'warning'
-                            if name == 'orientation_hold_btn' and self.orientation_held
+                            if (
+                                (name == 'orientation_hold_btn' and self.orientation_held)
+                                or (
+                                    name == 'reset_button'
+                                    and self._reset_orientation_pressed_sources
+                                )
+                            )
                             else '',
                         )
                         w.setAttribute(Qt.WA_TransparentForMouseEvents, False)
@@ -3062,11 +3069,8 @@ class OrientationPanelQt(QGroupBox):
             pass
 
     def _on_reset_orientation(self):
-        """Send the existing instantaneous reset command to fusion."""
-        self._send_orientation_reset_command(
-            'reset_orientation',
-            "Failed to send reset orientation command",
-        )
+        """Immediately set the current full pose as the output origin."""
+        self._on_recenter_orientation_to_current()
 
     def _on_recenter_orientation_to_current(self):
         """Set the current complete sensor pose as the new output origin."""
@@ -3092,47 +3096,69 @@ class OrientationPanelQt(QGroupBox):
         return False
 
     def _on_reset_button_pressed(self):
-        if self.reset_orientation_toggle_follow:
-            self._set_reset_follow_source('button', True)
+        self._set_reset_button_pressed_source('button', True)
+        if not self.reset_orientation_instantaneous:
+            self._set_reset_recenter_source('button', True)
 
     def _on_reset_button_released(self):
-        if self.reset_orientation_toggle_follow:
-            self._set_reset_follow_source('button', False)
+        self._set_reset_button_pressed_source('button', False)
+        if not self.reset_orientation_instantaneous:
+            self._set_reset_recenter_source('button', False)
 
     def _on_reset_button_clicked(self):
-        if not self.reset_orientation_toggle_follow:
+        if self.reset_orientation_instantaneous:
             self._on_reset_orientation()
 
-    def _set_reset_follow_source(self, source, active):
+    def _set_reset_recenter_source(self, source, active):
         """Wait for all held inputs to release before recentering the view."""
-        sources = set(self._reset_follow_sources)
-        was_following = bool(sources)
+        sources = set(self._reset_recenter_sources)
+        was_recenter_held = bool(sources)
         if active:
             sources.add(source)
         else:
             sources.discard(source)
-        self._reset_follow_sources = sources
+        self._reset_recenter_sources = sources
         visualization = getattr(self, 'visualization_widget', None)
         if visualization is not None:
             visualization.set_reset_follow_active(bool(sources))
 
-        if was_following and not sources:
+        if was_recenter_held and not sources:
             self._on_recenter_orientation_to_current()
 
-    def set_reset_orientation_toggle_follow(self, enabled):
-        """Set whether reset recenters the full pose when its input is released."""
-        self.reset_orientation_toggle_follow = bool(enabled)
-        if not self.reset_orientation_toggle_follow:
-            self._reset_follow_sources.clear()
+    def _set_reset_button_pressed_source(self, source, pressed):
+        sources = set(self._reset_orientation_pressed_sources)
+        if pressed:
+            sources.add(source)
+        else:
+            sources.discard(source)
+        self._reset_orientation_pressed_sources = sources
+
+        button = getattr(self, 'reset_button', None)
+        if button is None:
+            return
+        status = (
+            'disabled'
+            if not self._processing_active
+            else 'warning' if sources else ''
+        )
+        button.setProperty('status', status)
+        button.style().polish(button)
+        button.update()
+
+    def set_reset_orientation_instantaneous(self, enabled):
+        """Set whether reset recenters immediately instead of on input release."""
+        self.reset_orientation_instantaneous = bool(enabled)
+        if self.reset_orientation_instantaneous:
+            self._reset_recenter_sources.clear()
             visualization = getattr(self, 'visualization_widget', None)
             if visualization is not None:
                 visualization.set_reset_follow_active(False)
         button = getattr(self, 'reset_button', None)
         if button is not None:
             button.setToolTip(
-                "Hold the button or shortcut; release to recenter the current pose."
-                if self.reset_orientation_toggle_follow
-                else "Reset orientation immediately."
+                "Recenter the current pose immediately."
+                if self.reset_orientation_instantaneous
+                else "Hold the button or shortcut; release to recenter the current pose."
             )
 
     def _on_recalibrate(self):
@@ -3284,8 +3310,11 @@ class OrientationPanelQt(QGroupBox):
                         action = resp[2] if len(resp) > 2 else None
                         _ui_log(self, f"[OrientationPanel] shortcut_pressed: {key} -> {action}")
                         if action == 'reset_orientation' and hasattr(self, '_on_reset_orientation'):
-                            if self.reset_orientation_toggle_follow:
-                                self._set_reset_follow_source('shortcut', True)
+                            self._set_reset_button_pressed_source(
+                                'shortcut', True
+                            )
+                            if not self.reset_orientation_instantaneous:
+                                self._set_reset_recenter_source('shortcut', True)
                             else:
                                 try:
                                     self._on_reset_orientation()
@@ -3314,11 +3343,14 @@ class OrientationPanelQt(QGroupBox):
                                 self._on_disengage_released()
                             except Exception:
                                 pass
-                        elif (
-                            action == 'reset_orientation'
-                            and self.reset_orientation_toggle_follow
-                        ):
-                            self._set_reset_follow_source('shortcut', False)
+                        elif action == 'reset_orientation':
+                            self._set_reset_button_pressed_source(
+                                'shortcut', False
+                            )
+                            if not self.reset_orientation_instantaneous:
+                                self._set_reset_recenter_source(
+                                    'shortcut', False
+                                )
                         elif (
                             action == 'hold_orientation'
                             and not self.orientation_hold_toggle_mode
@@ -3357,12 +3389,12 @@ class OrientationPanelQt(QGroupBox):
                     preferences_panel.orientation_hold_toggle_checkbox.setChecked(
                         bool(self.orientation_hold_toggle_mode)
                     )
-                if hasattr(preferences_panel, 'reset_orientation_toggle_follow_checkbox'):
-                    preferences_panel.reset_orientation_toggle_follow = bool(
-                        self.reset_orientation_toggle_follow
+                if hasattr(preferences_panel, 'reset_orientation_instantaneous_checkbox'):
+                    preferences_panel.reset_orientation_instantaneous = bool(
+                        self.reset_orientation_instantaneous
                     )
-                    preferences_panel.reset_orientation_toggle_follow_checkbox.setChecked(
-                        bool(self.reset_orientation_toggle_follow)
+                    preferences_panel.reset_orientation_instantaneous_checkbox.setChecked(
+                        bool(self.reset_orientation_instantaneous)
                     )
             except Exception:
                 pass

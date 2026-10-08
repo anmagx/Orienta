@@ -182,17 +182,18 @@ Euler queues, and reports state changes. Its processing flow is:
 8. Subtract centre offsets from the final normalized Euler output. Apply axis
    inversion in the worker's output path.
 
-`reset_orientation` preserves the gyro-bias calibration. It preferentially
-seeds the new quaternion from the most recent acceleration sample to avoid a
-visible pitch jump, schedules a short level calibration, and falls back to an
-identity reset when no valid sample is available. The Reset Orientation
-control uses this immediate behavior by default. Its optional Toggle follow
-setting instead waits for button/key release, then sets the current full
-yaw/pitch/roll pose as the output origin without changing calibrated center
-offsets. Stationary center assistance uses this effective output origin as its
-target, so it remains active after full-pose recentering. While the input is
-held, the GUI draws a dotted gray guide matching the configured drift-angle
-region around the live orientation marker.
+The legacy `reset_orientation` command preserves gyro-bias calibration. It
+seeds the quaternion from the most recent acceleration sample and schedules a
+short level calibration, falling back to identity when no valid sample is
+available. The Reset Orientation UI instead uses
+`recenter_orientation_to_current` to set the current full yaw/pitch/roll pose
+as the output origin. By default, it sends the command when the button/key is
+released; checking **Instantaneous recenter** sends it on click/key press
+instead. Neither mode changes calibrated center offsets. Stationary center
+assistance uses the effective output origin as its target, so it remains active
+after full-pose recentering. While the input is held, the GUI draws a dotted
+gray guide matching the configured drift-angle region around the live
+orientation marker.
 
 ### Fusion control protocol
 
@@ -201,7 +202,7 @@ Existing commands are:
 
 | Command | Effect |
 |---|---|
-| `'reset_orientation'` / `('reset_orientation',)` | Recenter with accel seeding; schedule level calibration |
+| `'reset_orientation'` / `('reset_orientation',)` | Legacy accel-seeded reset; preserve gyro-bias calibration and schedule level calibration |
 | `('recenter_orientation_to_current',)` | Set current full yaw/pitch/roll pose as the output origin, preserving level calibration |
 | `'reset'` / `('reset',)` | Reset filter and calibration/UI status |
 | `('set_orientation_hold', bool)` | Freeze published orientation while sensor fusion continues; on release, slerp smoothly back to the live orientation |

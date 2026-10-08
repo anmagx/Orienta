@@ -43,11 +43,11 @@ class PreferencesPanel(QWidget):
         """
         super().__init__(parent)
         self.prefs_manager = preferences_manager or PreferencesManager()
-        # Shortcuts are owned by OrientationPanelQt; this panel owns the
-        # orientation-hold press/toggle preference.
+        # Shortcuts are owned by OrientationPanelQt; this panel owns button
+        # behavior preferences.
         self.disengage_toggle_mode = False  # False = hold to disengage, True = toggle on/off
         self.orientation_hold_toggle_mode = False
-        self.reset_orientation_toggle_follow = False
+        self.reset_orientation_instantaneous = False
         self.orientation_panel = None  # Will be set by parent
         self.control_queue = control_queue
         self.udp_control_queue = udp_control_queue
@@ -179,28 +179,25 @@ class PreferencesPanel(QWidget):
         send_rate_group.setLayout(send_rate_layout)
         layout.addWidget(send_rate_group)
         
-        # Keyboard shortcuts and button behavior groups
+        # Button behavior controls
         # Note: The actual "Set Shortcut..." controls for Reset Orientation and
         # Disengage Drift Correction live next to their respective buttons in
         # the Orientation panel, which also owns their state and persistence.
         # Button hold/toggle behavior is configurable here.
-        shortcuts_group = QGroupBox("Disengage Behavior")
-        shortcuts_layout = QVBoxLayout()
-        
-        # Toggle mode checkbox for disengage
         from PyQt5.QtWidgets import QCheckBox
-        self.disengage_toggle_checkbox = QCheckBox("Toggle mode (press once to disengage, press again to re-engage)")
+        button_behavior_group = QGroupBox("Button Behavior")
+        button_behavior_layout = QVBoxLayout()
+
+        self.disengage_toggle_checkbox = QCheckBox(
+            "Disengage Drift Correction: toggle mode "
+            "(press once to disengage, again to re-engage)"
+        )
         self.disengage_toggle_checkbox.setChecked(self.disengage_toggle_mode)
         self.disengage_toggle_checkbox.stateChanged.connect(self._on_disengage_toggle_changed)
-        shortcuts_layout.addWidget(self.disengage_toggle_checkbox)
-        
-        shortcuts_group.setLayout(shortcuts_layout)
-        layout.addWidget(shortcuts_group)
+        button_behavior_layout.addWidget(self.disengage_toggle_checkbox)
 
-        hold_behavior_group = QGroupBox("Hold Orientation Behavior")
-        hold_behavior_layout = QVBoxLayout()
         self.orientation_hold_toggle_checkbox = QCheckBox(
-            "Toggle mode (press once to hold, press again to resume)"
+            "Hold Orientation: toggle mode (press once to hold, again to resume)"
         )
         self.orientation_hold_toggle_checkbox.setChecked(
             self.orientation_hold_toggle_mode
@@ -208,26 +205,26 @@ class PreferencesPanel(QWidget):
         self.orientation_hold_toggle_checkbox.stateChanged.connect(
             self._on_orientation_hold_toggle_changed
         )
-        hold_behavior_layout.addWidget(self.orientation_hold_toggle_checkbox)
-        hold_behavior_group.setLayout(hold_behavior_layout)
-        layout.addWidget(hold_behavior_group)
+        button_behavior_layout.addWidget(self.orientation_hold_toggle_checkbox)
 
-        reset_behavior_group = QGroupBox("Reset Orientation Behavior")
-        reset_behavior_layout = QVBoxLayout()
-        self.reset_orientation_toggle_follow_checkbox = QCheckBox(
-            "Toggle follow (recenter the current pose when released)"
+        self.reset_orientation_instantaneous_checkbox = QCheckBox(
+            "Reset Orientation: instantaneous recenter"
         )
-        self.reset_orientation_toggle_follow_checkbox.setChecked(
-            self.reset_orientation_toggle_follow
+        self.reset_orientation_instantaneous_checkbox.setChecked(
+            self.reset_orientation_instantaneous
         )
-        self.reset_orientation_toggle_follow_checkbox.stateChanged.connect(
-            self._on_reset_orientation_toggle_follow_changed
+        self.reset_orientation_instantaneous_checkbox.setToolTip(
+            "Recenter immediately on button click or shortcut press. "
+            "When unchecked, hold the button or shortcut and recenter on release."
         )
-        reset_behavior_layout.addWidget(
-            self.reset_orientation_toggle_follow_checkbox
+        self.reset_orientation_instantaneous_checkbox.stateChanged.connect(
+            self._on_reset_orientation_instantaneous_changed
         )
-        reset_behavior_group.setLayout(reset_behavior_layout)
-        layout.addWidget(reset_behavior_group)
+        button_behavior_layout.addWidget(
+            self.reset_orientation_instantaneous_checkbox
+        )
+        button_behavior_group.setLayout(button_behavior_layout)
+        layout.addWidget(button_behavior_group)
         
         # Sensor configuration group
         sensor_group = QGroupBox("Sensor Configuration")
@@ -857,14 +854,14 @@ class PreferencesPanel(QWidget):
         if not getattr(self, '_loading', False):
             self.preferences_changed.emit()
 
-    def _on_reset_orientation_toggle_follow_changed(self, state):
-        """Apply and persist recenter-on-release behavior for Reset Orientation."""
-        toggle_follow = state == 2
+    def _on_reset_orientation_instantaneous_changed(self, state):
+        """Apply and persist immediate versus release-triggered recentering."""
+        instantaneous = state == 2
         if self.orientation_panel:
-            self.orientation_panel.set_reset_orientation_toggle_follow(
-                toggle_follow
+            self.orientation_panel.set_reset_orientation_instantaneous(
+                instantaneous
             )
-        self.reset_orientation_toggle_follow = toggle_follow
+        self.reset_orientation_instantaneous = instantaneous
         if not getattr(self, '_loading', False):
             self.preferences_changed.emit()
 
@@ -918,10 +915,10 @@ class PreferencesPanel(QWidget):
         self.orientation_hold_toggle_checkbox.setChecked(False)
         if self.orientation_panel:
             self.orientation_panel.set_orientation_hold_toggle_mode(False)
-        self.reset_orientation_toggle_follow = False
-        self.reset_orientation_toggle_follow_checkbox.setChecked(False)
+        self.reset_orientation_instantaneous = False
+        self.reset_orientation_instantaneous_checkbox.setChecked(False)
         if self.orientation_panel:
-            self.orientation_panel.set_reset_orientation_toggle_follow(False)
+            self.orientation_panel.set_reset_orientation_instantaneous(False)
         
         # Reset gyro calibration parameters to defaults
         self.gyro_bias_cal_samples = GYRO_BIAS_CAL_SAMPLES
@@ -1115,23 +1112,23 @@ class PreferencesPanel(QWidget):
                 hold_toggle_mode
             )
 
-        raw_reset_follow = cal_prefs.get(
-            'reset_orientation_toggle_follow',
+        raw_instantaneous = cal_prefs.get(
+            'reset_orientation_instantaneous',
             getattr(
                 self.orientation_panel,
-                'reset_orientation_toggle_follow',
+                'reset_orientation_instantaneous',
                 False,
             ),
         )
-        if isinstance(raw_reset_follow, str):
-            reset_follow = raw_reset_follow.lower() in ('true', '1', 'yes')
+        if isinstance(raw_instantaneous, str):
+            instantaneous = raw_instantaneous.lower() in ('true', '1', 'yes')
         else:
-            reset_follow = bool(raw_reset_follow)
-        self.reset_orientation_toggle_follow = reset_follow
-        self.reset_orientation_toggle_follow_checkbox.setChecked(reset_follow)
+            instantaneous = bool(raw_instantaneous)
+        self.reset_orientation_instantaneous = instantaneous
+        self.reset_orientation_instantaneous_checkbox.setChecked(instantaneous)
         if self.orientation_panel:
-            self.orientation_panel.set_reset_orientation_toggle_follow(
-                reset_follow
+            self.orientation_panel.set_reset_orientation_instantaneous(
+                instantaneous
             )
 
     def _load_sensor_settings(self, cal_prefs):
@@ -1221,7 +1218,7 @@ class PreferencesPanel(QWidget):
         """Get the fusion-tuning preferences owned by this panel.
 
         Shortcut keys and disengage toggle mode are owned by OrientationPanelQt.
-        This panel returns reset-follow and orientation-hold behavior settings.
+        This panel returns reset-timing and orientation-hold behavior settings.
         """
         return {
             'alpha_pitch': f"{self.alpha_pitch:.3f}",
@@ -1232,7 +1229,7 @@ class PreferencesPanel(QWidget):
             'drift_correction_strength': f"{self.drift_correction_strength:.2f}",
             'drift_transition_curve': self.drift_transition_curve,
             'orientation_hold_toggle_mode': self.orientation_hold_toggle_mode,
-            'reset_orientation_toggle_follow': self.reset_orientation_toggle_follow,
+            'reset_orientation_instantaneous': self.reset_orientation_instantaneous,
             'gyro_bias_cal_samples': str(self.gyro_bias_cal_samples),
             'invert_yaw': self.invert_yaw,
             'invert_pitch': self.invert_pitch,

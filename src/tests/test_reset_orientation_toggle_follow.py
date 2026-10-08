@@ -29,41 +29,49 @@ class ResetOrientationToggleFollowTests(unittest.TestCase):
     def tearDown(self):
         self.panel.close()
 
-    def test_default_button_and_shortcut_keep_instantaneous_reset(self):
-        self.assertFalse(self.panel.reset_orientation_toggle_follow)
+    def test_default_button_and_shortcut_recenter_on_release(self):
+        self.assertFalse(self.panel.reset_orientation_instantaneous)
 
-        self.panel.reset_button.click()
-        self.assertEqual(self.control_queue.get_nowait(), 'reset_orientation')
+        self.panel.reset_button.pressed.emit()
+        self.assertTrue(self.control_queue.empty())
+        self.panel.reset_button.released.emit()
+        self.assertEqual(
+            self.control_queue.get_nowait(),
+            ('recenter_orientation_to_current',),
+        )
 
         self.input_response_queue.put(
             ('shortcut_pressed', 'f10', 'reset_orientation')
         )
         self.panel._process_input_responses()
-        self.assertEqual(self.control_queue.get_nowait(), 'reset_orientation')
+        self.assertTrue(self.control_queue.empty())
 
         self.input_response_queue.put(
             ('shortcut_released', 'f10', 'reset_orientation')
         )
         self.panel._process_input_responses()
+        self.assertEqual(
+            self.control_queue.get_nowait(),
+            ('recenter_orientation_to_current',),
+        )
+
         self.assertTrue(self.control_queue.empty())
 
     def test_button_release_recenter_command_is_sent_only_after_release(self):
-        self.panel.set_reset_orientation_toggle_follow(True)
-
         self.panel.reset_button.pressed.emit()
         self.assertTrue(self.control_queue.empty())
+        self.assertEqual(self.panel.reset_button.property('status'), 'warning')
         self.assertTrue(self.panel.visualization_widget.reset_follow_active)
 
         self.panel.reset_button.released.emit()
+        self.assertEqual(self.panel.reset_button.property('status'), '')
         self.assertFalse(self.panel.visualization_widget.reset_follow_active)
         self.assertEqual(
             self.control_queue.get_nowait(),
             ('recenter_orientation_to_current',),
         )
 
-    def test_button_click_sends_one_recenter_command_in_toggle_follow_mode(self):
-        self.panel.set_reset_orientation_toggle_follow(True)
-
+    def test_button_click_sends_one_recenter_command_by_default(self):
         self.panel.reset_button.click()
 
         self.assertEqual(
@@ -72,8 +80,32 @@ class ResetOrientationToggleFollowTests(unittest.TestCase):
         )
         self.assertTrue(self.control_queue.empty())
 
+    def test_instantaneous_preference_recenters_on_click_and_key_press(self):
+        self.panel.set_reset_orientation_instantaneous(True)
+
+        self.panel.reset_button.click()
+        self.assertEqual(
+            self.control_queue.get_nowait(),
+            ('recenter_orientation_to_current',),
+        )
+
+        self.input_response_queue.put(
+            ('shortcut_pressed', 'f10', 'reset_orientation')
+        )
+        self.panel._process_input_responses()
+        self.assertEqual(
+            self.control_queue.get_nowait(),
+            ('recenter_orientation_to_current',),
+        )
+        self.input_response_queue.put(
+            ('shortcut_released', 'f10', 'reset_orientation')
+        )
+        self.assertEqual(self.panel.reset_button.property('status'), 'warning')
+        self.panel._process_input_responses()
+        self.assertTrue(self.control_queue.empty())
+        self.assertEqual(self.panel.reset_button.property('status'), '')
+
     def test_shortcut_release_recenter_command_is_sent_only_after_release(self):
-        self.panel.set_reset_orientation_toggle_follow(True)
         self.input_response_queue.put(
             ('shortcut_pressed', 'f10', 'reset_orientation')
         )
@@ -92,48 +124,70 @@ class ResetOrientationToggleFollowTests(unittest.TestCase):
         )
 
     def test_multiple_held_inputs_recenter_after_the_last_release(self):
-        self.panel.set_reset_orientation_toggle_follow(True)
         self.panel.reset_button.pressed.emit()
         self.input_response_queue.put(
             ('shortcut_pressed', 'f10', 'reset_orientation')
         )
         self.panel._process_input_responses()
+        self.assertEqual(self.panel.reset_button.property('status'), 'warning')
 
         self.panel.reset_button.released.emit()
+        self.assertEqual(self.panel.reset_button.property('status'), 'warning')
         self.assertTrue(self.control_queue.empty())
 
         self.input_response_queue.put(
             ('shortcut_released', 'f10', 'reset_orientation')
         )
         self.panel._process_input_responses()
+        self.assertEqual(self.panel.reset_button.property('status'), '')
         self.assertEqual(
             self.control_queue.get_nowait(),
             ('recenter_orientation_to_current',),
         )
 
-    def test_preferences_persist_and_apply_toggle_follow_mode(self):
+    def test_preferences_persist_and_apply_instantaneous_recenter(self):
         preferences = PreferencesPanel(preferences_manager=Mock())
         self.addCleanup(preferences.close)
         preferences.orientation_panel = self.panel
 
         self.assertFalse(
-            preferences.reset_orientation_toggle_follow_checkbox.isChecked()
+            preferences.reset_orientation_instantaneous_checkbox.isChecked()
         )
-        preferences.reset_orientation_toggle_follow_checkbox.setChecked(True)
+        self.assertIs(
+            preferences.disengage_toggle_checkbox.parentWidget(),
+            preferences.orientation_hold_toggle_checkbox.parentWidget(),
+        )
+        self.assertIs(
+            preferences.orientation_hold_toggle_checkbox.parentWidget(),
+            preferences.reset_orientation_instantaneous_checkbox.parentWidget(),
+        )
+        self.assertIn(
+            "Reset Orientation",
+            preferences.reset_orientation_instantaneous_checkbox.text(),
+        )
+        self.assertIn(
+            "Hold Orientation",
+            preferences.orientation_hold_toggle_checkbox.text(),
+        )
+        self.assertIn(
+            "Disengage Drift Correction",
+            preferences.disengage_toggle_checkbox.text(),
+        )
+        preferences.reset_orientation_instantaneous_checkbox.setChecked(True)
 
-        self.assertTrue(self.panel.reset_orientation_toggle_follow)
+        self.assertTrue(self.panel.reset_orientation_instantaneous)
         self.assertTrue(
             preferences.get_tuning_preferences()[
-                'reset_orientation_toggle_follow'
+                'reset_orientation_instantaneous'
             ]
         )
 
         preferences._load_shortcut_settings(
-            {'reset_orientation_toggle_follow': 'false'}
+            {'reset_orientation_instantaneous': 'false'}
         )
-        self.assertFalse(self.panel.reset_orientation_toggle_follow)
+        self.assertFalse(self.panel.reset_orientation_instantaneous)
         self.assertFalse(
-            preferences.reset_orientation_toggle_follow_checkbox.isChecked()
+            preferences.reset_orientation_instantaneous_checkbox.isChecked()
         )
 
     def test_fusion_worker_applies_current_pose_recenter_command(self):
