@@ -38,6 +38,7 @@ class OrientationVisualizationWidget(QWidget):
         self.pitch = 0.0
         self.yaw = 0.0
         self.roll = 0.0
+        self.held_orientation = None
         
         # Drift correction status
         self.drift_correction_active = False
@@ -69,6 +70,16 @@ class OrientationVisualizationWidget(QWidget):
         self.yaw = float(yaw)
         self.roll = float(roll)
         self.update()  # Trigger repaint
+
+    def set_held_orientation(self, yaw, pitch, roll):
+        """Show a separate marker for a held pose while live orientation updates."""
+        self.held_orientation = (float(yaw), float(pitch), float(roll))
+        self.update()
+
+    def clear_held_orientation(self):
+        """Remove the held-pose marker."""
+        self.held_orientation = None
+        self.update()
 
     def update_drift_correction(self, active):
         """
@@ -188,11 +199,47 @@ class OrientationVisualizationWidget(QWidget):
         # Draw coordinate system
         self._draw_coordinate_system(painter, center_x, center_y, width, height)
         
+        # Draw the held pose underneath the live marker.
+        self._draw_held_orientation_indicator(painter, center_x, center_y, width, height)
+
         # Draw orientation indicator
         self._draw_orientation_indicator(painter, center_x, center_y, width, height)
         
         # Draw drift correction circle
         self._draw_drift_correction_circle(painter, center_x, center_y)
+
+    def _draw_held_orientation_indicator(self, painter, center_x, center_y, width, height):
+        """Draw a live-style held marker with a yellow dotted orientation line."""
+        if self.held_orientation is None:
+            return
+
+        try:
+            from src.config.config import VISUALIZATION_RANGE
+            current_range = VISUALIZATION_RANGE
+        except Exception:
+            current_range = getattr(self, 'range_degrees', 25.0)
+
+        yaw, pitch, roll = self.held_orientation
+        yaw_ratio = max(-1.0, min(1.0, yaw / current_range))
+        pitch_ratio = max(-1.0, min(1.0, -pitch / current_range))
+        indicator_x = center_x + yaw_ratio * (width // 2 - 10)
+        indicator_y = center_y + pitch_ratio * (height // 2 - 10)
+
+        roll_rad = math.radians(-roll)
+        line_length = 20
+        start_x = indicator_x - line_length * math.cos(roll_rad)
+        start_y = indicator_y - line_length * math.sin(roll_rad)
+        end_x = indicator_x + line_length * math.cos(roll_rad)
+        end_y = indicator_y + line_length * math.sin(roll_rad)
+
+        painter.setPen(
+            QPen(QColor(255, 255, 0), max(1, int(LINE_THICKNESS * 3)), Qt.DotLine)
+        )
+        painter.drawLine(int(start_x), int(start_y), int(end_x), int(end_y))
+        colors = self._get_theme_colors()
+        painter.setPen(QPen(colors['center'], max(1, int(LINE_THICKNESS * 2))))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(int(indicator_x - 3), int(indicator_y - 3), 6, 6)
 
     def _draw_coordinate_system(self, painter, center_x, center_y, width, height):
         """

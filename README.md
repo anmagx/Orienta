@@ -92,11 +92,19 @@ You will obviously need to find a way to mount your sensor on your head. In the 
 
 1. Flash the supplied Arduino sketch, or connect a compatible IMU source.
 2. Select its serial port and baud rate, then start the serial reader.
-3. Keep the device still and level while calibrating gyro bias.
+3. Keep the device still and level while calibrating all three gyro biases (X/Y/Z).
 4. Mount the device, reset orientation as needed, and enable UDP output.
 5. Configure OpenTrack to receive UDP packets at the selected address and port.
 
 Orienta always sends zero translation and orientation as yaw, pitch, and roll.
+
+When stationary and near center, center assist gently attracts orientation
+toward the configured rest pose. The selected curve ramps up engagement;
+attraction continues afterward rather than stopping at the smoothing time.
+Smoothing time controls engagement and the sustained correction rate, while
+strength scales that rate. Center assist is not an absolute yaw reference and
+can pull small held glances inward. Recenter preserves gyro calibration; a
+full reset clears all three bias estimates.
 
 ### User data
 

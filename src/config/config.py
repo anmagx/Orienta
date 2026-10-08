@@ -86,15 +86,14 @@ STATIONARY_GYRO_THRESHOLD = 5.0
 STATIONARY_DEBOUNCE_S = 0.15
 
 # Gradual drift correction constants
-DRIFT_TRANSITION_CURVE = "cosine"    # Transition curve type for smooth drift correction ("cosine", "linear", "quadratic")
+DRIFT_TRANSITION_CURVE = "cosine"    # Center-assist engagement curve ("exponential", "cosine", "linear", "quadratic")
 DRIFT_UI_THRESHOLD = 0.1             # Minimum drift strength to show UI indicator (0.0-1.0)
-DRIFT_SMOOTHING_TIME = 2.0           # Time constant for smooth drift correction (seconds) - used by both filter types
+DRIFT_SMOOTHING_TIME = 2.0           # Center-assist engagement time and sustained time constant (seconds)
 
 # ============================================================================
 # Gyro bias calibration
 # ============================================================================
-# Number of gyro gz samples to collect at startup for initial bias calibration.
-# Set to 0 to disable startup calibration and rely solely on online estimator.
+# Number of stationary X/Y/Z samples for manually triggered gyro bias calibration.
 GYRO_BIAS_CAL_SAMPLES = 400
 # Number of accel samples to collect for a quick level (pitch/roll) calibration.
 # Level calibration requires far fewer samples than gyro bias; 10-20 is typically enough.

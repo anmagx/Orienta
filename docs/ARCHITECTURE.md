@@ -159,18 +159,26 @@ Euler queues, and reports state changes. Its processing flow is:
 1. First valid timestamp creates a timing baseline and emits zero orientation.
 2. Reject non-positive/too-small `dt`; retain the existing quaternion.
 3. On a `dt` greater than `DT_MAX`, reset only the timing baseline.
-4. Integrate gyro angular velocity into the quaternion. `gyro_bias_yaw` is
-   subtracted from `gz`.
+4. Subtract the stationary-estimated raw sensor biases `gyro_bias_roll`,
+   `gyro_bias_pitch`, and `gyro_bias_yaw` from `gx`, `gy`, and `gz`, respectively,
+   then integrate angular velocity into the quaternion. These names identify
+   sensor axes, not independent Euler angular rates.
 5. If acceleration magnitude is close enough to 1 g, calculate accelerometer
    roll/pitch and blend those with quaternion-derived roll/pitch using the
    independent pitch/roll alphas. Yaw remains gyro-only.
-6. Call a pose stationary only when valid acceleration and gyro magnitude
+6. Call a pose stationary only when valid acceleration and bias-corrected gyro magnitude
    below `STATIONARY_GYRO_THRESHOLD` persist for
    `STATIONARY_DEBOUNCE_S`.
 7. While stationary **and** within all three configured centre thresholds,
    smoothly pull the orientation toward centre offsets. The selected
-   exponential, linear, cosine, or quadratic curve determines its gradual
-   correction rate.
+   exponential, linear, cosine, or quadratic curve ramps up engagement.
+   Correction uses `1 - exp(-integrated_rate)` per sample, integrating the
+   ramp over sensor time to avoid sample-rate-dependent gains. After the ramp
+   completes, attraction continues at a sustained rate of
+   `(strength / 0.3) / smoothing_time`; smoothing time is not a completion
+   deadline. Correction disengages on motion or leaving the centre thresholds.
+   This is centre assistance, not an absolute heading reference, and may pull
+   small intentional held glances inward.
 8. Subtract centre offsets from the final normalized Euler output. Apply axis
    inversion in the worker's output path.
 
@@ -188,6 +196,7 @@ Existing commands are:
 |---|---|
 | `'reset_orientation'` / `('reset_orientation',)` | Recenter with accel seeding; schedule level calibration |
 | `'reset'` / `('reset',)` | Reset filter and calibration/UI status |
+| `('set_orientation_hold', bool)` | Freeze published orientation while sensor fusion continues; on release, slerp smoothly back to the live orientation |
 | `('set_center_threshold', degrees)` | Set the shared near-centre threshold |
 | `('set_threshold', yaw, pitch, roll)` | Set all independent thresholds |
 | `('set_center_threshold_yaw/pitch/roll', degrees)` | Set one threshold |
@@ -196,11 +205,14 @@ Existing commands are:
 | `('set_drift_curve_type', name)` | `exponential`, `linear`, `cosine`, or `quadratic` |
 | `('set_drift_correction_strength', strength)` | Set strength in `(0, 1]` |
 | `('set_invert_yaw/pitch/roll', bool)` | Set axis inversion |
-| `('recalibrate_gyro_bias', samples?)` | Gather valid stationary samples and update yaw bias |
+| `('recalibrate_gyro_bias', samples?)` | Gather valid stationary raw samples and update all three X/Y/Z gyro biases |
 | `('calibrate_level', samples?)` | Gather valid stationary samples and set pitch/roll centre offsets |
 
 Gyro and level calibration consume `serialQueue` while they collect samples.
 That is intended, but means normal orientation output pauses during calibration.
+Gyro calibration averages raw readings, not previously bias-corrected readings,
+so repeated calibration replaces rather than compounds the estimate. Recenter
+preserves all three gyro biases; full reset clears them.
 
 ## Output, UI, and input contracts
 
@@ -257,9 +269,19 @@ and `('trigger_reset',)`. Responses include
 `('shortcut_pressed', key, action)`, and
 `('shortcut_released', key, action)`.
 
-The current actions are `reset_orientation` and `disengage_drift`. The
-orientation panel defines whether disengagement is hold or toggle behavior,
-then changes fusion thresholds accordingly.
+The current actions are `reset_orientation`, `disengage_drift`, and
+`hold_orientation`. The orientation panel defines whether disengagement is
+hold or toggle behavior, then changes fusion thresholds accordingly. Hold
+Orientation is momentary by default (held while its button or shortcut is
+pressed); the Preferences panel can enable toggle behavior instead.
+
+Orientation hold is a toggle. While held, the fusion filter continues updating
+from sensor data. UDP output remains at the held pose, while the display queue
+continues carrying live orientation for the visualization. Turning hold off
+blends the held output quaternion back to the live filtered orientation over
+the configured drift smoothing time, transition curve, and correction strength.
+The GUI visualization retains a live-style marker at the pose captured when
+hold was enabled, with a yellow dotted orientation line.
 
 ## Logging and error behavior
 
