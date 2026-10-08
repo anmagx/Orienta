@@ -83,6 +83,44 @@ class OrientationHeldMarkerTests(unittest.TestCase):
         )
         self.assertNotEqual(updated_live_image, live_only_image)
 
+    def test_reset_follow_ring_is_dotted_grey_and_matches_drift_guide_size(self):
+        self.widget.update_drift_angle_yaw(7.0)
+        self.widget.update_drift_angle_pitch(11.0)
+        self.widget.update_orientation(-7.0, 15.0, 3.0)
+        center_x = self.widget.width() // 2
+        center_y = self.widget.height() // 2
+        drift_painter = Mock()
+        follow_painter = Mock()
+
+        self.widget._draw_drift_correction_circle(
+            drift_painter, center_x, center_y
+        )
+        self.widget._draw_reset_follow_circle(
+            follow_painter, center_x, center_y
+        )
+        self.assertFalse(follow_painter.drawEllipse.called)
+
+        self.widget.set_reset_follow_active(True)
+        self.widget._draw_reset_follow_circle(
+            follow_painter, center_x, center_y
+        )
+
+        ring_pen = follow_painter.setPen.call_args.args[0]
+        self.assertEqual(ring_pen.style(), Qt.DotLine)
+        self.assertEqual(ring_pen.color(), QColor(160, 160, 160))
+        drift_rect = drift_painter.drawEllipse.call_args.args[0]
+        follow_rect = follow_painter.drawEllipse.call_args.args[0]
+        self.assertEqual(follow_rect.width(), drift_rect.width())
+        self.assertEqual(follow_rect.height(), drift_rect.height())
+
+        from src.config.config import VISUALIZATION_RANGE
+        yaw_ratio = max(-1.0, min(1.0, self.widget.yaw / VISUALIZATION_RANGE))
+        pitch_ratio = max(-1.0, min(1.0, -self.widget.pitch / VISUALIZATION_RANGE))
+        gadget_x = int(center_x + yaw_ratio * (self.widget.width() // 2 - 10))
+        gadget_y = int(center_y + pitch_ratio * (self.widget.height() // 2 - 10))
+        self.assertEqual(follow_rect.x(), gadget_x - follow_rect.width() // 2)
+        self.assertEqual(follow_rect.y(), gadget_y - follow_rect.height() // 2)
+
 
 if __name__ == "__main__":
     unittest.main()

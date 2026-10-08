@@ -133,6 +133,19 @@ class CenterAssistTests(unittest.TestCase):
         for angle in output[:3]:
             self.assertLess(abs(angle), 0.01)
 
+    def test_center_assist_tracks_full_pose_recenter_origin(self):
+        filter_instance = self.make_filter()
+        filter_instance.q = filter_instance._quat_from_euler(4.0, 0.0, 0.0)
+        filter_instance.recenter_to_current()
+        filter_instance.q = filter_instance._quat_from_euler(8.0, 0.0, 0.0)
+
+        output = self.run_stationary(filter_instance, 14.0)[-1]
+
+        self.assertLess(abs(output[0]), 0.01)
+        self.assertTrue(output[3])
+        self.assertTrue(output[4])
+        self.assertEqual(filter_instance.center_offset_yaw, 0.0)
+
     def test_residual_gyro_bias_is_still_corrected_after_engagement(self):
         filter_instance = self.make_filter()
         self.run_stationary(filter_instance, 6.0)

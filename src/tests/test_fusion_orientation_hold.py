@@ -30,6 +30,42 @@ class OrientationHoldTests(unittest.TestCase):
             sensor_pose,
         )
 
+    def test_recenter_to_current_sets_full_output_pose_as_zero(self):
+        self.filter.center_offset_yaw = 4.0
+        self.filter.center_offset_pitch = -3.0
+        self.filter.center_offset_roll = 2.0
+        self.filter.q = self.filter._quat_from_euler(37.0, 14.0, -12.0)
+        self.filter.last_time = 0.0
+
+        self.filter.recenter_to_current()
+        centered_pose = self.filter.update(
+            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.01
+        )[:3]
+        self.assertAlmostEqual(centered_pose[0], 0.0)
+        self.assertAlmostEqual(centered_pose[1], 0.0)
+        self.assertAlmostEqual(centered_pose[2], 0.0)
+
+        self.filter.q = self.filter._quat_from_euler(47.0, 20.0, -10.0)
+        moved_pose = self.filter.update(
+            (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), 0.02
+        )[:3]
+        self.assertAlmostEqual(moved_pose[0], 10.0)
+        self.assertAlmostEqual(moved_pose[1], 6.0)
+        self.assertAlmostEqual(moved_pose[2], 2.0)
+        self.assertEqual(self.filter.center_offset_yaw, 4.0)
+        self.assertEqual(self.filter.center_offset_pitch, -3.0)
+        self.assertEqual(self.filter.center_offset_roll, 2.0)
+
+    def test_normal_filter_reset_clears_full_pose_recenter_offsets(self):
+        self.filter.q = self.filter._quat_from_euler(30.0, 10.0, -5.0)
+        self.filter.recenter_to_current()
+
+        self.filter.reset()
+
+        self.assertEqual(self.filter.recenter_offset_yaw, 0.0)
+        self.assertEqual(self.filter.recenter_offset_pitch, 0.0)
+        self.assertEqual(self.filter.recenter_offset_roll, 0.0)
+
     def test_resume_blends_smoothly_to_current_sensor_pose(self):
         held_pose = self.filter.apply_orientation_hold(0.0, 0.0, 0.0, now=0.0)
         self.filter.set_orientation_hold(True, now=0.0)

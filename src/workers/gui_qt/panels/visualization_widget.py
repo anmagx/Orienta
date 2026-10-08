@@ -39,6 +39,7 @@ class OrientationVisualizationWidget(QWidget):
         self.yaw = 0.0
         self.roll = 0.0
         self.held_orientation = None
+        self.reset_follow_active = False
         
         # Drift correction status
         self.drift_correction_active = False
@@ -79,6 +80,11 @@ class OrientationVisualizationWidget(QWidget):
     def clear_held_orientation(self):
         """Remove the held-pose marker."""
         self.held_orientation = None
+        self.update()
+
+    def set_reset_follow_active(self, active):
+        """Show or hide the recenter-on-release guide."""
+        self.reset_follow_active = bool(active)
         self.update()
 
     def update_drift_correction(self, active):
@@ -207,6 +213,7 @@ class OrientationVisualizationWidget(QWidget):
         
         # Draw drift correction circle
         self._draw_drift_correction_circle(painter, center_x, center_y)
+        self._draw_reset_follow_circle(painter, center_x, center_y)
 
     def _draw_held_orientation_indicator(self, painter, center_x, center_y, width, height):
         """Draw a live-style held marker with a yellow dotted orientation line."""
@@ -412,8 +419,49 @@ class OrientationVisualizationWidget(QWidget):
         Forms a circle when yaw and pitch angles are equal, ellipse when different.
         Red outline at all times, blue filled when drift correction is active.
         """
-        colors = self._get_theme_colors()
-        
+        ellipse_rect = self._get_drift_correction_ellipse_rect(center_x, center_y)
+
+        if self.drift_correction_active:
+            # Active: Blue filled with red outline
+            painter.setBrush(QColor(100, 150, 255, 100))  # Semi-transparent blue fill
+            painter.setPen(QPen(QColor(255, 50, 50), max(1, int(LINE_THICKNESS * 2))))  # Red outline
+            painter.drawEllipse(ellipse_rect)
+        else:
+            # Inactive: Red outline only
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(255, 50, 50), max(1, int(LINE_THICKNESS * 2))))  # Red outline
+            painter.drawEllipse(ellipse_rect)
+
+    def _draw_reset_follow_circle(self, painter, center_x, center_y):
+        """Outline the live orientation gadget while Reset Orientation is held."""
+        if not self.reset_follow_active:
+            return
+
+        try:
+            from src.config.config import VISUALIZATION_RANGE
+            current_range = VISUALIZATION_RANGE
+        except Exception:
+            current_range = getattr(self, 'range_degrees', 25.0)
+
+        yaw_ratio = max(-1.0, min(1.0, self.yaw / current_range))
+        pitch_ratio = max(-1.0, min(1.0, -self.pitch / current_range))
+        gadget_x = int(center_x + yaw_ratio * (self.width() // 2 - 10))
+        gadget_y = int(center_y + pitch_ratio * (self.height() // 2 - 10))
+        ellipse_rect = self._get_drift_correction_ellipse_rect(
+            gadget_x, gadget_y
+        )
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(
+            QPen(
+                QColor(160, 160, 160),
+                max(1, int(LINE_THICKNESS * 2)),
+                Qt.DotLine,
+            )
+        )
+        painter.drawEllipse(ellipse_rect)
+
+    def _get_drift_correction_ellipse_rect(self, center_x, center_y):
+        """Calculate the guide ellipse using the configured yaw/pitch angles."""
         # Get current range from config (allows dynamic updates)
         try:
             from src.config.config import VISUALIZATION_RANGE
@@ -437,21 +485,14 @@ class OrientationVisualizationWidget(QWidget):
         ellipse_width_pixels = max(4, min(ellipse_width_pixels, usable_radius * 2))
         ellipse_height_pixels = max(4, min(ellipse_height_pixels, usable_radius * 2))
         
-        # Calculate ellipse rectangle
         ellipse_rect_x = center_x - ellipse_width_pixels // 2
         ellipse_rect_y = center_y - ellipse_height_pixels // 2
-        
-        if self.drift_correction_active:
-            # Active: Blue filled with red outline
-            painter.setBrush(QColor(100, 150, 255, 100))  # Semi-transparent blue fill
-            painter.setPen(QPen(QColor(255, 50, 50), max(1, int(LINE_THICKNESS * 2))))  # Red outline
-            painter.drawEllipse(ellipse_rect_x, ellipse_rect_y, ellipse_width_pixels, ellipse_height_pixels)
-        else:
-            # Inactive: Red outline only
-            from PyQt5.QtCore import Qt as _Qt
-            painter.setBrush(_Qt.NoBrush)  # No fill
-            painter.setPen(QPen(QColor(255, 50, 50), max(1, int(LINE_THICKNESS * 2))))  # Red outline
-            painter.drawEllipse(ellipse_rect_x, ellipse_rect_y, ellipse_width_pixels, ellipse_height_pixels)
+        return QRect(
+            ellipse_rect_x,
+            ellipse_rect_y,
+            ellipse_width_pixels,
+            ellipse_height_pixels,
+        )
 
 
 class SquareContainer(QWidget):

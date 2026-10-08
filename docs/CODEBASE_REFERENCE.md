@@ -134,7 +134,11 @@ This large module is the primary feature surface:
   Its Hold Orientation toggle freezes published output without stopping sensor
   fusion, then returns to live tracking using the configured drift smoothing
   time, transition curve, and correction strength. Hold can be configured as
-  momentary or toggle behavior in Preferences.
+  momentary or toggle behavior in Preferences. Reset Orientation defaults to
+  its existing immediate reset; its optional Toggle follow mode recenters the
+  full current pose when the button or shortcut is released and displays a
+  dotted gray guide matching the configured drift-angle region around the live
+  orientation marker while held.
 * `hold_panel.py` provides the animated `HoldPanelQt` status banner.
 * `two_line_button.py` provides the reusable shortcut-aware button.
 * `shortcut_dialog.py` owns keyboard/gamepad capture through the input worker.
@@ -164,7 +168,8 @@ the similarly named orientation class.
 
 `PreferencesPanel` supplies theme, fusion tuning, stationary/drift behavior,
 gyro calibration sample count, axis inversion, disengage-mode controls, and
-the momentary/toggle preference for Hold Orientation.
+the momentary/toggle preference for Hold Orientation, plus Reset Orientation's
+Toggle follow option.
 Several sliders use one-shot QTimers so a drag does not flood the small fusion
 control queue. `_apply_settings_to_fusion_worker()` is the bridge from saved
 UI state back to runtime commands. New persisted fusion options need:

@@ -70,6 +70,9 @@ class QuaternionComplementaryFilter:
         self.center_offset_roll = 0.0
         # Allow yaw offset placeholder for completeness
         self.center_offset_yaw = 0.0
+        self.recenter_offset_yaw = 0.0
+        self.recenter_offset_pitch = 0.0
+        self.recenter_offset_roll = 0.0
         # mark if a center offset has been set
         self.center_calibrated = False
         self.gyro_calibrated = False
@@ -144,6 +147,27 @@ class QuaternionComplementaryFilter:
         y = cr * sp * cy + sr * cp * sy
         z = cr * cp * sy - sr * sp * cy
         return (w, x, y, z)
+
+    def recenter_to_current(self):
+        """Set the output origin to the filter's current full orientation."""
+        yaw, pitch, roll = self._euler_from_quat(self.q)
+        self.recenter_offset_yaw = normalize_angle(
+            yaw - self.center_offset_yaw
+        )
+        self.recenter_offset_pitch = normalize_angle(
+            pitch - self.center_offset_pitch
+        )
+        self.recenter_offset_roll = normalize_angle(
+            roll - self.center_offset_roll
+        )
+        self._drift_correction_start = None
+        return yaw, pitch, roll
+
+    def clear_recenter_offsets(self):
+        """Restore the calibrated center offsets as the output origin."""
+        self.recenter_offset_yaw = 0.0
+        self.recenter_offset_pitch = 0.0
+        self.recenter_offset_roll = 0.0
 
     def _slerp(self, a, b, t):
         """Spherical linear interpolation between quaternions for smoother drift correction.
@@ -397,12 +421,22 @@ class QuaternionComplementaryFilter:
             # q wasn't reconstructed from known angles here, so it must be decomposed.
             yaw_est, pitch_est, roll_est = self._euler_from_quat(q)
 
-        # Check if we're looking approximately straight ahead AFTER accel correction
-        # Compare against configured center offsets so drift correction can operate
-        # when a user-defined rest offset exists.
-        is_near_center = (_angle_diff_fast(yaw_est, self.center_offset_yaw) < self.center_threshold_yaw and 
-                 _angle_diff_fast(pitch_est, self.center_offset_pitch) < self.center_threshold_pitch and
-                 _angle_diff_fast(roll_est, self.center_offset_roll) < self.center_threshold_roll)
+        # Drift assistance follows the current output origin, including any
+        # user recentering, without changing the stored level-calibration offsets.
+        target_yaw = normalize_angle(
+            self.center_offset_yaw + self.recenter_offset_yaw
+        )
+        target_pitch = normalize_angle(
+            self.center_offset_pitch + self.recenter_offset_pitch
+        )
+        target_roll = normalize_angle(
+            self.center_offset_roll + self.recenter_offset_roll
+        )
+        is_near_center = (
+            _angle_diff_fast(yaw_est, target_yaw) < self.center_threshold_yaw
+            and _angle_diff_fast(pitch_est, target_pitch) < self.center_threshold_pitch
+            and _angle_diff_fast(roll_est, target_roll) < self.center_threshold_roll
+        )
         
         # Apply drift correction when stationary and near center
         drift_active = False
@@ -419,21 +453,21 @@ class QuaternionComplementaryFilter:
             # either just built from these or decomposed once already).
             current_yaw, current_pitch, current_roll = yaw_est, pitch_est, roll_est
 
-            # Work in the *relative* frame defined by center offsets so drift
-            # correction brings the sensor toward the user-defined rest pose.
-            rel_yaw = normalize_angle(current_yaw - self.center_offset_yaw)
-            rel_pitch = normalize_angle(current_pitch - self.center_offset_pitch)
-            rel_roll = normalize_angle(current_roll - self.center_offset_roll)
+            # Correct relative to the output origin while leaving the
+            # calibrated center offsets unchanged.
+            rel_yaw = normalize_angle(current_yaw - target_yaw)
+            rel_pitch = normalize_angle(current_pitch - target_pitch)
+            rel_roll = normalize_angle(current_roll - target_roll)
 
             # Apply gentle per-frame correction toward zero in relative frame
             corrected_rel_yaw = rel_yaw * (1.0 - correction_strength)
             corrected_rel_pitch = rel_pitch * (1.0 - correction_strength)
             corrected_rel_roll = rel_roll * (1.0 - correction_strength)
 
-            # Convert back to absolute angles by re-applying center offsets
-            corrected_yaw = normalize_angle(corrected_rel_yaw + self.center_offset_yaw)
-            corrected_pitch = normalize_angle(corrected_rel_pitch + self.center_offset_pitch)
-            corrected_roll = normalize_angle(corrected_rel_roll + self.center_offset_roll)
+            # Convert back to absolute angles by re-applying the output origin.
+            corrected_yaw = normalize_angle(corrected_rel_yaw + target_yaw)
+            corrected_pitch = normalize_angle(corrected_rel_pitch + target_pitch)
+            corrected_roll = normalize_angle(corrected_rel_roll + target_roll)
 
             # Convert corrected Euler angles back to quaternion
             q = self._quat_from_euler(corrected_yaw, corrected_pitch, corrected_roll)
@@ -462,9 +496,15 @@ class QuaternionComplementaryFilter:
 
         # Apply user/mount center offsets (subtract stored rest offsets)
         try:
-            yaw = normalize_angle(yaw - self.center_offset_yaw)
-            pitch = normalize_angle(pitch - self.center_offset_pitch)
-            roll = normalize_angle(roll - self.center_offset_roll)
+            yaw = normalize_angle(
+                yaw - self.center_offset_yaw - self.recenter_offset_yaw
+            )
+            pitch = normalize_angle(
+                pitch - self.center_offset_pitch - self.recenter_offset_pitch
+            )
+            roll = normalize_angle(
+                roll - self.center_offset_roll - self.recenter_offset_roll
+            )
         except Exception:
             # In case offsets are not numeric for some reason, ignore
             pass
@@ -474,6 +514,7 @@ class QuaternionComplementaryFilter:
     def reset(self):
         """Reset quaternion orientation to identity (zero rotation)."""
         self.q = (1.0, 0.0, 0.0, 0.0)
+        self.clear_recenter_offsets()
         self._drift_correction_start = None
     
     
@@ -573,10 +614,48 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                             "Fusion Worker",
                             f"Invalid orientation hold command: {cmd}",
                         )
+                elif cmd == 'recenter_orientation_to_current' or (
+                    isinstance(cmd, (list, tuple))
+                    and len(cmd) >= 1
+                    and cmd[0] == 'recenter_orientation_to_current'
+                ):
+                    try:
+                        drained_samples = 0
+                        while drained_samples < 50:
+                            line = safe_queue_get(serialQueue, timeout=0.0, default=None)
+                            if line is None:
+                                break
+                            drained_samples += 1
+                            try:
+                                timestamp, accel, gyro = parse_imu_line(line)
+                            except ValueError:
+                                continue
+                            filter.update(gyro, accel, timestamp)
+
+                        # A pending level calibration belongs to the old
+                        # center; keep this explicit full-pose origin instead.
+                        if hasattr(filter, '_pending_center_cal'):
+                            del filter._pending_center_cal
+                        current_pose = filter.recenter_to_current()
+                        log_info(
+                            logQueue,
+                            "Fusion Worker",
+                            "Output recentered to current pose "
+                            f"(yaw={current_pose[0]:.3f}, "
+                            f"pitch={current_pose[1]:.3f}, "
+                            f"roll={current_pose[2]:.3f})",
+                        )
+                    except Exception as e:
+                        log_warning(
+                            logQueue,
+                            "Fusion Worker",
+                            f"Error recentering output to current pose: {e}",
+                        )
                 elif cmd == 'reset_orientation' or (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'reset_orientation'):
                     # Reset orientation state but preserve calibration/bias.
                     # Minimal fix: seed filter quaternion from latest accel sample so
                     # we don't emit a forced one-frame zero that causes a visible pitch jump.
+                    filter.clear_recenter_offsets()
                     try:
                         seeded = False
                         latest_line = None
