@@ -126,7 +126,7 @@ class TabbedGUIWorker(QMainWindow):
         
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(4)
-        main_layout.setContentsMargins(8, 8, 8, 8)
+        main_layout.setContentsMargins(4, 4, 4, 4)
         
         # Use a single-pane layout (tabbed layout removed)
         # The orientation panel is the main content; other panels are exposed via dialogs
