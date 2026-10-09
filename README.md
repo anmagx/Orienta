@@ -53,9 +53,11 @@ After running `build\dev\setup_dev.bat`, build a single-file, windowed executabl
 build\build_exe.bat
 ```
 
-The script installs the pinned build requirements and creates `build\dist\Orienta.exe`
-from `build\orienta.spec`. The executable includes the application icon, logo,
-and themes. Preferences and logs are stored outside the executable, as described
+The script installs the pinned build requirements and creates
+`build\dist\Orienta-<version>.exe` from `build\orienta.spec`, using the
+`APP_VERSION` in `src\config\config.py` for both the filename and Windows
+file/product version. The executable includes the application icon, logo, and
+themes. Preferences and logs are stored outside the executable, as described
 in [User data](#user-data).
 
 ## Requirements
@@ -108,7 +110,7 @@ full reset clears all three bias estimates.
 
 ### User data
 
-Preferences and logs are stored in `%LOCALAPPDATA%\Orienta`, for both source
+Preferences and logs are stored in `%LOCALAPPDATA%\Orienta`, for both build/dev
 and packaged executable runs. The directory is created automatically:
 
 - `config.cfg` stores user preferences.
