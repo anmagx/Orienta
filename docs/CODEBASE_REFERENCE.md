@@ -73,15 +73,19 @@ Important state fields:
 
 * `q`: normalized orientation quaternion `[w, x, y, z]`;
 * `last_time`: IMU timing baseline, not wall-clock time;
-* `gyro_bias_yaw`: stationary-estimated `gz` bias;
+* `gyro_bias_roll`, `gyro_bias_pitch`, `gyro_bias_yaw`: stationary-estimated raw
+  sensor `gx`, `gy`, `gz` biases, subtracted before integration and stationary detection;
 * `center_offset_*`: level/rest-pose offsets;
 * `center_threshold_*`: independent limits before auto-drift correction;
 * `invert_*`: output axis inversion;
 * `_stationary_start` and `_drift_correction_start`: timestamp-driven state.
 
-The helper `_calculate_drift_factor`, `_slerp`, and `_nlerp` are retained
-filter utilities. The active `update()` implementation uses the configured
-curve's per-frame correction calculation directly. Preserve math units:
+`_calculate_drift_factor` integrates the selected engagement ramp and returns
+an exponential per-frame attraction gain. Once engagement finishes, correction
+continues at a constant rate instead of stalling. `calibrate_gyro_bias` averages
+accepted raw X/Y/Z samples, and `_correct_gyro` subtracts those estimates.
+`_slerp` supports orientation hold/resume; `_nlerp` is a retained utility.
+Preserve math units:
 gyroscope input is degrees/second, quaternion integration converts it to
 radians/second, and all user-facing values are degrees.
 
@@ -127,15 +131,24 @@ deliberate latency protection.
 This large module is the primary feature surface:
 
 * `OrientationPanelQt` renders the orientation UI and owns fusion controls.
+  Its Hold Orientation toggle freezes published output without stopping sensor
+  fusion, then returns to live tracking using the configured drift smoothing
+  time, transition curve, and correction strength. Hold can be configured as
+  momentary or toggle behavior in Preferences. Reset Orientation recenters
+  the full current pose on release by default; its Instantaneous recenter
+  preference switches to recenter-on-click/key-press. The dotted gray guide
+  follows the live orientation marker while the button or shortcut is held.
 * `hold_panel.py` provides the animated `HoldPanelQt` status banner.
 * `two_line_button.py` provides the reusable shortcut-aware button.
 * `shortcut_dialog.py` owns keyboard/gamepad capture through the input worker.
 * `visualization_popup.py` owns visualization reparenting, popup geometry, and opacity.
-* `OrientationVisualizationWidget` paints orientation and drift indicators.
+* `OrientationVisualizationWidget` paints live orientation and drift
+  indicators, plus a matching marker for the pose captured when Hold
+  Orientation is activated; only its orientation line is yellow and dotted.
 * `SquareContainer` maintains a square visualization child.
 * `OrientationPanelQt` renders yaw/pitch/roll values and controls reset,
-  calibration, drift thresholds/disengagement, shortcuts, visualization, and
-  Monitor/Preferences/About dialogs.
+  calibration, drift thresholds/disengagement, orientation hold, shortcuts,
+  visualization, and Monitor/Preferences/About dialogs.
 
 `OrientationPanelQt` is also the consumer of `inputResponseQueue`. It sends
 fusion controls through its `control_queue`. `PreferencesPanel` connects to it
@@ -153,7 +166,8 @@ the similarly named orientation class.
 ### `src/workers/gui_qt/panels/preferences_panel.py`
 
 `PreferencesPanel` supplies theme, fusion tuning, stationary/drift behavior,
-gyro calibration sample count, axis inversion, and disengage-mode controls.
+gyro calibration sample count, axis inversion, and behavior preferences for
+Disengage, Hold Orientation, and Reset Orientation.
 Several sliders use one-shot QTimers so a drag does not flood the small fusion
 control queue. `_apply_settings_to_fusion_worker()` is the bridge from saved
 UI state back to runtime commands. New persisted fusion options need:

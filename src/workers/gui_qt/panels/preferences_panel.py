@@ -43,9 +43,11 @@ class PreferencesPanel(QWidget):
         """
         super().__init__(parent)
         self.prefs_manager = preferences_manager or PreferencesManager()
-        # Shortcuts are owned by OrientationPanelQt; this panel only mirrors the
-        # toggle mode for its checkbox and never persists shortcut state itself.
+        # Shortcuts are owned by OrientationPanelQt; this panel owns button
+        # behavior preferences.
         self.disengage_toggle_mode = False  # False = hold to disengage, True = toggle on/off
+        self.orientation_hold_toggle_mode = False
+        self.reset_orientation_instantaneous = False
         self.orientation_panel = None  # Will be set by parent
         self.control_queue = control_queue
         self.udp_control_queue = udp_control_queue
@@ -177,23 +179,52 @@ class PreferencesPanel(QWidget):
         send_rate_group.setLayout(send_rate_layout)
         layout.addWidget(send_rate_group)
         
-        # Keyboard shortcuts group
+        # Button behavior controls
         # Note: The actual "Set Shortcut..." controls for Reset Orientation and
         # Disengage Drift Correction live next to their respective buttons in
         # the Orientation panel, which also owns their state and persistence.
-        # Only the disengage hold/toggle mode behavior is configurable here.
-        shortcuts_group = QGroupBox("Disengage Behavior")
-        shortcuts_layout = QVBoxLayout()
-        
-        # Toggle mode checkbox for disengage
+        # Button hold/toggle behavior is configurable here.
         from PyQt5.QtWidgets import QCheckBox
-        self.disengage_toggle_checkbox = QCheckBox("Toggle mode (press once to disengage, press again to re-engage)")
+        button_behavior_group = QGroupBox("Button Behavior")
+        button_behavior_layout = QVBoxLayout()
+
+        self.disengage_toggle_checkbox = QCheckBox(
+            "Disengage Drift Correction: toggle mode "
+            "(press once to disengage, again to re-engage)"
+        )
         self.disengage_toggle_checkbox.setChecked(self.disengage_toggle_mode)
         self.disengage_toggle_checkbox.stateChanged.connect(self._on_disengage_toggle_changed)
-        shortcuts_layout.addWidget(self.disengage_toggle_checkbox)
-        
-        shortcuts_group.setLayout(shortcuts_layout)
-        layout.addWidget(shortcuts_group)
+        button_behavior_layout.addWidget(self.disengage_toggle_checkbox)
+
+        self.orientation_hold_toggle_checkbox = QCheckBox(
+            "Hold Orientation: toggle mode (press once to hold, again to resume)"
+        )
+        self.orientation_hold_toggle_checkbox.setChecked(
+            self.orientation_hold_toggle_mode
+        )
+        self.orientation_hold_toggle_checkbox.stateChanged.connect(
+            self._on_orientation_hold_toggle_changed
+        )
+        button_behavior_layout.addWidget(self.orientation_hold_toggle_checkbox)
+
+        self.reset_orientation_instantaneous_checkbox = QCheckBox(
+            "Reset Orientation: instantaneous recenter"
+        )
+        self.reset_orientation_instantaneous_checkbox.setChecked(
+            self.reset_orientation_instantaneous
+        )
+        self.reset_orientation_instantaneous_checkbox.setToolTip(
+            "Recenter immediately on button click or shortcut press. "
+            "When unchecked, hold the button or shortcut and recenter on release."
+        )
+        self.reset_orientation_instantaneous_checkbox.stateChanged.connect(
+            self._on_reset_orientation_instantaneous_changed
+        )
+        button_behavior_layout.addWidget(
+            self.reset_orientation_instantaneous_checkbox
+        )
+        button_behavior_group.setLayout(button_behavior_layout)
+        layout.addWidget(button_behavior_group)
         
         # Sensor configuration group
         sensor_group = QGroupBox("Sensor Configuration")
@@ -344,7 +375,7 @@ class PreferencesPanel(QWidget):
         drift_layout.addLayout(strength_layout)
         
         # Add info label describing smoothing, strength and curve options (bottom of calibration frame)
-        drift_info_label = QLabel("Smoothing time controls drift correction speed. Correction strength caps the maximum correction per frame (higher = stronger correction, may fight user input). Transition curves: exponential (original), cosine (smooth), linear, quadratic (sharp).")
+        drift_info_label = QLabel("Center assist gently attracts the pose toward center while stationary and near center; it is not an absolute heading measurement. Smoothing time controls engagement time and the sustained correction rate. Strength scales that rate (higher may fight small held glances). Curves control engagement: exponential (fast), cosine (smooth), linear, quadratic (slow start). Correction continues after engagement.")
         drift_info_label.setStyleSheet("color: #666666; font-size: 10px;")
         drift_info_label.setWordWrap(True)
         drift_info_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -438,7 +469,7 @@ class PreferencesPanel(QWidget):
         gyro_layout.addLayout(samples_layout)
         
         # Add info label for gyro calibration
-        gyro_info_label = QLabel("Number of samples collected when recalibrating gyro bias. More samples = better accuracy but slower calibration.")
+        gyro_info_label = QLabel("Number of stationary samples collected to estimate all three gyro biases (X/Y/Z). More samples = better accuracy but slower calibration.")
         gyro_info_label.setStyleSheet("color: #666666; font-size: 10px;")
         gyro_layout.addWidget(gyro_info_label)
         
@@ -822,6 +853,35 @@ class PreferencesPanel(QWidget):
         # Only emit if not loading to prevent duplicate saves during startup
         if not getattr(self, '_loading', False):
             self.preferences_changed.emit()
+
+    def _on_reset_orientation_instantaneous_changed(self, state):
+        """Apply and persist immediate versus release-triggered recentering."""
+        instantaneous = state == 2
+        if self.orientation_panel:
+            self.orientation_panel.set_reset_orientation_instantaneous(
+                instantaneous
+            )
+        self.reset_orientation_instantaneous = instantaneous
+        if not getattr(self, '_loading', False):
+            self.preferences_changed.emit()
+
+    def _on_orientation_hold_toggle_changed(self, state):
+        """Apply and persist toggle or momentary Hold Orientation behavior."""
+        toggle_mode = state == 2
+        if self.orientation_panel and not self.orientation_panel.set_orientation_hold_toggle_mode(
+            toggle_mode
+        ):
+            toggle_mode = bool(
+                self.orientation_panel.orientation_hold_toggle_mode
+            )
+            blocked = self.orientation_hold_toggle_checkbox.blockSignals(True)
+            self.orientation_hold_toggle_checkbox.setChecked(toggle_mode)
+            self.orientation_hold_toggle_checkbox.blockSignals(blocked)
+            return
+
+        self.orientation_hold_toggle_mode = toggle_mode
+        if not getattr(self, '_loading', False):
+            self.preferences_changed.emit()
     
     def _trigger_preference_save(self):
         """Trigger a debounced preference save."""
@@ -851,6 +911,14 @@ class PreferencesPanel(QWidget):
         self.drift_smoothing_time = DRIFT_SMOOTHING_TIME
         self.drift_transition_curve = DRIFT_TRANSITION_CURVE
         self.drift_correction_strength = 0.3  # Default
+        self.orientation_hold_toggle_mode = False
+        self.orientation_hold_toggle_checkbox.setChecked(False)
+        if self.orientation_panel:
+            self.orientation_panel.set_orientation_hold_toggle_mode(False)
+        self.reset_orientation_instantaneous = False
+        self.reset_orientation_instantaneous_checkbox.setChecked(False)
+        if self.orientation_panel:
+            self.orientation_panel.set_reset_orientation_instantaneous(False)
         
         # Reset gyro calibration parameters to defaults
         self.gyro_bias_cal_samples = GYRO_BIAS_CAL_SAMPLES
@@ -1029,6 +1097,40 @@ class PreferencesPanel(QWidget):
         self.disengage_toggle_mode = toggle_mode
         self.disengage_toggle_checkbox.setChecked(toggle_mode)
 
+        raw_hold_toggle_mode = cal_prefs.get(
+            'orientation_hold_toggle_mode',
+            getattr(self.orientation_panel, 'orientation_hold_toggle_mode', False),
+        )
+        if isinstance(raw_hold_toggle_mode, str):
+            hold_toggle_mode = raw_hold_toggle_mode.lower() in ('true', '1', 'yes')
+        else:
+            hold_toggle_mode = bool(raw_hold_toggle_mode)
+        self.orientation_hold_toggle_mode = hold_toggle_mode
+        self.orientation_hold_toggle_checkbox.setChecked(hold_toggle_mode)
+        if self.orientation_panel:
+            self.orientation_panel.set_orientation_hold_toggle_mode(
+                hold_toggle_mode
+            )
+
+        raw_instantaneous = cal_prefs.get(
+            'reset_orientation_instantaneous',
+            getattr(
+                self.orientation_panel,
+                'reset_orientation_instantaneous',
+                False,
+            ),
+        )
+        if isinstance(raw_instantaneous, str):
+            instantaneous = raw_instantaneous.lower() in ('true', '1', 'yes')
+        else:
+            instantaneous = bool(raw_instantaneous)
+        self.reset_orientation_instantaneous = instantaneous
+        self.reset_orientation_instantaneous_checkbox.setChecked(instantaneous)
+        if self.orientation_panel:
+            self.orientation_panel.set_reset_orientation_instantaneous(
+                instantaneous
+            )
+
     def _load_sensor_settings(self, cal_prefs):
         """Load sensor configuration settings from preferences."""
         # Convert string boolean values to actual booleans
@@ -1062,6 +1164,9 @@ class PreferencesPanel(QWidget):
             # Apply drift curve setting to fusion worker
             drift_curve = cal_prefs.get('drift_transition_curve', DRIFT_TRANSITION_CURVE)
             self._send_control_command(('set_drift_curve_type', drift_curve))
+            self._send_control_command(
+                ('set_drift_smoothing_time', self.drift_smoothing_time)
+            )
             
             # Apply alpha values to fusion worker
             if 'alpha_pitch' in cal_prefs:
@@ -1112,8 +1217,8 @@ class PreferencesPanel(QWidget):
     def get_tuning_preferences(self):
         """Get the fusion-tuning preferences owned by this panel.
 
-        Shortcut keys and the disengage toggle mode are intentionally excluded:
-        OrientationPanelQt owns those and reports them via its own get_prefs().
+        Shortcut keys and disengage toggle mode are owned by OrientationPanelQt.
+        This panel returns reset-timing and orientation-hold behavior settings.
         """
         return {
             'alpha_pitch': f"{self.alpha_pitch:.3f}",
@@ -1123,6 +1228,8 @@ class PreferencesPanel(QWidget):
             'drift_smoothing_time': f"{self.drift_smoothing_time:.1f}",
             'drift_correction_strength': f"{self.drift_correction_strength:.2f}",
             'drift_transition_curve': self.drift_transition_curve,
+            'orientation_hold_toggle_mode': self.orientation_hold_toggle_mode,
+            'reset_orientation_instantaneous': self.reset_orientation_instantaneous,
             'gyro_bias_cal_samples': str(self.gyro_bias_cal_samples),
             'invert_yaw': self.invert_yaw,
             'invert_pitch': self.invert_pitch,
