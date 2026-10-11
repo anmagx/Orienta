@@ -9,9 +9,10 @@ orientation conventions, or GUI-to-worker commands.
 
 Orienta is a Windows 3-DOF head tracker. An IMU connected over a serial port
 emits CSV samples. The application estimates yaw, pitch, and roll, displays
-them in a PyQt5 interface, and sends the resulting angles to opentrack via
-UDP. It does not estimate translation and it does not use a magnetometer, so
-yaw is gyro-integrated and is expected to drift over time.
+them in a PyQt5 interface, and publishes the resulting angles through one
+selected output: UDP to opentrack, direct FreeTrack 2.0, or NPClient. It
+does not estimate translation and it does not use a magnetometer, so yaw is
+gyro-integrated and is expected to drift over time.
 
 The application runs five child processes, plus two management threads in the
 parent process:
@@ -28,7 +29,7 @@ orienta.py (parent process)
     GUIWorker process (Qt event loop and QTimers)
     SerialWorker process
     FusionWorker process
-    UDPWorker process
+    OutputWorker process
 ```
 
 On Windows, `multiprocessing` uses spawn semantics. Worker entry points must
@@ -60,29 +61,29 @@ queues and event; no application state is reconstructed for it.
 ## Data-flow diagram
 
 ```text
- IMU firmware
-     | CSV: time,ax,ay,az,gx,gy,gz
-     v
- SerialWorker
-     | serialQueue (data, 300) ---------------------+
-     | serialDisplayQueue (display, 60)             |
-     v                                               v
- GUIWorker -> MessagePanel (raw serial)        FusionWorker
-                                                   | eulerQueue (data, 300)
-                                                   | eulerDisplayQueue (display, 60)
-                                                   v              v
-                                              UDPWorker        GUIWorker
-                                                   |              |
-                                   six little-endian doubles     orientation/UI state
-                                                   v
-                                                opentrack
+IMU firmware --serialQueue--> SerialWorker --serialQueue--> FusionWorker
+                                  |                           |
+                                  +--serialDisplayQueue       +--outputQueue--> OutputWorker
+                                  |                           |                     |
+                                  v                           +--eulerDisplayQueue  +--UDP
+                         GUI / MessagePanel                                      `--FT_SharedMem
+                                                                                      |
+                                                                        +-------------+-------------+
+                                                                        |                           |
+                                                               FreeTrack client DLL         NPClient DLL
+                                                                        |                           |
+                                                                FreeTrack games             TrackIR games
 ```
+
+`OutputWorker` also reports its active backend and send rate to the GUI over
+`statusQueue`.
 
 The duplicate queues are intentional:
 
-* **Pipeline queues** (`serialQueue`, `eulerQueue`) feed correctness-critical
-  consumers. A full queue drops a current frame rather than blocking the
-  real-time producer.
+* **Pipeline queues** (`serialQueue`, `outputQueue`) carry correctness-critical
+  samples. The output queue has one consumer; OutputWorker drains stale pose
+  backlog to the latest sample so scheduling delays do not accumulate tracking
+  latency.
 * **Display queues** are best-effort. The GUI drains them and retains only the
   most recent sample, avoiding growing display latency.
 * **Control/status queues** carry infrequent state changes and are deliberately
@@ -101,13 +102,13 @@ in [`src/config/config.py`](../src/config/config.py).
 | Queue | Writer(s) | Reader(s) | Payload / meaning |
 |---|---|---|---|
 | `serialQueue` | Serial worker | Fusion worker | Raw IMU CSV string |
-| `eulerQueue` | Fusion worker | UDP worker | `[yaw, pitch, roll]` floats in degrees |
+| `outputQueue` | Fusion worker | Output worker | `[yaw, pitch, roll]` degrees; one selected protocol at a time |
 | `serialDisplayQueue` | Serial worker | GUI worker | Raw IMU CSV string; display only |
 | `eulerDisplayQueue` | Fusion worker | GUI worker | `[yaw, pitch, roll]`; display only |
 | `controlQueue` | GUI/Orientation/Preferences | Fusion worker | Fusion commands described below |
 | `serialControlQueue` | Connection panel | Serial worker | `('start', port, baud)` or `('stop',)` |
-| `udpControlQueue` | Connection panel | UDP worker | `('set_udp', host, port)`, `('udp_enable', bool)`, and `('set_rate', hz)` |
-| `statusQueue` | Serial, fusion, UDP workers | GUI worker | `(status_name, value)` worker state/rates |
+| `outputControlQueue` | GUI panels | Output worker | `('set_protocol', protocol)`, `('set_udp', host, port)`, `('set_enabled', bool)`, and `('set_rate', hz)` |
+| `statusQueue` | Serial, fusion, output workers | GUI worker | `(status_name, value)` worker state/rates |
 | `uiStatusQueue` | Serial and fusion workers | GUI worker | UI-specific `('serial_connection', state)` or `('processing', state)` |
 | `messageQueue` | Serial worker | GUI worker | Human-readable connection/reconnection text |
 | `inputCommandQueue` | GUI panels | Input worker | Input commands described below |
@@ -225,12 +226,20 @@ preserves all three gyro biases; full reset clears them.
 
 ## Output, UI, and input contracts
 
-### UDP
+### Output worker and backends
 
-[`udp_wrk.py`](../src/workers/udp_wrk.py) drains the available Euler backlog
-and sends only the latest sample. UDP is disabled at worker start and enabled only by
-`('udp_enable', True)`. Sends default to uncapped (matching fusion's raw
-output rate) and can optionally be capped via `('set_rate', hz)`, clamped to
+[`output_wrk.py`](../src/workers/output_wrk.py) owns the single bounded pose
+queue and dispatches each latest pose to exactly one backend. Protocol,
+enablement, UDP target, and rate-limit commands all use `outputControlQueue`.
+This keeps transport scheduling, backend lifecycle, and status reporting in
+one place while the packet and shared-memory mechanisms remain focused backend
+modules. On worker restart, the GUI resends the selected protocol and rate cap.
+
+[`udp_output.py`](../src/workers/udp_output.py) owns the UDP socket and
+serializes opentrack packets. UDP is disabled at worker start and enabled only
+by `('set_enabled', True)` with the UDP protocol selected. Sends default to
+uncapped (matching fusion's raw output rate) and can optionally be capped via
+`('set_rate', hz)`, clamped to
 `OUTPUT_RATE_MIN_HZ..OUTPUT_RATE_MAX_HZ`; a rate of `0` restores uncapped
 sending. Each packet is exactly:
 
@@ -238,9 +247,85 @@ sending. Each packet is exactly:
 struct.pack("<6d", 0.0, 0.0, 0.0, yaw, pitch, roll)
 ```
 
-It uses six little-endian doubles, translation first, which is the opentrack
-UDP ordering. Do not send `[yaw, pitch, roll]` directly without preserving the
-three leading zero translations.
+The packet uses six little-endian doubles, translation first, which is
+opentrack's UDP ordering. Do not send `[yaw, pitch, roll]` directly without
+preserving the three leading zero translations.
+
+### FreeTrack 2.0 and NPClient
+
+The Connection panel selects exactly one protocol. Fusion publishes every
+valid pose to `outputQueue`; the OutputWorker dispatches it only to the
+selected backend. Protocol choice, UDP destination/rate, and enabled state all
+travel over a single `outputControlQueue`; the shared-memory backend owns its
+Windows mapping only while either direct protocol is enabled.
+Changing the output while Orienta runs switches backends in queue order.
+Games may cache the game-facing DLL they loaded at startup, so changing
+between FreeTrack and NPClient can require restarting the game.
+
+[`shared_memory_output.py`](../src/workers/shared_memory_output.py) is the
+focused shared-memory backend. It opens the Windows `FT_SharedMem` mapping and
+`FT_Mutext` mutex only while direct output is enabled. It publishes the
+fixed-width `FTHeap` structure, uses radians and FreeTrack yaw/pitch axis signs,
+and sends zero translation. The initial implementation mirrors the published
+pose into the raw-pose fields because the fusion pipeline does not expose a
+distinct raw pose. A pre-existing mapping is reused without resetting its
+frame counter because game readers may keep the mapping alive while output is
+stopped. A separate Orienta-only mutex prevents a second Orienta process from
+publishing concurrently. The publisher responds to a new `GameID` by looking
+it up in the bundled
+FaceTrackNoIR supported-games catalog, echoing it to `GameID2`, setting its
+8-byte response table (zero for legacy V160 entries and unknown IDs), and
+resetting `DataID`. Duplicate IDs use their first catalog entry, matching
+OpenTrack lookup behavior. The NPClient DLL applies the LinuxTrack data
+transform when the game ID and response ID match and the table is nonzero.
+
+`data/facetracknoir_supported_games.csv` is the FaceTrackNoIR catalog used by
+the publisher, obtained from the
+[FaceTrackNoIR Supported Games download](https://sourceforge.net/projects/facetracknoir/files/FaceTrackNoIR%20Supported%20Games.csv/download).
+`data/FACETRACKNOIR-COPYING.txt` carries the associated FaceTrackNoIR
+permission and attribution notice; both are included in the packaged
+executable. The catalog loader validates the expected columns and
+response-table encodings; duplicate game IDs use the first row, matching the
+reference lookup order.
+
+`native/freetrack_client/` contains Orienta's game-facing FreeTrack DLL for
+32-bit and 64-bit games. It copies frames under the FreeTrack mutex and exports
+the FreeTrack client entry points. On enable, the GUI stages both DLLs under
+`%LOCALAPPDATA%\Orienta\FreeTrackClient` and registers the per-user FreeTrack
+client path. It restores the previous value only if the registry still points
+to Orienta.
+
+The output worker chooses this shared-memory backend for both FreeTrack 2.0
+and NPClient. The game-facing protocols remain distinct: `native/freetrack_client/`
+supplies the FreeTrack API DLL, while `native/npclient/` supplies the NPClient
+API DLL. Neither game-facing DLL depends on the other.
+
+`native/npclient/` contains Orienta's x86/x64 NPClient-compatible DLLs. The
+implementation is derived from uglyDwarf's LinuxTrack NPClient work under the
+MIT license; its source attribution and license are included in that folder.
+It reads the same `FT_SharedMem` mapping using `FT_Mutext`, scales poses to
+NPClient axis units, and exports the `NP_*` entry points. Its `NP_GetSignature`
+payload matches the LinuxTrack compatibility payload. On enable, Orienta stages the DLLs under
+`%LOCALAPPDATA%\Orienta\NPClient` and registers that path at
+`Software\NaturalPoint\NATURALPOINT\NPClient Location`. It restores the prior
+value on disable or GUI exit only if Orienta still owns it.
+An unregistered second GUI session does not restore another session's client
+path; crash recovery explicitly takes ownership of the saved registration
+before restoring it. NPClient treats a finite centered pose as valid once the
+publisher has initialized the mapping's camera dimensions. DLL unloading
+releases its mapping and mutex handles.
+`NPClient.log` beside the DLL records first API calls, mapping failures, and
+sampled source/converted poses and game IDs (the first five frames, then every
+120 frames) so discovery, shared-memory, handshake, and pose-conversion
+failures can be distinguished.
+
+Start the selected output before launching a game so it can load the registered
+client and find the live mapping; keep Orienta running during tracking. The
+registration backups persist so a later Orienta session can recover them after
+a crash. `build/build_game_clients.bat` builds and smoke-tests both
+protocols for x86 and x64. DCS 2.9.30 was verified to discover the NPClient
+device and move the in-game view; catalog entries for other games are not a
+guarantee that each title has been tested with Orienta.
 
 ### GUI
 
@@ -254,7 +339,9 @@ refreshes widgets. It owns the single-window layout:
    reusable status/button/input-dialog widgets. `visualization_popup.py` owns
    popup reparenting and geometry persistence. The orientation panel remains
    the coordinator and fusion-control owner.
-* `ConnectionPanelQt` starts/stops serial and UDP and displays rates/state.
+* `ConnectionPanelQt` separates Input (serial) from Output (UDP, FreeTrack, or
+  NPClient),
+  starts/stops the selected path, and displays input/output rates and state.
 * `MessagePanelQt`, `PreferencesPanel`, and `AboutPanel` are shared instances
   opened in dialogs rather than persistent tabs.
 
@@ -285,8 +372,8 @@ Orientation is momentary by default (held while its button or shortcut is
 pressed); the Preferences panel can enable toggle behavior instead.
 
 Orientation hold is a toggle. While held, the fusion filter continues updating
-from sensor data. UDP output remains at the held pose, while the display queue
-continues carrying live orientation for the visualization. Turning hold off
+from sensor data. The selected output remains at the held pose, while the
+display queue continues carrying live orientation for the visualization. Turning hold off
 blends the held output quaternion back to the live filtered orientation over
 the configured drift smoothing time, transition curve, and correction strength.
 The GUI visualization retains a live-style marker at the pose captured when
@@ -329,12 +416,14 @@ Before changing this design:
 
 1. Trace the queue's single writer and all readers; do not assume queues
    broadcast.
-2. Preserve `[yaw, pitch, roll]` throughout the pipeline and `<6d` UDP
-   serialization.
-3. Keep the GUI as the sole Qt-widget owner process.
-4. Make every blocking loop observe `stop_event`, use bounded queue waits, and
+2. Preserve `[yaw, pitch, roll]` through `outputQueue`, `<6d` UDP
+   serialization, and protocol-specific shared-memory conversion.
+3. Keep one consumer of `outputQueue`; OutputWorker dispatches each pose only
+   to its selected backend.
+4. Keep the GUI as the sole Qt-widget owner process.
+5. Make every blocking loop observe `stop_event`, use bounded queue waits, and
    close external resources in `finally`.
-5. Update preferences load, save, and fusion command application together for
+6. Update preferences load, save, and fusion command application together for
    new persisted controls.
-6. Update this document and `CODEBASE_REFERENCE.md` when a queue, command,
+7. Update this document and `CODEBASE_REFERENCE.md` when a queue, command,
    process, or persistent preference changes.

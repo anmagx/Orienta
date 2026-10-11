@@ -1,18 +1,19 @@
 """
-PyQt Connection Panel for orienta GUI.
+PyQt connection panel for serial input and selectable orientation output.
 
-Merges the former Serial Reader and Network Settings panels into a single
-panel. Input boxes for serial port, baud rate, UDP IP, and UDP port are laid
-out on the left; the Start/Stop Serial and Start/Stop UDP buttons (with their
-status indicators) are laid out on the right.
 """
 
-from PyQt5.QtWidgets import (QLabel, QComboBox, QLineEdit, QPushButton,
-                             QFrame, QGridLayout, QSizePolicy)
+from PyQt5.QtWidgets import (
+    QLabel, QComboBox, QLineEdit, QFrame, QGridLayout, QHBoxLayout,
+    QVBoxLayout, QSizePolicy
+)
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFontMetrics, QIntValidator
 
-from .base_panel import BasePanelQt, CONTENT_MARGINS, DEFAULT_SPACING, BUTTON_EXTRA_HEIGHT, BUTTON_MIN_HEIGHT, LINE_THICKNESS
+from .base_panel import (
+    BasePanelQt, CONTENT_MARGINS, DEFAULT_SPACING, BUTTON_EXTRA_HEIGHT,
+    BUTTON_MIN_HEIGHT, LINE_THICKNESS
+)
 from .two_line_button import TwoLineButton
 
 from src.config.config import (
@@ -20,29 +21,46 @@ from src.config.config import (
     DEFAULT_SERIAL_BAUD,
     DEFAULT_UDP_IP,
     DEFAULT_UDP_PORT,
-    QUEUE_PUT_TIMEOUT
+    DEFAULT_OUTPUT_PROTOCOL,
+    OUTPUT_PROTOCOL_UDP,
+    OUTPUT_PROTOCOL_FREETRACK,
+    OUTPUT_PROTOCOL_NPCLIENT,
+    QUEUE_PUT_TIMEOUT,
 )
 from src.util.error_utils import safe_queue_put
 
 
 class ConnectionPanelQt(BasePanelQt):
-    """Combined serial + UDP connection panel."""
+    """Input serial settings and one selectable output protocol."""
 
-    def __init__(self, parent, serial_control_queue, udp_control_queue, message_callback,
-                 padding=6, on_serial_stop=None):
+    def __init__(
+        self,
+        parent,
+        serial_control_queue,
+        output_control_queue,
+        message_callback,
+        padding=6,
+        on_serial_stop=None,
+        freetrack_client_registration=None,
+        npclient_registration=None,
+    ):
         """
         Initialize the PyQt Connection Panel.
 
         Args:
             parent: Parent PyQt widget
             serial_control_queue: Queue for sending commands to serial worker
-            udp_control_queue: Queue for sending commands to UDP worker
+            output_control_queue: Queue for output selection, configuration and state
+            freetrack_client_registration: Optional per-user client DLL registration
+            npclient_registration: Optional per-user NPClient DLL registration
             message_callback: Callable to display messages
             padding: Padding for the frame (default: 6)
             on_serial_stop: Optional callback invoked when serial is stopped
         """
         self.serial_control_queue = serial_control_queue
-        self.udp_control_queue = udp_control_queue
+        self.output_control_queue = output_control_queue
+        self.freetrack_client_registration = freetrack_client_registration
+        self.npclient_registration = npclient_registration
         self.on_serial_stop = on_serial_stop
         self.padding = padding
 
@@ -59,16 +77,15 @@ class ConnectionPanelQt(BasePanelQt):
         self._data_activity_timer.setSingleShot(True)
         self._last_data_time = 0
 
-        # UDP state (same as former NetworkPanelQt)
+        # Output state
         self._udp_ip = DEFAULT_UDP_IP
         self._udp_port = str(DEFAULT_UDP_PORT)
-        self.udp_enabled = False
-        self._udp_btn_text = "Start UDP"
-        self._udp_status_text = "UDP Disabled"
+        self.output_protocol = DEFAULT_OUTPUT_PROTOCOL
+        self.output_enabled = False
 
         # Rate text placeholders (shown inside buttons)
         self._serial_rate_text = "0.0 msg/s"
-        self._udp_rate_text = "0.0 msg/s"
+        self._output_rate_text = "0.0 msg/s"
 
         super().__init__(parent, "Connection", message_callback=message_callback)
 
@@ -99,12 +116,13 @@ class ConnectionPanelQt(BasePanelQt):
         left_widget_layout.setContentsMargins(0, 0, 0, 0)
         left_widget_layout.setSpacing(DEFAULT_SPACING)
 
-        # Left column: Serial inputs (vertical stack)
+        # Input: serial settings and connection control
         left_col = QFrame()
         left_col_layout = QVBoxLayout(left_col)
         # Match orientation panel inner padding so inputs align visually with viz/value panels
         left_col_layout.setContentsMargins(*CONTENT_MARGINS)
         left_col_layout.setSpacing(DEFAULT_SPACING)
+        left_col_layout.addWidget(QLabel("Input"))
 
         # Serial row
         serial_h = QHBoxLayout()
@@ -144,12 +162,39 @@ class ConnectionPanelQt(BasePanelQt):
         baud_h.addWidget(self.baud_combo)
         left_col_layout.addLayout(baud_h)
 
-        # Right column: Network inputs (vertical stack)
+        self.toggle_button = TwoLineButton("Start Serial", self._serial_rate_text)
+        self.toggle_button.setMinimumHeight(BUTTON_MIN_HEIGHT + BUTTON_EXTRA_HEIGHT)
+        self.toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toggle_button.setProperty('status', '')
+        self.toggle_button.clicked.connect(self.toggle_serial)
+        left_col_layout.addWidget(self.toggle_button)
+        left_col_layout.addStretch()
+
+        # Output: protocol-specific settings
         right_col = QFrame()
         right_col_layout = QVBoxLayout(right_col)
         # Match orientation panel internal padding for symmetric layout
         right_col_layout.setContentsMargins(*CONTENT_MARGINS)
         right_col_layout.setSpacing(DEFAULT_SPACING)
+        right_col_layout.addWidget(QLabel("Output"))
+
+        protocol_h = QHBoxLayout()
+        protocol_h.addWidget(QLabel("Protocol:"))
+        self.output_protocol_combo = QComboBox()
+        self.output_protocol_combo.addItem("UDP (opentrack)", OUTPUT_PROTOCOL_UDP)
+        self.output_protocol_combo.addItem(
+            "FreeTrack 2.0 (Direct)", OUTPUT_PROTOCOL_FREETRACK
+        )
+        self.output_protocol_combo.addItem(
+            "NPClient (TrackIR-compatible)", OUTPUT_PROTOCOL_NPCLIENT
+        )
+        protocol_h.addWidget(self.output_protocol_combo, 1)
+        right_col_layout.addLayout(protocol_h)
+
+        self.udp_settings_widget = QFrame(right_col)
+        udp_settings_layout = QVBoxLayout(self.udp_settings_widget)
+        udp_settings_layout.setContentsMargins(0, 0, 0, 0)
+        udp_settings_layout.setSpacing(DEFAULT_SPACING)
 
         # IP row
         ip_h = QHBoxLayout()
@@ -167,7 +212,7 @@ class ConnectionPanelQt(BasePanelQt):
         self.udp_ip_entry.setAlignment(Qt.AlignRight)
         self.udp_ip_entry.textChanged.connect(self._on_ip_changed)
         ip_h.addWidget(self.udp_ip_entry)
-        right_col_layout.addLayout(ip_h)
+        udp_settings_layout.addLayout(ip_h)
 
         # UDP Port row
         port_h = QHBoxLayout()
@@ -185,9 +230,10 @@ class ConnectionPanelQt(BasePanelQt):
         self.udp_port_entry.setAlignment(Qt.AlignRight)
         self.udp_port_entry.textChanged.connect(self._on_udp_port_changed)
         port_h.addWidget(self.udp_port_entry)
-        right_col_layout.addLayout(port_h)
+        udp_settings_layout.addLayout(port_h)
+        right_col_layout.addWidget(self.udp_settings_widget)
 
-        # Normalize and align label widths so left labels and right labels line up neatly
+        # Align the input and UDP setting labels consistently.
         try:
             fm = QFontMetrics(lbl_serial.font())
             labels = [lbl_serial, lbl_baud, lbl_ip, lbl_udp_port]
@@ -198,23 +244,10 @@ class ConnectionPanelQt(BasePanelQt):
         except Exception:
             pass
 
-        # Vertical divider between the two input columns
-        vline_inputs = QFrame()
-        vline_inputs.setFrameShape(QFrame.VLine)
-        vline_inputs.setFrameShadow(QFrame.Sunken)
-        vline_inputs.setFixedWidth(LINE_THICKNESS)
-        vline_inputs.setStyleSheet("background-color: rgba(120,120,120,0.25);")
-
-        # Add columns and divider to the left widget layout
+        # Keep all serial controls on the input side of the panel.
         left_widget_layout.addWidget(left_col)
-        left_widget_layout.addWidget(vline_inputs)
-        left_widget_layout.addWidget(right_col)
 
-        # Make columns share horizontal space equally
-        left_widget_layout.setStretch(0, 1)
-        left_widget_layout.setStretch(2, 1)
-
-        # Right: controls area (buttons & status stacked)
+        # Output protocol controls and selected worker lifecycle.
         right_widget = QFrame()
         right_layout = QVBoxLayout(right_widget)
         # Apply the same content margins used by Orientation values column
@@ -223,39 +256,20 @@ class ConnectionPanelQt(BasePanelQt):
         # Top-align controls so buttons sit at the top of the right column
         right_layout.setAlignment(Qt.AlignTop)
 
-        # Serial button (will display start/stop and host its status)
-        self.toggle_button = TwoLineButton("Start Serial", self._serial_rate_text)
-        # Make the button more prominent and allow it to expand to the right column width
-        try:
-            desired_h = max(self.toggle_button.sizeHint().height(), BUTTON_MIN_HEIGHT)
-            self.toggle_button.setFixedHeight(desired_h + BUTTON_EXTRA_HEIGHT)
-        except Exception:
-            self.toggle_button.setMinimumHeight(BUTTON_MIN_HEIGHT)
-        self.toggle_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # Start in a neutral visual state (button remains pressable)
-        self.toggle_button.setProperty('status', '')
-        self.toggle_button.clicked.connect(self.toggle_serial)
-        # Add the serial button at the top
-        right_layout.addWidget(self.toggle_button)
+        right_layout.addWidget(right_col)
 
-        # UDP button (hosts its status inside)
-        self.udp_toggle_btn = TwoLineButton(self._udp_btn_text, self._udp_rate_text)
-        try:
-            desired_h = max(self.udp_toggle_btn.sizeHint().height(), BUTTON_MIN_HEIGHT)
-            self.udp_toggle_btn.setFixedHeight(desired_h + BUTTON_EXTRA_HEIGHT)
-        except Exception:
-            self.udp_toggle_btn.setMinimumHeight(BUTTON_MIN_HEIGHT)
-        self.udp_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        # Neutral initial visual state so button appears pressable
-        self.udp_toggle_btn.setProperty('status', '')
-        self.udp_toggle_btn.clicked.connect(self.toggle_udp)
-        right_layout.addWidget(self.udp_toggle_btn)
+        self.output_toggle_btn = TwoLineButton("Start UDP", self._output_rate_text)
+        self.output_toggle_btn.setMinimumHeight(BUTTON_MIN_HEIGHT + BUTTON_EXTRA_HEIGHT)
+        self.output_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.output_toggle_btn.setProperty('status', '')
+        self.output_toggle_btn.clicked.connect(self.toggle_output)
+        self.udp_toggle_btn = self.output_toggle_btn
+        right_layout.addWidget(self.output_toggle_btn)
 
         # Add a bottom stretch so remaining space is left below the buttons
         right_layout.addStretch()
 
-        # Make left take two parts and right take one part (2/3 left, 1/3 right)
-        outer.addWidget(left_widget, 2)
+        outer.addWidget(left_widget, 1)
 
         # vertical divider between left and right (keep as visual separator)
         vline = QFrame()
@@ -272,12 +286,12 @@ class ConnectionPanelQt(BasePanelQt):
         # controls_frame.setFixedHeight(120)  # removed to allow flexible layout sizing
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # Ensure buttons reflect initial rate texts
-        try:
-            self._refresh_serial_button_text()
-            self._refresh_udp_button_text()
-        except Exception:
-            pass
+        self.output_protocol_combo.currentIndexChanged.connect(
+            self._on_output_protocol_changed
+        )
+        self._update_output_controls()
+        self._refresh_serial_button_text()
+        self._refresh_output_button_text()
 
     # ------------------------------------------------------------------
     # Serial handling (identical logic to former SerialPanelQt)
@@ -515,7 +529,7 @@ class ConnectionPanelQt(BasePanelQt):
             self.toggle_button.style().polish(self.toggle_button)
 
     # ------------------------------------------------------------------
-    # UDP handling (identical logic to former NetworkPanelQt)
+    # Output selection and lifecycle
     # ------------------------------------------------------------------
 
     def _on_ip_changed(self, text):
@@ -526,98 +540,207 @@ class ConnectionPanelQt(BasePanelQt):
         """Handle UDP port entry change."""
         self._udp_port = text
 
-    def toggle_udp(self):
-        """Toggle UDP sending on/off."""
-        self.udp_enabled = not self.udp_enabled
+    def _on_output_protocol_changed(self, index):
+        requested = self.output_protocol_combo.itemData(index)
+        if requested not in (
+            OUTPUT_PROTOCOL_UDP,
+            OUTPUT_PROTOCOL_FREETRACK,
+            OUTPUT_PROTOCOL_NPCLIENT,
+        ):
+            return
+        if requested == self.output_protocol:
+            self._update_output_controls()
+            return
 
-        if self.udp_enabled:
-            self._enable_udp()
+        previous = self.output_protocol
+        was_enabled = self.output_enabled
+        if was_enabled and not self._send_backend_enabled(previous, False):
+            self._restore_output_protocol(previous)
+            return
+        if not self._set_output_protocol(requested):
+            if was_enabled:
+                if not self._send_backend_enabled(previous, True):
+                    self.output_enabled = False
+            self._restore_output_protocol(previous)
+            return
+        if was_enabled and not self._send_backend_enabled(requested, True):
+            route_restored = self._set_output_protocol(previous)
+            backend_restored = self._send_backend_enabled(previous, True)
+            if not route_restored or not backend_restored:
+                self.output_enabled = False
+            self._restore_output_protocol(previous)
+            return
+
+        self.output_protocol = requested
+        self._update_output_controls()
+        self.log_message(f"Output protocol set to {self._protocol_label(requested)}")
+
+    def _protocol_label(self, protocol):
+        labels = {
+            OUTPUT_PROTOCOL_UDP: "UDP",
+            OUTPUT_PROTOCOL_FREETRACK: "FreeTrack 2.0",
+            OUTPUT_PROTOCOL_NPCLIENT: "NPClient",
+        }
+        return labels.get(protocol, str(protocol))
+
+    def _client_registration(self, protocol):
+        if protocol == OUTPUT_PROTOCOL_FREETRACK:
+            return self.freetrack_client_registration
+        if protocol == OUTPUT_PROTOCOL_NPCLIENT:
+            return self.npclient_registration
+        return None
+
+    def _restore_output_protocol(self, protocol):
+        self.output_protocol_combo.blockSignals(True)
+        index = self.output_protocol_combo.findData(protocol)
+        if index >= 0:
+            self.output_protocol_combo.setCurrentIndex(index)
+        self.output_protocol_combo.blockSignals(False)
+        self.output_protocol = protocol
+        self._update_output_controls()
+
+    def _set_output_protocol(self, protocol):
+        if not safe_queue_put(
+            self.output_control_queue,
+            ('set_protocol', protocol),
+            timeout=QUEUE_PUT_TIMEOUT,
+        ):
+            self.log_message("Failed to switch the orientation output protocol")
+            return False
+        return True
+
+    def _send_backend_enabled(self, protocol, enabled):
+        if protocol not in (
+            OUTPUT_PROTOCOL_UDP,
+            OUTPUT_PROTOCOL_FREETRACK,
+            OUTPUT_PROTOCOL_NPCLIENT,
+        ):
+            self.log_message(f"Unsupported output protocol: {protocol}")
+            return False
+
+        registration = self._client_registration(protocol)
+        if enabled and protocol == OUTPUT_PROTOCOL_UDP:
+            try:
+                ip = str(self.udp_ip_entry.text()).strip()
+                port = int(self.udp_port_entry.text())
+            except ValueError:
+                self.log_message("Invalid UDP port number")
+                return False
+            if not safe_queue_put(
+                self.output_control_queue,
+                ("set_udp", ip, port),
+                timeout=QUEUE_PUT_TIMEOUT,
+            ):
+                self.log_message("Failed to send UDP configuration")
+                return False
+        elif enabled and registration is not None:
+            try:
+                registration.register()
+            except (OSError, RuntimeError) as error:
+                self.log_message(
+                    f"Could not register {self._protocol_label(protocol)} game client: {error}. "
+                    "If a game is running, close it before updating the client DLLs."
+                )
+                return False
+
+        if not safe_queue_put(
+            self.output_control_queue,
+            ("set_enabled", enabled),
+            timeout=QUEUE_PUT_TIMEOUT,
+        ):
+            self.log_message(
+                f"Failed to {'enable' if enabled else 'disable'} "
+                f"{self._protocol_label(protocol)} output"
+            )
+            if enabled and registration is not None:
+                try:
+                    registration.restore()
+                except OSError as error:
+                    self.log_message(
+                        f"Could not restore the previous {self._protocol_label(protocol)} registration: {error}"
+                    )
+            return False
+        if not enabled and registration is not None:
+            try:
+                registration.restore()
+            except OSError as error:
+                self.log_message(
+                    f"Could not restore the previous {self._protocol_label(protocol)} registration: {error}"
+                )
+        return True
+
+    def toggle_output(self):
+        """Start or stop the currently selected output protocol."""
+        if self.output_enabled:
+            if not self._send_backend_enabled(self.output_protocol, False):
+                return
+            self.output_enabled = False
+            self.log_message(f"{self._protocol_label(self.output_protocol)} output disabled")
         else:
-            self._disable_udp()
+            if not self._send_backend_enabled(self.output_protocol, True):
+                return
+            self.output_enabled = True
+            self.log_message(f"{self._protocol_label(self.output_protocol)} output enabled")
+        self._update_output_controls()
 
-    def _enable_udp(self):
-        """Enable UDP transmission."""
-        self._udp_btn_text = "Stop UDP"
-        try:
-            if hasattr(self.udp_toggle_btn, 'setParts'):
-                self.udp_toggle_btn.setParts(self._udp_btn_text, self._udp_rate_text)
-            else:
-                self.udp_toggle_btn.setText(self._udp_btn_text)
-        except Exception:
-            try:
-                self.udp_toggle_btn.setText(self._udp_btn_text)
-            except Exception:
-                pass
-        self.udp_toggle_btn.setProperty('status', 'enabled')
-        self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
-        try:
-            self._refresh_udp_button_text()
-        except Exception:
-            pass
-        self.udp_ip_entry.setEnabled(False)
-        self.udp_port_entry.setEnabled(False)
-        self.udp_port_entry.setEnabled(False)
+    def _update_output_controls(self):
+        is_udp = self.output_protocol == OUTPUT_PROTOCOL_UDP
+        self.udp_settings_widget.setVisible(is_udp)
+        self.udp_ip_entry.setEnabled(is_udp and not self.output_enabled)
+        self.udp_port_entry.setEnabled(is_udp and not self.output_enabled)
+        self.output_toggle_btn.setProperty(
+            'status',
+            'enabled' if self.output_enabled else '',
+        )
+        self.output_toggle_btn.style().polish(self.output_toggle_btn)
+        self._refresh_output_button_text()
 
-        try:
-            ip = str(self.udp_ip_entry.text())
-            port = int(self.udp_port_entry.text())
-        except ValueError:
-            self.log_message("Invalid port number")
+    def update_output_status(self, status):
+        """Reflect output worker startup and backend failures."""
+        if status == "ready":
+            if not self.sync_output_protocol():
+                self.output_enabled = False
+                self._update_output_controls()
+                return
+            if self.output_enabled and not self._send_backend_enabled(self.output_protocol, True):
+                self.output_enabled = False
+                self._update_output_controls()
             return
+        if status == "error":
+            self.output_enabled = False
+            registration = self._client_registration(self.output_protocol)
+            if registration is not None:
+                try:
+                    registration.restore()
+                except OSError as error:
+                    self.log_message(
+                        f"Could not restore the previous {self._protocol_label(self.output_protocol)} registration: {error}"
+                    )
+            self._update_output_controls()
+            self.output_toggle_btn.setProperty('status', 'error')
+            self.output_toggle_btn.style().polish(self.output_toggle_btn)
+            self.log_message(
+                f"{self._protocol_label(self.output_protocol)} output failed; "
+                "see the application log"
+            )
 
-        if not safe_queue_put(
-            self.udp_control_queue,
-            ('set_udp', ip, port),
-            timeout=QUEUE_PUT_TIMEOUT
+    def sync_output_protocol(self):
+        """Reapply the selected protocol after the output worker restarts."""
+        return self._set_output_protocol(self.output_protocol)
+
+    def restore_client_registrations(self):
+        errors = []
+        for registration in (
+            self.freetrack_client_registration,
+            self.npclient_registration,
         ):
-            self.log_message("Failed to send UDP configuration")
-            return
-
-        if not safe_queue_put(
-            self.udp_control_queue,
-            ('udp_enable', True),
-            timeout=QUEUE_PUT_TIMEOUT
-        ):
-            self.log_message("Failed to enable UDP")
-            return
-
-        self._udp_status_text = f"UDP Enabled -> {ip}:{port}"
-        # reflect status on the UDP button
-        self.udp_toggle_btn.setProperty('status', 'enabled')
-        self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
-
-        self.log_message(f"UDP enabled -> {ip}:{port}")
-
-    def _disable_udp(self):
-        """Disable UDP transmission."""
-        self._udp_btn_text = "Start UDP"
-        try:
-            if hasattr(self.udp_toggle_btn, 'setParts'):
-                self.udp_toggle_btn.setParts(self._udp_btn_text, self._udp_rate_text)
-            else:
-                self.udp_toggle_btn.setText(self._udp_btn_text)
-        except Exception:
-            try:
-                self.udp_toggle_btn.setText(self._udp_btn_text)
-            except Exception:
-                pass
-        # Neutral visual state so button stays visibly pressable when stopped
-        self.udp_toggle_btn.setProperty('status', '')
-        self.udp_toggle_btn.style().polish(self.udp_toggle_btn)
-        self.udp_ip_entry.setEnabled(True)
-        self.udp_port_entry.setEnabled(True)
-        self.udp_port_entry.setEnabled(True)
-
-        if not safe_queue_put(
-            self.udp_control_queue,
-            ('udp_enable', False),
-            timeout=QUEUE_PUT_TIMEOUT
-        ):
-            self.log_message("Failed to disable UDP")
-            return
-
-        self._udp_status_text = "UDP Disabled"
-        self.log_message("UDP disabled")
+            if registration is not None:
+                try:
+                    registration.restore()
+                except OSError as error:
+                    errors.append(error)
+        if errors:
+            raise errors[0]
 
     def set_udp_config(self, ip, port):
         """Set UDP configuration programmatically."""
@@ -627,14 +750,10 @@ class ConnectionPanelQt(BasePanelQt):
             self.udp_ip_entry.setText(self._udp_ip)
             self.udp_port_entry.setText(self._udp_port)
 
-            if self.udp_enabled:
-                safe_queue_put(
-                    self.udp_control_queue,
-                    ('set_udp', str(ip), int(port)),
-                    timeout=QUEUE_PUT_TIMEOUT
-                )
-        except Exception:
-            pass
+            if self.output_enabled and self.output_protocol == OUTPUT_PROTOCOL_UDP:
+                self._send_backend_enabled(OUTPUT_PROTOCOL_UDP, True)
+        except (TypeError, ValueError):
+            self.log_message("Invalid UDP configuration")
 
     def get_udp_config(self):
         """Get current UDP configuration."""
@@ -647,17 +766,20 @@ class ConnectionPanelQt(BasePanelQt):
 
     def is_udp_enabled(self):
         """Check if UDP is currently enabled."""
-        return self.udp_enabled
+        return self.output_enabled and self.output_protocol == OUTPUT_PROTOCOL_UDP
 
     def enable_udp(self):
         """Enable UDP if currently disabled."""
-        if not self.udp_enabled:
-            self.toggle_udp()
+        if self.output_protocol == OUTPUT_PROTOCOL_UDP and not self.output_enabled:
+            self.toggle_output()
 
     def disable_udp(self):
         """Disable UDP if currently enabled."""
-        if self.udp_enabled:
-            self.toggle_udp()
+        if self.is_udp_enabled():
+            self.toggle_output()
+
+    def get_output_protocol(self):
+        return self.output_protocol
 
     # ------------------------------------------------------------------
     # Preferences (combined; preserves the existing 'serial'/'network'
@@ -679,7 +801,8 @@ class ConnectionPanelQt(BasePanelQt):
             },
             'network': {
                 'udp_ip': self.udp_ip_entry.text(),
-                'udp_port': self.udp_port_entry.text()
+                'udp_port': self.udp_port_entry.text(),
+                'output_protocol': self.output_protocol,
             }
         }
 
@@ -718,23 +841,19 @@ class ConnectionPanelQt(BasePanelQt):
                 self._udp_port = network_prefs['udp_port']
                 self.udp_port_entry.setText(self._udp_port)
 
-            # Send initial configuration to UDP worker if enabled
-            if self.udp_enabled and self.udp_control_queue:
-                try:
-                    ip = str(self.udp_ip_entry.text())
-                    port = int(self.udp_port_entry.text())
-                    safe_queue_put(
-                        self.udp_control_queue,
-                        ('set_udp', ip, port),
-                        timeout=QUEUE_PUT_TIMEOUT
-                    )
-                    safe_queue_put(
-                        self.udp_control_queue,
-                        ('udp_enable', True),
-                        timeout=QUEUE_PUT_TIMEOUT
-                    )
-                except Exception:
-                    pass
+            protocol = network_prefs.get(
+                'output_protocol',
+                DEFAULT_OUTPUT_PROTOCOL,
+            )
+            protocol_index = self.output_protocol_combo.findData(protocol)
+            if protocol_index < 0:
+                self.log_message(
+                    f"Ignoring unsupported output protocol preference: {protocol}"
+                )
+                protocol_index = self.output_protocol_combo.findData(
+                    DEFAULT_OUTPUT_PROTOCOL
+                )
+            self.output_protocol_combo.setCurrentIndex(protocol_index)
 
     # -------------------------
     # Status-area helpers
@@ -752,15 +871,18 @@ class ConnectionPanelQt(BasePanelQt):
         except Exception:
             pass
 
-    def _refresh_udp_button_text(self):
-        """Refresh the UDP button to show current main label and the rate on the sub-line."""
+    def _refresh_output_button_text(self):
+        """Refresh the output button label and published sample rate."""
         try:
-            base = getattr(self.udp_toggle_btn, '_main', self.udp_toggle_btn.text())
-            main_label = base.split(' - ')[0].split('\n')[0]
-            if hasattr(self.udp_toggle_btn, 'setParts'):
-                self.udp_toggle_btn.setParts(main_label, self._udp_rate_text)
+            protocol_label = self._protocol_label(self.output_protocol)
+            action = "Stop" if self.output_enabled else "Start"
+            main_label = f"{action} {protocol_label}"
+            if hasattr(self.output_toggle_btn, 'setParts'):
+                self.output_toggle_btn.setParts(main_label, self._output_rate_text)
             else:
-                self.udp_toggle_btn.setText(f"{main_label} - {self._udp_rate_text}")
+                self.output_toggle_btn.setText(
+                    f"{main_label} - {self._output_rate_text}"
+                )
         except Exception:
             pass
 
@@ -779,14 +901,14 @@ class ConnectionPanelQt(BasePanelQt):
 
     def update_send_rate(self, rate):
         """
-        Update the UDP send rate display (shown inside Start/Stop UDP button).
+        Update the selected output's send rate display.
 
         Args:
             rate: Packets per second (float)
         """
         try:
-            self._udp_rate_text = f"{float(rate):.1f} msg/s"
-            self._refresh_udp_button_text()
+            self._output_rate_text = f"{float(rate):.1f} msg/s"
+            self._refresh_output_button_text()
         except Exception:
             pass
 
@@ -803,9 +925,9 @@ class ConnectionPanelQt(BasePanelQt):
         """Reset message/send rates to zero (used when serial stops)."""
         try:
             self._serial_rate_text = "0.0 msg/s"
-            self._udp_rate_text = "0.0 msg/s"
+            self._output_rate_text = "0.0 msg/s"
             self._refresh_serial_button_text()
-            self._refresh_udp_button_text()
+            self._refresh_output_button_text()
         except Exception:
             pass
 
@@ -814,7 +936,7 @@ class ConnectionPanelQt(BasePanelQt):
         try:
             return {
                 'msg_rate': self._serial_rate_text,
-                'send_rate': self._udp_rate_text
+                'send_rate': self._output_rate_text
             }
         except Exception:
             return {'msg_rate': None, 'send_rate': None}

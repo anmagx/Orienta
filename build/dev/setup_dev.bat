@@ -57,8 +57,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo Installing native client build dependencies...
+"%INSTALL_DIR%\.venv\Scripts\python.exe" -m pip install -r "%INSTALL_DIR%\..\requirements-build.txt"
+if errorlevel 1 (
+    echo ERROR: Failed to install native client build dependencies
+    pause
+    exit /b 1
+)
 
-
+echo Building and testing FreeTrack and NPClient clients...
+call "%INSTALL_DIR%\..\build_game_clients.bat"
+if errorlevel 1 (
+    echo ERROR: Failed to build or test FreeTrack and NPClient clients
+    pause
+    exit /b 1
+)
 
 REM Create a launch script
 echo Creating launch script...
@@ -94,7 +107,7 @@ echo   Installation Complete!
 echo ========================================
 echo.
 echo You can now run Orienta by:
-echo   1. Double-clicking launch_orienta.bat
+echo   1. Double-clicking launch_orienta.bat (native game clients are ready)
 if exist "%USERPROFILE%\Desktop\Orienta.lnk" (
     echo   2. Using the desktop shortcut
 )

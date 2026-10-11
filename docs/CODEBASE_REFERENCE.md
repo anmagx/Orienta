@@ -36,7 +36,7 @@ lifecycle policy belongs in the process manager, not in this file.
 `ProcessHandler` is the ownership boundary for:
 
 * all queues and the global `multiprocessing.Event`;
-* input, GUI, serial, fusion, and UDP `Process` instances;
+* input, GUI, serial, fusion, and output `Process` instances;
 * a parent-only log-writer thread;
 * a parent-only worker-monitor/restart thread;
 * signal handling and idempotent forced shutdown.
@@ -67,7 +67,8 @@ detection, gradual drift correction, calibration offsets, and reset state.
 samples, runs the filter, handles output queue backpressure, and produces
 status changes. The fusion worker validates that computed Euler outputs are
 finite before publishing them to downstream queues and will drop non-finite
-frames, emitting rate-limited logs for visibility.
+frames, emitting rate-limited logs for visibility. It publishes each valid
+pose to `outputQueue`; `OutputWorker` chooses the active backend.
 
 Important state fields:
 
@@ -89,14 +90,62 @@ Preserve math units:
 gyroscope input is degrees/second, quaternion integration converts it to
 radians/second, and all user-facing values are degrees.
 
-### `src/workers/udp_wrk.py`
+### `src/workers/output_wrk.py`
 
-`run_worker()` owns one IPv4 UDP socket. It drains to a latest sample, handles
-target/enabled controls, serializes opentrack's six-double packet, reports send
-rate, and always closes the socket. It intentionally sends nothing until the
-UI enables output. The UDP worker also validates that Euler values are finite
-and will drop any NaN/Infinity samples before sending, with rate-limited
-logging to avoid log spam.
+`run_worker()` owns the single orientation output queue and control protocol.
+It selects exactly one of UDP, FreeTrack shared memory, or NPClient-compatible
+output. It drains stale poses, maintains backend lifecycle and UDP rate cap,
+and reports output status/rate. Backend implementations are in
+`udp_output.py` and `shared_memory_output.py`. Protocol selection is runtime
+state of this worker rather than a fusion route; selection, configuration, and
+enable commands share its control queue to preserve ordering during switches.
+
+### `src/workers/udp_output.py`
+
+This backend owns the UDP socket and writes opentrack's six-double,
+translation-first packet. It validates finite Euler inputs.
+
+### `src/workers/shared_memory_output.py`
+
+The shared-memory backend opens the Windows FreeTrack mapping only while
+either direct protocol is enabled. It writes the fixed-layout `FTHeap` pose,
+handles the game response-table handshake, and owns the shared memory/mutex
+lifecycle. The structure, catalog parser, and conversion logic are tested.
+
+### `native/freetrack_client/`
+
+This is Orienta's separately compiled game-facing FreeTrack client DLL source,
+not the tracking application and not NPClient. It exports the FreeTrack
+client-call ABI, reads frames from `FT_SharedMem`, and is built as x86 and x64
+DLLs by `build/build_game_clients.bat`. A native smoke-test consumer
+checks DLL loading, exports, synchronized reads, and provider identity for both
+architectures. `src/util/game_client_registration.py` stages the DLLs
+outside the one-file bundle and safely registers/restores the per-user client
+directory while direct output is active. It preserves the prior registry
+value, avoids restoring over an external change, and can recover its saved
+prior value after a crash if no Orienta publisher remains active.
+The client logs first-call, mapping, and first-frame diagnostics to
+`%LOCALAPPDATA%\Orienta\FreeTrackClient\FreeTrackClient.log`.
+
+### `native/npclient/`
+
+This is Orienta's NPClient-compatible game-facing DLL source, derived from
+uglyDwarf's LinuxTrack implementation and distributed with its MIT attribution
+and license. It reads synchronized poses from the same `FT_SharedMem` mapping,
+converts them to NPClient axis units, applies the response-table transform
+when the publisher acknowledges a game ID, and provides x86/x64 `NP_*` exports.
+`NP_GetSignature` returns the LinuxTrack compatibility payload.
+`NPClientRegistration` in `src/util/game_client_registration.py` stages
+the architecture-matched DLLs and reversibly registers the NaturalPoint path.
+The native build script smoke-tests both client APIs and architectures.
+`NPClient.log` beside the staged DLL records first API calls, shared-memory
+open/read outcomes, sampled source/converted pose values, and shared-memory
+game-ID handshake values.
+The publisher loads the bundled FaceTrackNoIR supported-games catalog from
+`data/facetracknoir_supported_games.csv`; its permission and attribution
+notice is bundled from `data/FACETRACKNOIR-COPYING.txt`. The loader validates
+the catalog schema and FTN_ID response bytes while preserving the reference
+implementation's first-matching-row behavior.
 
 ### `src/workers/input_wrk.py`
 
@@ -157,11 +206,14 @@ active API.
 
 ### `src/workers/gui_qt/panels/connection_panel.py`
 
-`ConnectionPanelQt` combines former serial and network screens. It validates
-and stores port/baud/IP/UDP-port UI values, produces serial/UDP commands,
-tracks live state and rates, and serializes the `serial`/`network` preference
-sections. `TwoLineButton` is a local rendering implementation, separate from
-the similarly named orientation class.
+`ConnectionPanelQt` separates Input serial settings from Output selection
+(UDP/opentrack, direct FreeTrack 2.0, or NPClient). It stores port/baud, UDP
+target, and selected output protocol, sends protocol/backend controls to
+`OutputWorker`, manages the selected client registration, and serializes the
+`serial`/`network` preference sections.
+Legacy preferences without an output protocol continue to default to UDP.
+`TwoLineButton` is a local rendering implementation, separate from the
+similarly named orientation class.
 
 ### `src/workers/gui_qt/panels/preferences_panel.py`
 

@@ -1,9 +1,9 @@
 """
 Sensor fusion worker using complementary filter for orientation estimation.
-Reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
+Reads IMU data from serialQueue and routes Euler poses to the selected output queue.
 """
 import time
-from queue import Empty
+from queue import Empty, Full
 import threading
 import math
 
@@ -35,6 +35,17 @@ from src.util.error_utils import (
     parse_imu_line,
     normalize_angle
 )
+
+
+def _publish_output_pose(output_queue, pose):
+    """Publish one frame to the output router's bounded pose queue."""
+    if output_queue is None:
+        return False
+    try:
+        output_queue.put_nowait(pose)
+        return True
+    except Full:
+        return False
 
 
 class QuaternionComplementaryFilter:
@@ -520,9 +531,18 @@ class QuaternionComplementaryFilter:
     
 
 
-def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQueue, stop_event, logQueue=None, uiStatusQueue=None):
+def run_worker(
+    serialQueue,
+    outputQueue,
+    eulerDisplayQueue,
+    controlQueue,
+    statusQueue,
+    stop_event,
+    logQueue=None,
+    uiStatusQueue=None,
+):
     """
-    Fusion worker that reads IMU data from serialQueue and outputs Euler angles to eulerQueue.
+    Read IMU data and publish poses to the currently selected output queue.
     """
     from src.util.log_utils import log_info, log_error, log_warning
     from src.util.timing_utils import enable_high_res_timer, disable_high_res_timer, raise_process_priority
@@ -1246,7 +1266,7 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                 # Format: [Yaw, Pitch, Roll]
                 euler_data = [output_yaw, output_pitch, output_roll]
 
-                # Validate output is finite before publishing to avoid contaminating UDP
+                # Validate output is finite before publishing to either output.
                 _diag_t5 = time.perf_counter()
                 if not (
                     all(math.isfinite(value) for value in live_euler_data)
@@ -1259,12 +1279,9 @@ def run_worker(serialQueue, eulerQueue, eulerDisplayQueue, controlQueue, statusQ
                         log_error(logQueue, "Fusion Worker", f"Dropping non-finite Euler output #{nonfinite_euler_counter}: yaw={output_yaw}, pitch={output_pitch}, roll={output_roll}")
                     # Skip publishing this frame
                 else:
-                    # Publish to main euler queue (for UDP) - non-blocking for real-time
-                    try:
-                        eulerQueue.put_nowait(euler_data)
-                    except:
-                        # Drop frame if queue full rather than blocking
-                        pass
+                    # Publish only to the selected output queue; multiprocessing
+                    # queues distribute samples instead of broadcasting them.
+                    _publish_output_pose(outputQueue, euler_data)
 
                     # Send to display queue with queue health monitoring, throttled
                     # since the GUI only redraws at ~60Hz - no need to pay the IPC

@@ -3,7 +3,7 @@
 
 This module exposes `ProcessHandler`, a convenience class that initializes
 the multiprocessing queues, starts worker processes (GUI, Serial, Fusion,
-UDP), and provides a safe shutdown path. The manager also runs a
+and Output), and provides a safe shutdown path. The manager also runs a
 background log writer thread that drains `logQueue` and writes messages to
 `LOG_FILE_NAME` under `%LOCALAPPDATA%\\Orienta`.
 
@@ -48,10 +48,10 @@ class ProcessHandler:
     def __init__(self):
         ## Init Queues (use config constants)
         self.serialQueue = Queue(maxsize=QUEUE_SIZE_DATA)
-        self.eulerQueue = Queue(maxsize=QUEUE_SIZE_DATA)
+        self.outputQueue = Queue(maxsize=QUEUE_SIZE_DATA)
         self.serialDisplayQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
         self.eulerDisplayQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
-        self.udpControlQueue = Queue(maxsize=QUEUE_SIZE_CONTROL)
+        self.outputControlQueue = Queue(maxsize=QUEUE_SIZE_CONTROL)
         
         self.messageQueue = Queue(maxsize=QUEUE_SIZE_DISPLAY)
         
@@ -272,7 +272,7 @@ class ProcessHandler:
         from src.workers.gui_wrk import run_worker as run_gui_worker
         from src.workers.serial_wrk import run_worker as run_serial_worker
         from src.workers.fusion_wrk import run_worker as run_fusion_worker
-        from src.workers.udp_wrk import run_worker as run_udp_worker
+        from src.workers.output_wrk import run_worker as run_output_worker
         from src.workers.input_wrk import run_worker as run_input_worker
 
         ## Input Worker (start first to handle shortcuts early)
@@ -296,7 +296,7 @@ class ProcessHandler:
         gui_args = (self.messageQueue, self.serialDisplayQueue, self.statusQueue, 
                    self.stop_event, self.eulerDisplayQueue, self.controlQueue, 
                    self.serialControlQueue, 
-                   self.udpControlQueue, self.logQueue, self.uiStatusQueue,
+                   self.outputControlQueue, self.logQueue, self.uiStatusQueue,
                    self.inputCommandQueue, self.inputResponseQueue)
         gui_worker = Process(
             target = run_gui_worker,
@@ -333,7 +333,7 @@ class ProcessHandler:
         }
         
         ## Sensor Fusion Worker
-        fusion_args = (self.serialQueue, self.eulerQueue, self.eulerDisplayQueue,
+        fusion_args = (self.serialQueue, self.outputQueue, self.eulerDisplayQueue,
                    self.controlQueue, self.statusQueue, self.stop_event, 
                    self.logQueue, self.uiStatusQueue)
         fusion_worker = Process(
@@ -351,23 +351,26 @@ class ProcessHandler:
             'name': "FusionWorker"
         }
 
-        ## UDP Worker
-        udp_args = (self.eulerQueue, self.stop_event,
-                   None, None, self.udpControlQueue, self.statusQueue, 
-                   self.logQueue)
-        udp_worker = Process(
-            target = run_udp_worker,
-            args = udp_args,
-            name = "UDPWorker"
+        ## Output worker
+        output_args = (
+            self.outputQueue,
+            self.outputControlQueue,
+            self.stop_event,
+            self.statusQueue,
+            self.logQueue,
         )
-        udp_worker.start()
-        self.workers.append(udp_worker)
-        
-        # Store configuration for restart capability
-        self._worker_configs["UDPWorker"] = {
-            'target': run_udp_worker,
-            'args': udp_args,
-            'name': "UDPWorker"
+        output_worker = Process(
+            target=run_output_worker,
+            args=output_args,
+            name="OutputWorker",
+        )
+        output_worker.start()
+        self.workers.append(output_worker)
+
+        self._worker_configs["OutputWorker"] = {
+            'target': run_output_worker,
+            'args': output_args,
+            'name': "OutputWorker"
         }
 
         log_info(self.logQueue, 'ProcessHandler', "All workers started.")
@@ -378,7 +381,8 @@ class ProcessHandler:
         
         queues = {
             'serialQueue': self.serialQueue,
-            'eulerQueue': self.eulerQueue, 
+            'outputQueue': self.outputQueue,
+            'outputControlQueue': self.outputControlQueue,
             'eulerDisplayQueue': self.eulerDisplayQueue,
             'serialDisplayQueue': self.serialDisplayQueue,
             'controlQueue': self.controlQueue,

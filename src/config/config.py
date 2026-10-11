@@ -11,7 +11,7 @@ Do NOT store runtime state here - this module only defines initial defaults.
 # Application Information
 # ============================================================================
 APP_NAME = "orienta"
-APP_VERSION = "0.11"
+APP_VERSION = "0.12"
 
 # ============================================================================
 # GUI Timing and Updates  
@@ -106,6 +106,10 @@ LEVEL_CAL_SAMPLES = 20
 # ============================================================================
 DEFAULT_UDP_IP = '127.0.0.1'
 DEFAULT_UDP_PORT = 4243
+DEFAULT_OUTPUT_PROTOCOL = 'udp'
+OUTPUT_PROTOCOL_UDP = 'udp'
+OUTPUT_PROTOCOL_FREETRACK = 'freetrack'
+OUTPUT_PROTOCOL_NPCLIENT = 'npclient'
 
 # UDP output rate limiting
 DEFAULT_OUTPUT_RATE_HZ = 120

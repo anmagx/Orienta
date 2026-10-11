@@ -5,7 +5,9 @@
 
 Orienta is a 3-DOF head-tracking application for Windows.
 It reads accelerometer and gyroscope data from a serial-connected IMU, estimates
-yaw, pitch, and roll with a complementary filter, and sends orientation data over UDP into opentrack.
+yaw, pitch, and roll with a complementary filter, and can send orientation data
+to opentrack over UDP or directly to compatible games using FreeTrack 2.0 or
+NPClient.
 
 ![Orienta logo](src/img/orienta_screenshot.png)
 
@@ -25,13 +27,17 @@ The only diy required is soldering up your sensor and your board and mounting it
 - Quaternion-based complementary-filter implementation
 - Gyro-bias calibration and correction
 - Smooth autocentering when stationary and near center
+- UDP output for opentrack, direct FreeTrack 2.0 output, and NPClient output
+  for TrackIR-compatible games
 - PyQt5 interface with light and dark themes.
 
 ## Installation
 
 ### Install script for developing
 
-`build\dev\setup_dev.bat` creates a virtual environment, installs dependencies, and creates a desktop shortcut, if you so desire. 
+`build\dev\setup_dev.bat` creates a virtual environment, installs application
+and native-build dependencies, builds/tests the x86 and x64 FreeTrack and
+NPClient clients, and creates a launcher and optional desktop shortcut.
 
 ### Manual installation
 
@@ -42,6 +48,7 @@ python -m venv .venv
 .venv\Scripts\activate
 python -m pip install -r requirements.txt
 cd ..\..\
+build\build_game_clients.bat
 python orienta.py
 ```
 
@@ -53,12 +60,16 @@ After running `build\dev\setup_dev.bat`, build a single-file, windowed executabl
 build\build_exe.bat
 ```
 
-The script installs the pinned build requirements and creates
+The script installs the pinned build requirements, builds the x86 and x64
+FreeTrack and NPClient client DLLs using
+`build\build_game_clients.bat`, and creates
 `build\dist\Orienta-<version>.exe` from `build\orienta.spec`, using the
 `APP_VERSION` in `src\config\config.py` for both the filename and Windows
-file/product version. The executable includes the application icon, logo, and
-themes. Preferences and logs are stored outside the executable, as described
-in [User data](#user-data).
+file/product version. The executable includes the application icon, logo,
+themes, FreeTrack and NPClient game-client DLLs, and the FaceTrackNoIR game
+response catalog with its permission notice. Preferences, logs, and staged
+client files are stored outside the executable, as described in
+[User data](#user-data).
 
 ## Requirements
 
@@ -71,6 +82,7 @@ in [User data](#user-data).
 - Keyboard
 - Pygame
 - PyInstaller
+- Zig (installed automatically from the pinned build requirements)
 
 ### Hardware and serial format
 
@@ -95,10 +107,24 @@ You will obviously need to find a way to mount your sensor on your head. In the 
 1. Flash the supplied Arduino sketch, or connect a compatible IMU source.
 2. Select its serial port and baud rate, then start the serial reader.
 3. Keep the device still and level while calibrating all three gyro biases (X/Y/Z).
-4. Mount the device, reset orientation as needed, and enable UDP output.
-5. Configure OpenTrack to receive UDP packets at the selected address and port.
+4. Mount the device and reset orientation as needed.
+5. In the Connection panel's Output section, select UDP (opentrack),
+   FreeTrack 2.0 (Direct), or NPClient (TrackIR-compatible), then start output.
+6. For UDP, configure OpenTrack to receive packets at the selected address and
+   port. For direct FreeTrack or NPClient, enable output before starting the
+   game. Orienta stages and registers the selected game-client DLL while output
+   is active, then restores the previous registration when output stops. Keep
+   Orienta running while the game uses tracking.
 
-Orienta always sends zero translation and orientation as yaw, pitch, and roll.
+Close the game before using a newly built Orienta version: Windows cannot
+replace a client DLL while the game has it loaded. Registration failures
+appear in the message panel and application log.
+
+Orienta outputs zero translation and orientation as yaw, pitch, and roll.
+Direct FreeTrack output uses Orienta's FreeTrack client DLL for games that load
+the FreeTrack interface. NPClient output exposes the same shared-memory poses
+through a TrackIR-compatible NPClient interface. Neither direct path requires
+the OpenTrack application.
 
 When stationary and near center, center assist gently attracts orientation
 toward the configured rest pose. The selected curve ramps up engagement;
@@ -115,6 +141,20 @@ and packaged executable runs. The directory is created automatically:
 
 - `config.cfg` stores user preferences.
 - `orienta.log` stores application logs; rotated logs remain in this directory.
+- `FreeTrackClient\` contains Orienta's x86/x64 FreeTrack game-reader DLLs,
+  staged when direct FreeTrack output is enabled.
+- `NPClient\` contains Orienta's x86/x64 NPClient DLLs, staged when NPClient
+  output is enabled.
+- `NPClient\NPClient.log` records first NPClient calls, shared-memory outcomes,
+  and sampled source/converted pose values for diagnostics.
+- The bundled FaceTrackNoIR game catalog supplies per-game FreeTrack response
+  tables; its attribution and permission notice is included in the package.
+- `FreeTrackClient\FreeTrackClient.log` records whether a game loaded the
+  FreeTrack client and whether it could read the shared-memory pose.
+
+The NPClient implementation is derived from uglyDwarf's LinuxTrack work under
+the MIT license. Attribution and license terms are included in
+`native\npclient`.
 
 If `LOCALAPPDATA` is unset, Orienta uses `AppData\Local\Orienta` under your home directory. 
 

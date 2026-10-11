@@ -29,7 +29,7 @@ class PreferencesPanel(QWidget):
     
     def __init__(self, parent=None, preferences_manager=None,
                  input_command_queue=None, input_response_queue=None,
-                 control_queue=None, udp_control_queue=None):
+                 control_queue=None, output_control_queue=None):
         """
         Initialize preferences panel.
         
@@ -39,7 +39,7 @@ class PreferencesPanel(QWidget):
             input_command_queue: Queue for sending commands to input worker
             input_response_queue: Queue for receiving responses from input worker
             control_queue: Queue for sending fusion setting commands
-            udp_control_queue: Queue for sending UDP worker commands
+            output_control_queue: Queue for output backend controls
         """
         super().__init__(parent)
         self.prefs_manager = preferences_manager or PreferencesManager()
@@ -50,7 +50,7 @@ class PreferencesPanel(QWidget):
         self.reset_orientation_instantaneous = False
         self.orientation_panel = None  # Will be set by parent
         self.control_queue = control_queue
-        self.udp_control_queue = udp_control_queue
+        self.output_control_queue = output_control_queue
         self.send_rate_hz = 0
         
         # Store input worker queues
@@ -540,7 +540,7 @@ class PreferencesPanel(QWidget):
         # Send settings to fusion worker
         self._apply_settings_to_fusion_worker(cal_prefs)
 
-        self._apply_send_rate_to_worker()
+        self.apply_send_rate_to_worker()
         
         # Clear loading flag after initial load is complete
         self._loading = False
@@ -552,13 +552,13 @@ class PreferencesPanel(QWidget):
             return
         self.send_rate_hz = int(rate_hz)
         if not self._loading:
-            self._apply_send_rate_to_worker()
+            self.apply_send_rate_to_worker()
             self._trigger_preference_save()
 
-    def _apply_send_rate_to_worker(self):
-        """Send the selected UDP rate limit to the UDP worker."""
-        if self.udp_control_queue is not None and not safe_queue_put(
-            self.udp_control_queue,
+    def apply_send_rate_to_worker(self):
+        """Send the selected UDP rate limit to the output worker."""
+        if self.output_control_queue is not None and not safe_queue_put(
+            self.output_control_queue,
             ('set_rate', self.send_rate_hz),
             timeout=QUEUE_PUT_TIMEOUT
         ):
@@ -929,7 +929,7 @@ class PreferencesPanel(QWidget):
         self.send_rate_combo.setCurrentIndex(unlimited_index)
         self.send_rate_hz = 0
         if not rate_changed:
-            self._apply_send_rate_to_worker()
+            self.apply_send_rate_to_worker()
         
         # Reset axis inversions to defaults
         self.invert_yaw = False

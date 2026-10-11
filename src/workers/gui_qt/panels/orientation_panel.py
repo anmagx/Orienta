@@ -1130,7 +1130,11 @@ class OrientationPanelQt(QGroupBox):
                         getattr(parent_window, 'input_command_queue', None),
                         getattr(parent_window, 'input_response_queue', None),
                         getattr(parent_window, 'fusion_control_queue', None),
-                        udp_control_queue=getattr(parent_window, 'udp_control_queue', None)
+                        output_control_queue=getattr(
+                            parent_window,
+                            'output_control_queue',
+                            None,
+                        )
                     )
                     prefs_widget.load_preferences()
                 except Exception:

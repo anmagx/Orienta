@@ -32,10 +32,14 @@ from src.workers.gui_qt.panels.orientation_panel import HoldPanelQt
 from src.managers.preferences_manager import PreferencesManager
 from src.workers.gui_qt.helpers.icon_helper import set_window_icon
 from src.managers.theme_manager import ThemeManager
+from src.util.game_client_registration import (
+    FreeTrackClientRegistration,
+    NPClientRegistration,
+)
 
 from src.config.config import (
     GUI_UPDATE_INTERVAL_MS, WORKER_QUEUE_CHECK_INTERVAL_MS,
-    APP_NAME, APP_VERSION
+    APP_NAME, APP_VERSION,
 )
 from src.util.log_utils import log_info, log_warning, log_error
 
@@ -52,7 +56,7 @@ class TabbedGUIWorker(QMainWindow):
     """PyQt5 GUI worker with tabbed layout for orienta."""
 
     def __init__(self, serial_control_queue, fusion_control_queue,
-                 udp_control_queue, status_queue, ui_status_queue, message_queue,
+                 output_control_queue, status_queue, ui_status_queue, message_queue,
                  serial_display_queue=None, euler_display_queue=None,
                  log_queue=None, stop_event=None, on_stop_callback=None,
                  input_command_queue=None, input_response_queue=None):
@@ -62,7 +66,7 @@ class TabbedGUIWorker(QMainWindow):
         Args:
             serial_control_queue: Queue for serial worker commands
             fusion_control_queue: Queue for fusion worker commands  
-            udp_control_queue: Queue for UDP worker commands
+            output_control_queue: Queue for output selection and backend controls
             status_queue: Queue for receiving status updates
             ui_status_queue: Queue for receiving UI-specific status updates
             message_queue: Queue for receiving messages
@@ -79,7 +83,7 @@ class TabbedGUIWorker(QMainWindow):
         # Store queues and state
         self.serial_control_queue = serial_control_queue
         self.fusion_control_queue = fusion_control_queue
-        self.udp_control_queue = udp_control_queue
+        self.output_control_queue = output_control_queue
         self.status_queue = status_queue
         self.ui_status_queue = ui_status_queue
         self.message_queue = message_queue
@@ -88,6 +92,25 @@ class TabbedGUIWorker(QMainWindow):
         self.log_queue = log_queue
         self.stop_event = stop_event
         self.on_stop_callback = on_stop_callback
+        self.freetrack_client_registration = FreeTrackClientRegistration()
+        self.npclient_registration = NPClientRegistration()
+        if sys.platform == "win32":
+            try:
+                self.freetrack_client_registration.recover_previous_registration()
+            except OSError as error:
+                log_error(
+                    self.log_queue,
+                    'GUI',
+                    f"Could not recover the previous FreeTrack client registration: {error}",
+                )
+            try:
+                self.npclient_registration.recover_previous_registration()
+            except OSError as error:
+                log_error(
+                    self.log_queue,
+                    'GUI',
+                    f"Could not recover the previous NPClient registration: {error}",
+                )
         
         # Input worker queues
         self.input_command_queue = input_command_queue
@@ -180,10 +203,12 @@ class TabbedGUIWorker(QMainWindow):
         self.connection_panel = ConnectionPanelQt(
             orientation_widget,
             self.serial_control_queue,
-            self.udp_control_queue,
+            self.output_control_queue,
             self._log_message,
             padding=6,
-            on_serial_stop=None
+            on_serial_stop=None,
+            freetrack_client_registration=self.freetrack_client_registration,
+            npclient_registration=self.npclient_registration,
         )
         layout.addWidget(self.connection_panel)
 
@@ -225,9 +250,8 @@ class TabbedGUIWorker(QMainWindow):
             self.input_command_queue,
             self.input_response_queue,
             self.fusion_control_queue,
-            udp_control_queue=self.udp_control_queue
+            output_control_queue=self.output_control_queue,
         )
-
         # Connect preferences panel to the orientation panel for shortcuts
         try:
             self.preferences_panel.connect_orientation_panel(self.orientation_panel)
@@ -457,8 +481,15 @@ class TabbedGUIWorker(QMainWindow):
             self._safe_panel_call('orientation_panel', 'update_drift_status', bool(value))
         elif status_type == 'msg_rate':
             self._safe_panel_call('connection_panel', 'update_message_rate', float(value))
-        elif status_type == 'send_rate':
+        elif status_type == 'output_send_rate':
             self._safe_panel_call('connection_panel', 'update_send_rate', float(value))
+        elif status_type == 'output_status':
+            if value == "ready":
+                self._safe_panel_call(
+                    'preferences_panel',
+                    'apply_send_rate_to_worker',
+                )
+            self._safe_panel_call('connection_panel', 'update_output_status', value)
         elif status_type == 'stationary':
             self._safe_panel_call('orientation_panel', 'update_device_status', bool(value))
 
@@ -497,6 +528,7 @@ class TabbedGUIWorker(QMainWindow):
     
     def _log_message(self, message: str):
         """Log a message to the message panel."""
+        log_info(self.log_queue, 'GUI', message)
         if hasattr(self.message_panel, 'append_message'):
             self.message_panel.append_message(message)
             # Update displays immediately for direct log calls
@@ -598,6 +630,17 @@ class TabbedGUIWorker(QMainWindow):
             except Exception:
                 pass
 
+        if sys.platform == "win32":
+            try:
+                if hasattr(self, 'connection_panel'):
+                    self.connection_panel.restore_client_registrations()
+            except OSError as error:
+                log_error(
+                    self.log_queue,
+                    'GUI',
+                    f"Could not restore game client registration: {error}",
+                )
+
         # Save preferences before closing (do this while panels still exist)
         try:
             self.save_preferences()
@@ -672,18 +715,28 @@ class TabbedGUIWorker(QMainWindow):
             log_error(self.log_queue, 'GUI', f"Error saving preferences: {e}")
 
 
-def start_gui_worker(serial_control_queue, fusion_control_queue,
-                     udp_control_queue, status_queue, ui_status_queue, message_queue,
-                     serial_display_queue=None, euler_display_queue=None,
-                 log_queue=None, stop_event=None, on_stop_callback=None,
-                 input_command_queue=None, input_response_queue=None):
+def start_gui_worker(
+    serial_control_queue,
+    fusion_control_queue,
+    output_control_queue,
+    status_queue,
+    ui_status_queue,
+    message_queue,
+    serial_display_queue=None,
+    euler_display_queue=None,
+    log_queue=None,
+    stop_event=None,
+    on_stop_callback=None,
+    input_command_queue=None,
+    input_response_queue=None,
+):
     """
     Start the PyQt5 GUI worker with tabbed interface.
     
     Args:
         serial_control_queue: Queue for serial worker commands
         fusion_control_queue: Queue for fusion worker commands  
-        udp_control_queue: Queue for UDP worker commands
+        output_control_queue: Queue for output selection and backend controls
         status_queue: Queue for receiving status updates
         ui_status_queue: Queue for receiving UI-specific status updates
         message_queue: Queue for receiving messages
@@ -732,7 +785,7 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
     main_window = TabbedGUIWorker(
         serial_control_queue=serial_control_queue,
         fusion_control_queue=fusion_control_queue,
-        udp_control_queue=udp_control_queue,
+        output_control_queue=output_control_queue,
         status_queue=status_queue,
         ui_status_queue=ui_status_queue,
         message_queue=message_queue,
@@ -742,7 +795,7 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
         stop_event=stop_event,
         on_stop_callback=on_stop_callback,
         input_command_queue=input_command_queue,
-        input_response_queue=input_response_queue
+        input_response_queue=input_response_queue,
     )
     
     # Show window
@@ -756,9 +809,20 @@ def start_gui_worker(serial_control_queue, fusion_control_queue,
     log_info(log_queue, 'GUI', "PyQt5 tabbed GUI stopped")
 
 
-def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event, 
-               eulerDisplayQueue, controlQueue, serialControlQueue, 
-               udpControlQueue, logQueue, uiStatusQueue, inputCommandQueue, inputResponseQueue):
+def run_worker(
+    messageQueue,
+    serialDisplayQueue,
+    statusQueue,
+    stop_event,
+    eulerDisplayQueue,
+    controlQueue,
+    serialControlQueue,
+    outputControlQueue,
+    logQueue,
+    uiStatusQueue,
+    inputCommandQueue,
+    inputResponseQueue,
+):
     """
     Compatibility wrapper for the process manager.
     
@@ -768,7 +832,7 @@ def run_worker(messageQueue, serialDisplayQueue, statusQueue, stop_event,
     start_gui_worker(
         serial_control_queue=serialControlQueue,
         fusion_control_queue=controlQueue,
-        udp_control_queue=udpControlQueue,
+        output_control_queue=outputControlQueue,
         status_queue=statusQueue,
         ui_status_queue=uiStatusQueue,
         message_queue=messageQueue,
@@ -793,7 +857,7 @@ if __name__ == "__main__":
     test_queues = {
         'serial': queue.Queue(),
         'fusion': queue.Queue(),
-        'udp': queue.Queue(),
+        'output': queue.Queue(),
         'status': queue.Queue(),
         'message': queue.Queue()
     }
@@ -808,7 +872,7 @@ if __name__ == "__main__":
     start_gui_worker(
         serial_control_queue=test_queues['serial'],
         fusion_control_queue=test_queues['fusion'],
-        udp_control_queue=test_queues['udp'],
+        output_control_queue=test_queues['output'],
         status_queue=test_queues['status'],
         message_queue=test_queues['message'],
         stop_event=stop_event,

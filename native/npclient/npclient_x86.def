@@ -1,0 +1,23 @@
+LIBRARY NPClient
+EXPORTS
+    NPPriv_ClientNotify=NPPriv_ClientNotify@0
+    NPPriv_GetLastError=NPPriv_GetLastError@0
+    NPPriv_SetData=NPPriv_SetData@0
+    NPPriv_SetLastError=NPPriv_SetLastError@0
+    NPPriv_SetParameter=NPPriv_SetParameter@0
+    NPPriv_SetSignature=NPPriv_SetSignature@0
+    NPPriv_SetVersion=NPPriv_SetVersion@0
+    NP_GetData=NP_GetData@4
+    NP_GetParameter=NP_GetParameter@8
+    NP_GetSignature=NP_GetSignature@4
+    NP_QueryVersion=NP_QueryVersion@4
+    NP_ReCenter=NP_ReCenter@0
+    NP_RegisterProgramProfileID=NP_RegisterProgramProfileID@4
+    NP_RegisterWindowHandle=NP_RegisterWindowHandle@4
+    NP_RequestData=NP_RequestData@4
+    NP_SetParameter=NP_SetParameter@8
+    NP_StartCursor=NP_StartCursor@0
+    NP_StartDataTransmission=NP_StartDataTransmission@0
+    NP_StopCursor=NP_StopCursor@0
+    NP_StopDataTransmission=NP_StopDataTransmission@0
+    NP_UnregisterWindowHandle=NP_UnregisterWindowHandle@0

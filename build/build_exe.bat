@@ -8,6 +8,7 @@ if not exist "%PYTHON%" (
 )
 
 "%PYTHON%" -m pip install -r "%~dp0requirements-build.txt" || exit /b 1
+call "%~dp0build_game_clients.bat" || exit /b 1
 "%PYTHON%" -m PyInstaller --noconfirm --clean --distpath "%~dp0dist" --workpath "%~dp0work" "%~dp0orienta.spec" || exit /b 1
 
 echo Build complete. Versioned executable is in "%~dp0dist"

@@ -1,0 +1,7 @@
+LIBRARY FreeTrackClient
+EXPORTS
+    FTGetData=FTGetData@4
+    FTReportName=FTReportName@4
+    FTReportID=FTReportID@4
+    FTGetDllVersion=FTGetDllVersion@0
+    FTProvider=FTProvider@0

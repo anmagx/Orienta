@@ -44,6 +44,25 @@ datas = [
     (str(ROOT / "src" / "img" / "orienta_logo.png"), "src/img"),
     (str(ROOT / "src" / "themes" / "dark.qss"), "src/themes"),
     (str(ROOT / "src" / "themes" / "light.qss"), "src/themes"),
+    (
+        str(ROOT / "data" / "facetracknoir_supported_games.csv"),
+        "freetrack_catalog",
+    ),
+    (
+        str(ROOT / "data" / "FACETRACKNOIR-COPYING.txt"),
+        "licenses/facetracknoir",
+    ),
+    (str(ROOT / "native" / "npclient" / "LICENSE.md"), "licenses/npclient"),
+    (str(ROOT / "native" / "npclient" / "README-CREDIT.txt"), "licenses/npclient"),
+]
+
+freetrack_client_dir = ROOT / "build" / "dist" / "freetrack_client"
+npclient_dir = ROOT / "build" / "dist" / "npclient"
+binaries = [
+    (str(freetrack_client_dir / "FreeTrackClient.dll"), "freetrack_client"),
+    (str(freetrack_client_dir / "FreeTrackClient64.dll"), "freetrack_client"),
+    (str(npclient_dir / "NPClient.dll"), "npclient"),
+    (str(npclient_dir / "NPClient64.dll"), "npclient"),
 ]
 
 version_info = VSVersionInfo(
@@ -80,7 +99,7 @@ version_info = VSVersionInfo(
 a = Analysis(
     [str(ROOT / "orienta.py")],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[],
     hookspath=[],
