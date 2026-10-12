@@ -107,8 +107,13 @@ The transport and pose-processing implementations live in `src/outputs/`,
 separate from the process orchestrator. `native_output_processing.py` supplies
 independently testable response-curve, filter dispatch, and offset processing
 for the direct protocols only. UDP poses bypass it. `src/filters/` defines the
-pose-filter contract, parameter metadata, and registry; `one_euro.py` is the
-initial registered filter.
+pose-filter contract, parameter metadata, and registry. `one_euro.py` is the
+default filter; `ema.py` provides fixed-cutoff exponential smoothing, and
+`hysteresis.py` suppresses small movements with an adjustable deadband.
+`critically_damped.py` provides a second-order response that settles without
+overshoot for a fixed target, and `accela_style.py` uses a deadzone and
+vector-magnitude adaptive response. See [third-party notices](THIRD_PARTY_NOTICES.md)
+for its upstream attribution.
 `gui_qt/panels/native_output_settings_dialog.py` builds the filter dropdown and
 the selected filter's parameter sliders from registry metadata, alongside the
 smooth curve editor, per-axis preset/custom input limits, offsets, validation,

@@ -15,7 +15,7 @@ from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt5.QtGui import QMouseEvent, QPalette
 from PyQt5.QtWidgets import QApplication, QDialog, QFrame, QSlider
 
-from src.filters import FILTER_REGISTRY, available_filters
+from src.filters import FILTER_REGISTRY, available_filters, get_filter_definition
 from src.filters.base import FilterDefinition, FilterParameter
 from src.workers.gui_qt.panels.native_output_settings_dialog import (
     NativeOutputSettingsDialog,
@@ -48,7 +48,205 @@ class NativeOutputProcessingTests(unittest.TestCase):
         )
         self.assertEqual(
             [definition.identifier for definition in available_filters()],
-            ["one_euro"],
+            [
+                "one_euro",
+                "accela_style",
+                "critically_damped",
+                "ema",
+                "hysteresis",
+            ],
+        )
+        self.assertEqual(
+            normalized["filter_settings"]["accela_style"],
+            {
+                "response_hz": 2.0,
+                "acceleration_gain": 3.0,
+                "acceleration_scale_deg": 2.0,
+                "deadzone_deg": 0.03,
+            },
+        )
+        self.assertEqual(
+            normalized["filter_settings"]["critically_damped"],
+            {"response_hz": 5.0},
+        )
+        self.assertEqual(
+            normalized["filter_settings"]["ema"],
+            {"cutoff_hz": 2.0},
+        )
+        self.assertEqual(
+            normalized["filter_settings"]["hysteresis"],
+            {"threshold_deg": 0.25, "release_percent": 50.0},
+        )
+
+    def test_ema_filter_smooths_pose_and_handles_yaw_wraparound(self):
+        ema = get_filter_definition("ema").create({"cutoff_hz": 2.0})
+        self.assertEqual(ema.process((0.0, 0.0, 0.0), 1.0), (0.0, 0.0, 0.0))
+        smoothed = ema.process((60.0, 0.0, 0.0), 1.01)
+        self.assertGreater(smoothed[0], 0.0)
+        self.assertLess(smoothed[0], 60.0)
+
+        ema.reset()
+        ema.process((179.0, 0.0, 0.0), 2.0)
+        wrapped = ema.process((-179.0, 0.0, 0.0), 2.01)[0]
+        self.assertGreater(wrapped, 179.0)
+        self.assertLess(wrapped, 181.0)
+
+    def test_ema_filter_resets_on_invalid_sample_interval(self):
+        ema = get_filter_definition("ema").create({"cutoff_hz": 2.0})
+        ema.process((0.0, 0.0, 0.0), 1.0)
+        self.assertEqual(
+            ema.process((30.0, 0.0, 0.0), 1.0),
+            (30.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            ema.process((45.0, 0.0, 0.0), 2.5),
+            (45.0, 0.0, 0.0),
+        )
+
+    def test_ema_filter_settings_round_trip(self):
+        settings = default_native_output_settings()
+        settings["filter_type"] = "ema"
+        settings["filter_settings"]["ema"] = {"cutoff_hz": 3.4}
+        normalized = normalize_native_output_settings(settings)
+        restored = native_output_preferences_from_section(
+            native_output_section_from_settings(normalized)
+        )
+        self.assertEqual(restored["filter_type"], "ema")
+        self.assertEqual(
+            restored["filter_settings"]["ema"],
+            {"cutoff_hz": 3.4},
+        )
+        processor = NativeOutputProcessor(normalized)
+        processor.process((0.0, 0.0, 0.0), 1.0)
+        smoothed_pose = processor.process((60.0, 0.0, 0.0), 1.01)
+        self.assertGreater(smoothed_pose[0], 0.0)
+        self.assertLess(smoothed_pose[0], 120.0)
+
+    def test_hysteresis_filter_suppresses_jitter_and_tracks_threshold_crossings(self):
+        hysteresis = get_filter_definition("hysteresis").create({
+            "threshold_deg": 0.2,
+            "release_percent": 50.0,
+        })
+        self.assertEqual(
+            hysteresis.process((0.0, 0.0, 0.0), 1.0),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            hysteresis.process((0.1, -0.1, 0.0), 1.01),
+            (0.0, 0.0, 0.0),
+        )
+
+        first_crossing = hysteresis.process((0.21, 0.0, 0.0), 1.02)
+        self.assertAlmostEqual(first_crossing[0], 0.11)
+        held_inside_hysteresis = hysteresis.process((0.25, 0.0, 0.0), 1.03)
+        self.assertAlmostEqual(held_inside_hysteresis[0], 0.11)
+        second_crossing = hysteresis.process((0.32, 0.0, 0.0), 1.04)
+        self.assertAlmostEqual(second_crossing[0], 0.22)
+
+        hysteresis.reset()
+        hysteresis.process((179.0, 0.0, 0.0), 2.0)
+        wrapped = hysteresis.process((-179.0, 0.0, 0.0), 2.01)[0]
+        self.assertGreater(wrapped, 179.0)
+        self.assertLess(wrapped, 181.0)
+
+    def test_hysteresis_filter_settings_round_trip(self):
+        settings = default_native_output_settings()
+        settings["filter_type"] = "hysteresis"
+        settings["filter_settings"]["hysteresis"] = {
+            "threshold_deg": 0.4,
+            "release_percent": 65.0,
+        }
+        normalized = normalize_native_output_settings(settings)
+        restored = native_output_preferences_from_section(
+            native_output_section_from_settings(normalized)
+        )
+        self.assertEqual(restored["filter_type"], "hysteresis")
+        self.assertEqual(
+            restored["filter_settings"]["hysteresis"],
+            {"threshold_deg": 0.4, "release_percent": 65.0},
+        )
+
+    def test_critically_damped_filter_tracks_steps_without_overshoot(self):
+        smoother = get_filter_definition("critically_damped").create({
+            "response_hz": 5.0,
+        })
+        self.assertEqual(
+            smoother.process((0.0, 0.0, 0.0), 1.0),
+            (0.0, 0.0, 0.0),
+        )
+        values = [
+            smoother.process((60.0, 0.0, 0.0), 1.0 + index / 120.0)[0]
+            for index in range(1, 61)
+        ]
+        self.assertTrue(all(
+            previous <= current
+            for previous, current in zip(values, values[1:])
+        ))
+        self.assertGreater(values[0], 0.0)
+        self.assertGreater(values[-1], 59.99)
+        self.assertLessEqual(values[-1], 60.0 + 1e-9)
+
+        smoother.reset()
+        smoother.process((179.0, 0.0, 0.0), 2.0)
+        wrapped = smoother.process((-179.0, 0.0, 0.0), 2.1)[0]
+        self.assertGreater(wrapped, 179.0)
+        self.assertLess(wrapped, 181.0)
+
+    def test_critically_damped_filter_settings_round_trip(self):
+        settings = default_native_output_settings()
+        settings["filter_type"] = "critically_damped"
+        settings["filter_settings"]["critically_damped"] = {
+            "response_hz": 6.5,
+        }
+        normalized = normalize_native_output_settings(settings)
+        restored = native_output_preferences_from_section(
+            native_output_section_from_settings(normalized)
+        )
+        self.assertEqual(restored["filter_type"], "critically_damped")
+        self.assertEqual(
+            restored["filter_settings"]["critically_damped"],
+            {"response_hz": 6.5},
+        )
+
+    def test_accela_style_filter_suppresses_jitter_and_adapts_to_pose_error(self):
+        accela = get_filter_definition("accela_style").create({
+            "response_hz": 2.0,
+            "acceleration_gain": 3.0,
+            "acceleration_scale_deg": 2.0,
+            "deadzone_deg": 0.1,
+        })
+        first = accela.process((0.0, 0.0, 0.0), 1.0)
+        jitter = accela.process((0.05, -0.05, 0.08), 1.01)
+        self.assertEqual(jitter, first)
+
+        moved = accela.process((20.0, 20.0, 0.0), 1.02)
+        self.assertGreater(moved[0], 0.0)
+        self.assertLess(moved[0], 20.0)
+        self.assertAlmostEqual(moved[0], moved[1])
+
+        accela.reset()
+        accela.process((179.0, 0.0, 0.0), 2.0)
+        wrapped = accela.process((-179.0, 0.0, 0.0), 2.01)[0]
+        self.assertGreater(wrapped, 179.0)
+        self.assertLess(wrapped, 181.0)
+
+    def test_accela_style_filter_settings_round_trip(self):
+        settings = default_native_output_settings()
+        settings["filter_type"] = "accela_style"
+        settings["filter_settings"]["accela_style"] = {
+            "response_hz": 3.5,
+            "acceleration_gain": 2.0,
+            "acceleration_scale_deg": 1.25,
+            "deadzone_deg": 0.05,
+        }
+        normalized = normalize_native_output_settings(settings)
+        restored = native_output_preferences_from_section(
+            native_output_section_from_settings(normalized)
+        )
+        self.assertEqual(restored["filter_type"], "accela_style")
+        self.assertEqual(
+            restored["filter_settings"]["accela_style"],
+            settings["filter_settings"]["accela_style"],
         )
 
     def test_legacy_filter_values_migrate_to_filter_settings_map(self):
@@ -410,6 +608,117 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         self.assertEqual(
             restored["filter_settings"],
             settings["filter_settings"],
+        )
+
+    def test_ema_filter_can_be_selected_and_its_setting_persisted(self):
+        from queue import Queue
+
+        panel = NativeOutputSettingsDialog(Queue())
+        self.addCleanup(panel.close)
+        index = panel.filter_type_combo.findData("ema")
+        self.assertGreaterEqual(index, 0)
+        panel.filter_type_combo.setCurrentIndex(index)
+        panel.filter_controls["cutoff_hz"].setValue(33)
+        panel._save_timer.stop()
+
+        settings = panel.get_settings()
+        restored = native_output_preferences_from_section(
+            panel.get_preferences()
+        )
+        self.assertEqual(settings["filter_type"], "ema")
+        self.assertEqual(
+            settings["filter_settings"]["ema"]["cutoff_hz"],
+            3.4,
+        )
+        self.assertEqual(restored["filter_type"], "ema")
+        self.assertEqual(
+            restored["filter_settings"]["ema"]["cutoff_hz"],
+            3.4,
+        )
+
+    def test_hysteresis_filter_can_be_selected_and_its_settings_persisted(self):
+        from queue import Queue
+
+        panel = NativeOutputSettingsDialog(Queue())
+        self.addCleanup(panel.close)
+        index = panel.filter_type_combo.findData("hysteresis")
+        self.assertGreaterEqual(index, 0)
+        panel.filter_type_combo.setCurrentIndex(index)
+        panel.filter_controls["threshold_deg"].setValue(7)
+        panel.filter_controls["release_percent"].setValue(11)
+        panel._save_timer.stop()
+
+        settings = panel.get_settings()
+        restored = native_output_preferences_from_section(
+            panel.get_preferences()
+        )
+        self.assertEqual(settings["filter_type"], "hysteresis")
+        self.assertEqual(
+            settings["filter_settings"]["hysteresis"],
+            {"threshold_deg": 0.4, "release_percent": 65.0},
+        )
+        self.assertEqual(
+            restored["filter_settings"]["hysteresis"],
+            settings["filter_settings"]["hysteresis"],
+        )
+
+    def test_critically_damped_filter_can_be_selected_and_persisted(self):
+        from queue import Queue
+
+        panel = NativeOutputSettingsDialog(Queue())
+        self.addCleanup(panel.close)
+        index = panel.filter_type_combo.findData("critically_damped")
+        self.assertGreaterEqual(index, 0)
+        panel.filter_type_combo.setCurrentIndex(index)
+        panel.filter_controls["response_hz"].setValue(12)
+        panel._save_timer.stop()
+
+        settings = panel.get_settings()
+        restored = native_output_preferences_from_section(
+            panel.get_preferences()
+        )
+        self.assertEqual(settings["filter_type"], "critically_damped")
+        self.assertEqual(
+            settings["filter_settings"]["critically_damped"],
+            {"response_hz": 6.5},
+        )
+        self.assertEqual(
+            restored["filter_settings"]["critically_damped"],
+            settings["filter_settings"]["critically_damped"],
+        )
+
+    def test_accela_style_filter_can_be_selected_and_settings_persisted(self):
+        from queue import Queue
+
+        panel = NativeOutputSettingsDialog(Queue())
+        self.addCleanup(panel.close)
+        index = panel.filter_type_combo.findData("accela_style")
+        self.assertGreaterEqual(index, 0)
+        panel.filter_type_combo.setCurrentIndex(index)
+        panel.filter_controls["response_hz"].setValue(6)
+        panel.filter_controls["acceleration_gain"].setValue(20)
+        panel.filter_controls["acceleration_scale_deg"].setValue(4)
+        panel.filter_controls["deadzone_deg"].setValue(5)
+        panel._save_timer.stop()
+
+        settings = panel.get_settings()
+        restored = native_output_preferences_from_section(
+            panel.get_preferences()
+        )
+        expected = {
+            "response_hz": 3.5,
+            "acceleration_gain": 2.0,
+            "acceleration_scale_deg": 1.25,
+            "deadzone_deg": 0.05,
+        }
+        self.assertEqual(settings["filter_type"], "accela_style")
+        self.assertEqual(
+            settings["filter_settings"]["accela_style"],
+            expected,
+        )
+        self.assertEqual(
+            restored["filter_settings"]["accela_style"],
+            expected,
         )
 
     def test_gui_startup_loads_all_preferences_with_custom_curve_limits(self):

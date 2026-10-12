@@ -36,8 +36,8 @@ test runner is required.
 | `test_orientation_hold_input_modes.py` | Momentary versus toggle Hold Orientation behavior for buttons and shortcuts, including preferences. |
 | `test_orientation_held_marker.py` | Visualization rendering for held-pose and recenter-guide markers. |
 | `test_reset_orientation_toggle_follow.py` | Reset/recenter press and release timing, instantaneous mode, multiple held inputs, and fusion-worker command handling. |
-| `test_native_output_processing.py` | Filter registry and One Euro behavior; response curves and limits; native processing and offsets; settings migration/round-trip; calibration prompts; output panel layout, themes, and controls. |
-| `test_output_protocol_selection.py` | UDP, FreeTrack, and NPClient routing; UDP packet layout; FreeTrack shared-memory structure and game-response tables; client registration and restoration. |
+| `test_native_output_processing.py` | Filter registry, One Euro, EMA, hysteresis, critically damped, and Accela-inspired behavior; response curves and limits; native processing and offsets; settings migration/round-trip; calibration prompts; output panel layout, themes, and controls. |
+| `test_output_protocol_selection.py` | UDP, FreeTrack, and NPClient routing; live native-filter switching; UDP packet layout; FreeTrack shared-memory structure and game-response tables; client registration and restoration. |
 | `test_user_data_paths.py` | Preferences and logs in per-user AppData, atomic preference writes, failed-save behavior, and packaged-path behavior. |
 
 The output and native-processing tests use queues, temporary directories,

@@ -338,6 +338,79 @@ class OutputBackendTests(unittest.TestCase):
             status_names.append(status_queue.get_nowait()[0])
         self.assertIn("output_status", status_names)
 
+    def test_output_worker_switches_native_filter_while_output_is_active(self):
+        from src.filters import FILTER_REGISTRY
+        from src.filters.base import FilterDefinition
+        from src.outputs.native_output_processing import default_native_output_settings
+        from src.workers.output_wrk import run_worker
+
+        filter_id = "test_live_filter_switch"
+
+        class HalfPoseFilter:
+            def reset(self):
+                pass
+
+            def process(self, angles, timestamp):
+                return tuple(value / 2.0 for value in angles)
+
+        FILTER_REGISTRY[filter_id] = FilterDefinition(
+            identifier=filter_id,
+            label="Live Switch Test",
+            parameters=(),
+            factory=lambda settings: HalfPoseFilter(),
+        )
+        try:
+            stop_event = threading.Event()
+            pose_queue = Queue()
+            control_queue = Queue()
+            initial_settings = default_native_output_settings()
+            initial_settings["filter_enabled"] = False
+            switched_settings = default_native_output_settings()
+            switched_settings["filter_type"] = filter_id
+            switched_settings["filter_enabled"] = True
+            control_queue.put(("set_native_processing", initial_settings))
+            control_queue.put(("set_protocol", OUTPUT_PROTOCOL_FREETRACK))
+            control_queue.put(("set_enabled", True))
+            pose_queue.put([0.0, 0.0, 0.0])
+            writes = []
+
+            class SharedMemoryBackend:
+                mapping_already_exists = False
+
+                def send_pose(self, actual_pose):
+                    writes.append(actual_pose)
+                    if len(writes) == 1:
+                        control_queue.put((
+                            "set_native_processing",
+                            switched_settings,
+                        ))
+                        pose_queue.put([60.0, 0.0, 0.0])
+                    else:
+                        stop_event.set()
+
+                def close(self):
+                    pass
+
+            udp_module = types.SimpleNamespace(UDPOutput=Mock())
+            shared_module = types.SimpleNamespace(
+                FreeTrackSharedMemory=lambda: SharedMemoryBackend()
+            )
+            with patch.dict(
+                sys.modules,
+                {
+                    "src.outputs.udp_output": udp_module,
+                    "src.outputs.shared_memory_output": shared_module,
+                },
+            ):
+                run_worker(pose_queue, control_queue, stop_event)
+
+            self.assertEqual(len(writes), 2)
+            self.assertEqual(writes[0][0], 0.0)
+            self.assertAlmostEqual(writes[1][0], 60.0)
+            udp_module.UDPOutput.assert_not_called()
+        finally:
+            FILTER_REGISTRY.pop(filter_id, None)
+
     def test_output_worker_routes_udp_poses_to_udp_backend(self):
         from src.workers.output_wrk import run_worker
         from src.outputs.native_output_processing import default_native_output_settings

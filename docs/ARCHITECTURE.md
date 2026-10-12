@@ -270,7 +270,8 @@ For FreeTrack and NPClient only, `OutputWorker` maps yaw, pitch, and roll
 magnitudes through configured shape-preserving cubic curves spanning each
 axis's selected 30°/45°/60°/75°/90° input limit to at most 180° output.
 The selected filter from `src/filters/` runs on the input angles before curve
-mapping; One Euro is the initial registered filter.
+mapping; One Euro remains the default. EMA, hysteresis jitter suppression, and
+a critically damped and Accela-inspired smoother are also available.
 Changing an axis limit rescales its curve control points. The curve's final
 output is vertically adjustable. The worker then adds rotation and translation
 offsets; final rotations are clamped to ±180°.

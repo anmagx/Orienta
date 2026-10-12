@@ -719,9 +719,9 @@ class NativeOutputSettingsDialog(QDialog):
         curves_layout.addLayout(curve_buttons)
         layout.addWidget(curves_group)
 
-        filter_group = QGroupBox("Adaptive filter")
+        filter_group = QGroupBox("Pose filter")
         filter_layout = QVBoxLayout(filter_group)
-        self.filter_enabled_checkbox = QCheckBox("Enable adaptive filtering")
+        self.filter_enabled_checkbox = QCheckBox("Enable pose filtering")
         self.filter_enabled_checkbox.setToolTip(
             "Turn temporal pose filtering on or off. Response curves and "
             "offsets remain active when filtering is disabled."

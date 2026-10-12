@@ -86,23 +86,26 @@ game-ID handshake after Orienta's curves have been applied.
 - Keep the curve editor responsive but avoid sending a UI command for every
   drag event; debounce edits and apply a complete validated settings snapshot.
 
-### Adaptive filtering
+### Selectable filtering
 
 - Keep native pose filters in `src/filters/`, with a shared filter contract,
-  filter metadata/registry, and one implementation per module. Implement
-  One Euro as the initial registered filter; new filters must be addable
-  without putting algorithm code in the output worker or settings dialog.
+  filter metadata/registry, and one implementation per module. One Euro is
+  the default registered filter; EMA, hysteresis jitter suppression, and a
+  critically damped smoother and an Accela-inspired adaptive response are
+  also available. New filters must remain addable without putting algorithm
+  code in the output worker or settings dialog.
 - Add a filter dropdown to Native Output Settings. Build filter-specific
   controls and tooltips from each registered filter's metadata, and persist
   selection plus per-filter settings in the `native_output` section.
-- Use a One Euro-style adaptive low-pass filter per rotational axis as the
-  initial candidate: stronger smoothing at low angular velocity and a higher
-  cutoff during fast movement to limit perceived lag.
-- Expose effect-oriented sliders for low-speed smoothing, fast-movement
-  responsiveness, and velocity-estimate stability, plus a filter enable
-  toggle. Tooltips name the corresponding One Euro parameters and explain
-  their effect. Keep defaults, slider ranges, and steps configurable in
-  `src/config/config.py`; defaults are enabled, 1.0 Hz, 0.03 beta, and 1.0 Hz.
+- Keep One Euro's adaptive low-pass settings for low-speed smoothing,
+  fast-movement responsiveness, and velocity-estimate stability. EMA exposes
+  a fixed smoothing cutoff in Hz. Tooltips explain that lower cutoffs smooth
+  more but add lag. The critically damped filter exposes a natural response
+  frequency; lower values settle more gradually and higher values respond
+  faster. The Accela-inspired filter uses a per-axis deadzone and a smooth
+  vector-magnitude response boost. Keep defaults, slider ranges, and steps
+  configurable in `src/config/config.py`; document upstream inspiration and
+  licensing in `docs/THIRD_PARTY_NOTICES.md`.
 - Use monotonic sample timestamps, reset filter state when native output is
   enabled, its settings change, or the output protocol changes, and handle
   yaw wraparound so crossing `+/-180°` does not look like a sudden full-speed

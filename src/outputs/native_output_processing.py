@@ -10,7 +10,8 @@ from src.filters import (
     default_filter_settings,
     get_filter_definition,
 )
-from src.filters.one_euro import ONE_EURO_FILTER_ID, wrap_delta_degrees
+from src.filters.one_euro import ONE_EURO_FILTER_ID
+from src.filters.utils import wrap_delta_degrees
 
 AXES = ("yaw", "pitch", "roll")
 CURVE_INPUT_LIMIT_DEG = 180.0

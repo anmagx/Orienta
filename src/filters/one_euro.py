@@ -15,6 +15,7 @@ from src.config.config import (
     FILTER_MIN_CUTOFF_HZ_STEP,
 )
 from .base import FilterDefinition, FilterParameter
+from .utils import low_pass_alpha as _low_pass_alpha, wrap_delta_degrees
 
 
 ONE_EURO_FILTER_ID = "one_euro"
@@ -64,15 +65,6 @@ ONE_EURO_FILTER_PARAMETERS = (
         unit="Hz",
     ),
 )
-
-
-def wrap_delta_degrees(value, reference):
-    return (value - reference + 180.0) % 360.0 - 180.0
-
-
-def _low_pass_alpha(cutoff_hz, delta_time):
-    time_constant = 1.0 / (2.0 * math.pi * cutoff_hz)
-    return 1.0 / (1.0 + time_constant / delta_time)
 
 
 class _OneEuroAxisFilter:

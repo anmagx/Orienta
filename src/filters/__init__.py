@@ -2,7 +2,23 @@
 
 from src.config.config import DEFAULT_FILTER_ENABLED
 
+from .accela_style import (
+    ACCELA_STYLE_FILTER,
+    ACCELA_STYLE_FILTER_ID,
+    AccelaStylePoseFilter,
+)
 from .base import FilterDefinition, FilterParameter, PoseFilter
+from .critically_damped import (
+    CRITICALLY_DAMPED_FILTER,
+    CRITICALLY_DAMPED_FILTER_ID,
+    CriticallyDampedPoseFilter,
+)
+from .ema import EMA_FILTER, EMA_FILTER_ID, EmaPoseFilter
+from .hysteresis import (
+    HYSTERESIS_FILTER,
+    HYSTERESIS_FILTER_ID,
+    HysteresisPoseFilter,
+)
 from .one_euro import (
     ONE_EURO_FILTER,
     ONE_EURO_FILTER_ID,
@@ -12,6 +28,10 @@ from .one_euro import (
 
 FILTER_REGISTRY = {
     ONE_EURO_FILTER.identifier: ONE_EURO_FILTER,
+    ACCELA_STYLE_FILTER.identifier: ACCELA_STYLE_FILTER,
+    CRITICALLY_DAMPED_FILTER.identifier: CRITICALLY_DAMPED_FILTER,
+    EMA_FILTER.identifier: EMA_FILTER,
+    HYSTERESIS_FILTER.identifier: HYSTERESIS_FILTER,
 }
 DEFAULT_FILTER_ID = ONE_EURO_FILTER_ID
 
@@ -47,6 +67,14 @@ __all__ = [
     "FilterDefinition",
     "FilterParameter",
     "PoseFilter",
+    "EMA_FILTER_ID",
+    "EmaPoseFilter",
+    "ACCELA_STYLE_FILTER_ID",
+    "AccelaStylePoseFilter",
+    "CRITICALLY_DAMPED_FILTER_ID",
+    "CriticallyDampedPoseFilter",
+    "HYSTERESIS_FILTER_ID",
+    "HysteresisPoseFilter",
     "ONE_EURO_FILTER_ID",
     "OneEuroPoseFilter",
     "available_filters",
