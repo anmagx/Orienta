@@ -186,6 +186,26 @@ QLineEdit:disabled {
     color: #666666;
 }
 
+/* Native output numeric controls */
+QDoubleSpinBox {
+    border: 1px solid #666666;
+    border-radius: 3px;
+    padding: 2px 4px;
+    background-color: #3c3c3c;
+    color: #ffffff;
+}
+
+QDoubleSpinBox:focus {
+    border: 2px solid #0078d4;
+    background-color: #4a4a4a;
+}
+
+QDoubleSpinBox:disabled {
+    background-color: #2a2a2a;
+    border: 1px solid #444444;
+    color: #666666;
+}
+
 /* Status bar */
 QStatusBar {
     background-color: #2b2b2b;
@@ -312,11 +332,18 @@ QWidget#preferencesContainer {
 }
 
 /* Visualization popup and settings dialog */
-QWidget#visualizationPopup, QDialog#visualizationSettingsDialog {
+QWidget#visualizationPopup,
+QDialog#visualizationSettingsDialog,
+QDialog#nativeOutputSettingsDialog {
     background-color: #3c3c3c;
     color: #ffffff;
     border: 1px solid #555555;
     border-radius: 4px;
+}
+
+QWidget#nativeOutputCurve {
+    background-color: #2b2b2b;
+    color: #ffffff;
 }
 
 /* Semantic status colors */

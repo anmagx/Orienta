@@ -28,15 +28,15 @@ from src.util.game_client_registration import (
     NPClientRegistration,
 )
 from src.workers.output_wrk import OUTPUT_PROTOCOLS
-from src.workers.shared_memory_output import (
+from src.outputs.shared_memory_output import (
     FTData,
     FTHeap,
     FreeTrackSharedMemory,
     freetrack_pose_from_euler,
     load_freetrack_game_response_tables,
 )
-from src.workers.gui_qt.panels.connection_panel import ConnectionPanelQt
-from src.workers.udp_output import UDPOutput
+from src.workers.gui_qt.panels.output_panel import OutputPanelQt
+from src.outputs.udp_output import UDPOutput
 
 
 class OutputProtocolSelectionTests(unittest.TestCase):
@@ -45,12 +45,10 @@ class OutputProtocolSelectionTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.serial_queue = Queue()
         self.output_control_queue = Queue()
         self.messages = []
-        self.panel = ConnectionPanelQt(
+        self.panel = OutputPanelQt(
             None,
-            self.serial_queue,
             self.output_control_queue,
             self.messages.append,
         )
@@ -67,7 +65,7 @@ class OutputProtocolSelectionTests(unittest.TestCase):
         self.assertEqual(self.panel.get_output_protocol(), OUTPUT_PROTOCOL_UDP)
         self.assertEqual(self.panel.get_udp_config(), ("127.0.0.2", 5555))
         self.assertEqual(
-            self.panel.get_prefs()["network"]["output_protocol"],
+            self.panel.get_prefs()["output_protocol"],
             OUTPUT_PROTOCOL_UDP,
         )
 
@@ -89,9 +87,8 @@ class OutputProtocolSelectionTests(unittest.TestCase):
 
     def test_npclient_selection_routes_shared_memory_and_registers_npclient(self):
         registration = Mock()
-        panel = ConnectionPanelQt(
+        panel = OutputPanelQt(
             None,
-            Queue(),
             Queue(),
             self.messages.append,
             npclient_registration=registration,
@@ -121,9 +118,8 @@ class OutputProtocolSelectionTests(unittest.TestCase):
     def test_switching_active_direct_protocols_switches_client_registration(self):
         freetrack_registration = Mock()
         npclient_registration = Mock()
-        panel = ConnectionPanelQt(
+        panel = OutputPanelQt(
             None,
-            Queue(),
             Queue(),
             self.messages.append,
             freetrack_client_registration=freetrack_registration,
@@ -152,9 +148,8 @@ class OutputProtocolSelectionTests(unittest.TestCase):
 
     def test_direct_output_registers_then_restores_client_path(self):
         registration = Mock()
-        panel = ConnectionPanelQt(
+        panel = OutputPanelQt(
             None,
-            Queue(),
             Queue(),
             self.messages.append,
             freetrack_client_registration=registration,
@@ -210,13 +205,12 @@ class OutputProtocolSelectionTests(unittest.TestCase):
         self.panel.output_protocol_combo.setCurrentIndex(1)
         saved = self.panel.get_prefs()
         self.assertEqual(
-            saved["network"]["output_protocol"],
+            saved["output_protocol"],
             OUTPUT_PROTOCOL_FREETRACK,
         )
 
-        restored = ConnectionPanelQt(
+        restored = OutputPanelQt(
             None,
-            Queue(),
             Queue(),
             self.messages.append,
         )
@@ -231,13 +225,12 @@ class OutputProtocolSelectionTests(unittest.TestCase):
         self.panel.output_protocol_combo.setCurrentIndex(2)
         saved = self.panel.get_prefs()
         self.assertEqual(
-            saved["network"]["output_protocol"],
+            saved["output_protocol"],
             OUTPUT_PROTOCOL_NPCLIENT,
         )
 
-        restored = ConnectionPanelQt(
+        restored = OutputPanelQt(
             None,
-            Queue(),
             Queue(),
             self.messages.append,
         )
@@ -258,7 +251,7 @@ class OutputBackendTests(unittest.TestCase):
         )
 
     def test_udp_backend_sends_translation_first_packet(self):
-        with patch("src.workers.udp_output.socket.socket") as socket_factory:
+        with patch("src.outputs.udp_output.socket.socket") as socket_factory:
             backend = UDPOutput("127.0.0.2", 5555)
             backend.send_pose([10, -5, 2])
             backend.set_target("127.0.0.3", 6666)
@@ -277,7 +270,7 @@ class OutputBackendTests(unittest.TestCase):
         sock.close.assert_called_once_with()
 
     def test_udp_backend_rejects_non_finite_pose(self):
-        with patch("src.workers.udp_output.socket.socket"):
+        with patch("src.outputs.udp_output.socket.socket"):
             backend = UDPOutput()
         with self.assertRaisesRegex(ValueError, "finite"):
             backend.send_pose([0, float("nan"), 0])
@@ -285,6 +278,7 @@ class OutputBackendTests(unittest.TestCase):
 
     def test_output_worker_uses_one_pose_queue_and_selected_backend(self):
         from src.workers.output_wrk import run_worker
+        from src.outputs.native_output_processing import default_native_output_settings
 
         stop_event = threading.Event()
         pose_queue = Queue()
@@ -292,6 +286,17 @@ class OutputBackendTests(unittest.TestCase):
         status_queue = Queue()
         pose = [25.0, -10.0, 3.0]
         pose_queue.put(pose)
+        native_settings = default_native_output_settings()
+        native_settings["filter_enabled"] = False
+        native_settings["input_limits"]["yaw"] = 30.0
+        native_settings["curves"]["yaw"] = [
+            [0, 0],
+            [15, 90],
+            [25, 100],
+            [30, 180],
+        ]
+        native_settings["offsets"]["x_mm"] = 20.0
+        control_queue.put(("set_native_processing", native_settings))
         control_queue.put(("set_protocol", OUTPUT_PROTOCOL_NPCLIENT))
         control_queue.put(("set_enabled", True))
         writes = []
@@ -314,13 +319,17 @@ class OutputBackendTests(unittest.TestCase):
         with patch.dict(
             sys.modules,
             {
-                "src.workers.udp_output": udp_module,
-                "src.workers.shared_memory_output": shared_module,
+                "src.outputs.udp_output": udp_module,
+                "src.outputs.shared_memory_output": shared_module,
             },
         ):
             run_worker(pose_queue, control_queue, stop_event, status_queue)
 
-        self.assertEqual(writes, [tuple(pose)])
+        for actual, expected in zip(
+            writes[0],
+            (100.0, -20.0, 6.0, 20.0, 0.0, 0.0),
+        ):
+            self.assertAlmostEqual(actual, expected)
         self.assertEqual(closes, [True])
         udp_module.UDPOutput.assert_not_called()
         shared_module.FreeTrackSharedMemory.assert_called_once_with()
@@ -331,12 +340,17 @@ class OutputBackendTests(unittest.TestCase):
 
     def test_output_worker_routes_udp_poses_to_udp_backend(self):
         from src.workers.output_wrk import run_worker
+        from src.outputs.native_output_processing import default_native_output_settings
 
         stop_event = threading.Event()
         pose_queue = Queue()
         control_queue = Queue()
         pose = [4.0, -2.0, 1.0]
         pose_queue.put(pose)
+        native_settings = default_native_output_settings()
+        native_settings["filter_enabled"] = False
+        native_settings["offsets"]["yaw_deg"] = 90.0
+        control_queue.put(("set_native_processing", native_settings))
         control_queue.put(("set_udp", "127.0.0.2", 5555))
         control_queue.put(("set_enabled", True))
         sent = []
@@ -358,8 +372,8 @@ class OutputBackendTests(unittest.TestCase):
         with patch.dict(
             sys.modules,
             {
-                "src.workers.udp_output": udp_module,
-                "src.workers.shared_memory_output": shared_module,
+                "src.outputs.udp_output": udp_module,
+                "src.outputs.shared_memory_output": shared_module,
             },
         ):
             run_worker(pose_queue, control_queue, stop_event)
@@ -463,7 +477,7 @@ class FreeTrackProtocolTests(unittest.TestCase):
 
         data = FTHeap.from_address(int(shared._view)).data
         shared.write_pose([90, 45, -180])
-        shared.send_pose([91, 46, -179])
+        shared.send_pose([91, 46, -179, 12.5, -25.0, 40.0])
 
         expected_yaw, expected_pitch, expected_roll = freetrack_pose_from_euler(
             91,
@@ -474,7 +488,11 @@ class FreeTrackProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(data.Yaw, expected_yaw, places=6)
         self.assertAlmostEqual(data.Pitch, expected_pitch, places=6)
         self.assertAlmostEqual(data.Roll, expected_roll, places=6)
-        self.assertEqual((data.X, data.Y, data.Z), (0.0, 0.0, 0.0))
+        self.assertEqual((data.X, data.Y, data.Z), (12.5, -25.0, 40.0))
+        self.assertEqual(
+            (data.RawX, data.RawY, data.RawZ),
+            (12.5, -25.0, 40.0),
+        )
 
     @unittest.skipUnless(sys.platform == "win32", "FreeTrack uses Windows shared memory")
     def test_shared_memory_worker_echoes_game_id_and_clears_response_table(self):

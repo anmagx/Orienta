@@ -311,6 +311,13 @@ class FreeTrackSharedMemory:
             raise ValueError("FreeTrack pose requires yaw, pitch, and roll")
 
         yaw, pitch, roll = freetrack_pose_from_euler(*pose[:3])
+        translations = (
+            tuple(float(value) for value in pose[3:6])
+            if len(pose) >= 6
+            else (0.0, 0.0, 0.0)
+        )
+        if not all(math.isfinite(value) for value in translations):
+            raise ValueError("FreeTrack translation must contain only finite values")
         wait_result = self._kernel32.WaitForSingleObject(self._mutex_handle, 1000)
         if wait_result not in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED
             raise OSError(f"Could not acquire FreeTrack mutex (status {wait_result})")
@@ -320,15 +327,15 @@ class FreeTrackSharedMemory:
                 ("Yaw", yaw),
                 ("Pitch", pitch),
                 ("Roll", roll),
-                ("X", 0.0),
-                ("Y", 0.0),
-                ("Z", 0.0),
+                ("X", translations[0]),
+                ("Y", translations[1]),
+                ("Z", translations[2]),
                 ("RawYaw", yaw),
                 ("RawPitch", pitch),
                 ("RawRoll", roll),
-                ("RawX", 0.0),
-                ("RawY", 0.0),
-                ("RawZ", 0.0),
+                ("RawX", translations[0]),
+                ("RawY", translations[1]),
+                ("RawZ", translations[2]),
             )
             data_offset = FTHeap.data.offset
             for field_name, value in values:

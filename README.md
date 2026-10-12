@@ -162,6 +162,13 @@ If `LOCALAPPDATA` is unset, Orienta uses `AppData\Local\Orienta` under your home
 
 Check out the example device in action here! 
 
+## AI disclaimer
+This program was created with heavy (!) assistance from AI assistants. The core architecture (process manager based design with queue communication) was originally written by me for another project, but that's pretty much as far as my programming expertise was able to take me as far as raw coding goes. Though I'd like to think I'm somewhat okay at it, I am not a programmer by trade. If you were wondering why this is a python project, there's your reason - it's the only programming language I've used over the last 10 years and can at least understand and debug. 
+
+I tried to keep the project structure consistent and sensible if anyone wants to contribute. 
+
+All this to say, while I've tested this extensively, and use it myself, it is not meant for and probably not suited for critical applications. 
+
 ## License
 
 Orienta is distributed under the [MIT License](LICENSE).

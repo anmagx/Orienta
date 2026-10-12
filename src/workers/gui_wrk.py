@@ -22,10 +22,14 @@ from PyQt5.QtCore import QTimer, pyqtSignal, QObject, Qt
 from PyQt5.QtGui import QIcon
 
 from src.workers.gui_qt.panels.connection_panel import ConnectionPanelQt
+from src.workers.gui_qt.panels.output_panel import OutputPanelQt
 from src.workers.gui_qt.panels.message_panel import MessagePanelQt
 from src.workers.gui_qt.panels.orientation_panel import OrientationPanelQt
 # CalibrationPanelQt removed; orientation_panel now hosts calibration UI/logic
 from src.workers.gui_qt.panels.preferences_panel import PreferencesPanel
+from src.workers.gui_qt.panels.native_output_settings_dialog import (
+    NativeOutputSettingsDialog,
+)
 from src.workers.gui_qt.panels.about_panel import AboutPanel
 from src.workers.gui_qt.panels.orientation_panel import HoldPanelQt
 
@@ -119,6 +123,12 @@ class TabbedGUIWorker(QMainWindow):
         # Initialize managers
         self.preferences_manager = PreferencesManager()
         self.theme_manager = ThemeManager(QApplication.instance())
+        self.native_output_dialog = NativeOutputSettingsDialog(
+            self.output_control_queue,
+            self._log_message,
+            self,
+        )
+        self.native_output_dialog.preferences_changed.connect(self.save_preferences)
         
         # Initialize signals
         self.signals = TabbedGUISignals()
@@ -199,18 +209,41 @@ class TabbedGUIWorker(QMainWindow):
         except Exception:
             self.orientation_panel = None
 
-        # Connection panel moved to the bottom of the widget for easier access
+        # Keep input and output as distinct peer panels below Orientation.
+        connection_output_row = QWidget(orientation_widget)
+        connection_output_layout = QHBoxLayout(connection_output_row)
+        connection_output_layout.setContentsMargins(0, 0, 0, 0)
+        connection_output_layout.setSpacing(6)
+
         self.connection_panel = ConnectionPanelQt(
-            orientation_widget,
+            connection_output_row,
             self.serial_control_queue,
-            self.output_control_queue,
             self._log_message,
             padding=6,
             on_serial_stop=None,
+        )
+        self.output_panel = OutputPanelQt(
+            connection_output_row,
+            self.output_control_queue,
+            self._log_message,
+            native_output_dialog=self.native_output_dialog,
             freetrack_client_registration=self.freetrack_client_registration,
             npclient_registration=self.npclient_registration,
         )
-        layout.addWidget(self.connection_panel)
+        connection_output_layout.addWidget(self.connection_panel, 1)
+        connection_output_layout.addWidget(self.output_panel, 1)
+        layout.addWidget(connection_output_row)
+        layout.activate()
+        connection_output_layout.activate()
+        shared_panel_height = max(
+            self.connection_panel.sizeHint().height(),
+            self.connection_panel.minimumSizeHint().height(),
+            self.output_panel.sizeHint().height(),
+            self.output_panel.minimumSizeHint().height(),
+            self.output_panel.stable_height_hint(),
+        )
+        self.connection_panel.setFixedHeight(shared_panel_height)
+        self.output_panel.setFixedHeight(shared_panel_height)
 
         return orientation_widget
     
@@ -340,6 +373,7 @@ class TabbedGUIWorker(QMainWindow):
                         # Update orientation display immediately for real-time response
                         if hasattr(self.orientation_panel, 'update_euler'):
                             self.orientation_panel.update_euler(yaw, pitch, roll)
+                        self.native_output_dialog.set_current_pose(latest_euler)
                         
             
             # Process status updates (check if queue exists and not None)
@@ -482,14 +516,18 @@ class TabbedGUIWorker(QMainWindow):
         elif status_type == 'msg_rate':
             self._safe_panel_call('connection_panel', 'update_message_rate', float(value))
         elif status_type == 'output_send_rate':
-            self._safe_panel_call('connection_panel', 'update_send_rate', float(value))
+            self._safe_panel_call('output_panel', 'update_send_rate', float(value))
         elif status_type == 'output_status':
             if value == "ready":
                 self._safe_panel_call(
                     'preferences_panel',
                     'apply_send_rate_to_worker',
                 )
-            self._safe_panel_call('connection_panel', 'update_output_status', value)
+                self._safe_panel_call(
+                    'native_output_dialog',
+                    'apply_settings_to_worker',
+                )
+            self._safe_panel_call('output_panel', 'update_output_status', value)
         elif status_type == 'stationary':
             self._safe_panel_call('orientation_panel', 'update_device_status', bool(value))
 
@@ -589,8 +627,18 @@ class TabbedGUIWorker(QMainWindow):
                 return
             
             # Apply preferences to each panel
-            if hasattr(self.connection_panel, 'set_prefs') and ('serial' in prefs or 'network' in prefs):
-                self.connection_panel.set_prefs(prefs)
+            if hasattr(self.connection_panel, 'set_prefs') and 'serial' in prefs:
+                self.connection_panel.set_prefs(prefs['serial'])
+
+            if (
+                hasattr(self, 'output_panel')
+                and hasattr(self.output_panel, 'set_prefs')
+                and 'network' in prefs
+            ):
+                self.output_panel.set_prefs(prefs['network'])
+
+            if 'native_output' in prefs:
+                self.native_output_dialog.set_preferences(prefs['native_output'])
             
             if hasattr(self.orientation_panel, 'set_prefs') and 'orientation' in prefs:
                 log_info(self.log_queue, 'GUI', "Applying orientation prefs")
@@ -633,7 +681,7 @@ class TabbedGUIWorker(QMainWindow):
         if sys.platform == "win32":
             try:
                 if hasattr(self, 'connection_panel'):
-                    self.connection_panel.restore_client_registrations()
+                    self.output_panel.restore_client_registrations()
             except OSError as error:
                 log_error(
                     self.log_queue,
@@ -685,7 +733,13 @@ class TabbedGUIWorker(QMainWindow):
             prefs = {}
             
             if hasattr(self.connection_panel, 'get_prefs'):
-                prefs.update(self.connection_panel.get_prefs())
+                prefs['serial'] = self.connection_panel.get_prefs()
+
+            if hasattr(self, 'output_panel') and hasattr(self.output_panel, 'get_prefs'):
+                prefs['network'] = self.output_panel.get_prefs()
+
+            if hasattr(self, 'native_output_dialog'):
+                prefs['native_output'] = self.native_output_dialog.get_preferences()
             
             if hasattr(self.orientation_panel, 'get_prefs'):
                 prefs['orientation'] = self.orientation_panel.get_prefs()

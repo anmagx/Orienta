@@ -1,4 +1,4 @@
-"""Worker processes and output transport backends for Orienta."""
+"""Worker processes and process managers for Orienta."""
 
 from . import gui_wrk
 from . import fusion_wrk

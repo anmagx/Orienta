@@ -46,9 +46,60 @@ class UserDataPathsTests(unittest.TestCase):
         preferences = {
             "gui": {"theme": "dark"},
             "orientation": {"alpha_pitch": "0.98"},
+            "native_output": {
+                "curves": (
+                    '{"yaw":[[0,0],[45,90],[90,180]],'
+                    '"pitch":[[0,0],[45,90],[90,180]],'
+                    '"roll":[[0,0],[45,90],[90,180]]}'
+                ),
+                "input_limit_yaw_deg": "37.5",
+                "input_limit_custom_yaw": "true",
+                "input_limit_pitch_deg": "45",
+                "input_limit_custom_pitch": "false",
+                "filter_enabled": "true",
+                "filter_min_cutoff_hz": "1.0",
+                "filter_beta": "0.03",
+                "filter_derivative_cutoff_hz": "1.0",
+                "offset_yaw_deg": "2.0",
+                "offset_x_mm": "12.5",
+            },
         }
         self.assertTrue(manager.save(preferences))
         self.assertEqual(PreferencesManager().load(), preferences)
+        self.assertFalse(Path(manager.config_path + ".tmp").exists())
+
+    def test_generic_preference_methods_use_gui_section_and_preserve_sections(self):
+        manager = PreferencesManager(config_dir=str(self.root / "manager"))
+        initial = {
+            "gui": {"theme": "dark"},
+            "native_output": {"filter_beta": "0.03"},
+            "network": {"udp_port": "4243"},
+        }
+        self.assertTrue(manager.save(initial))
+        self.assertTrue(manager.set("custom_value", "kept"))
+        self.assertEqual(manager.get("custom_value"), "kept")
+        self.assertTrue(manager.update({"another_value": "also kept"}))
+        self.assertTrue(manager.delete("custom_value"))
+        loaded = manager.load()
+        self.assertNotIn("custom_value", loaded["gui"])
+        self.assertEqual(loaded["gui"]["another_value"], "also kept")
+        self.assertEqual(loaded["native_output"], initial["native_output"])
+        self.assertEqual(loaded["network"], initial["network"])
+
+    def test_failed_atomic_replace_preserves_existing_preferences(self):
+        manager = PreferencesManager(config_dir=str(self.root / "atomic"))
+        existing = {
+            "gui": {"theme": "dark"},
+            "native_output": {"filter_beta": "0.03"},
+        }
+        self.assertTrue(manager.save(existing))
+        with patch(
+            "src.managers.preferences_manager.os.replace",
+            side_effect=PermissionError("locked"),
+        ):
+            with self.assertLogs(level="ERROR"):
+                self.assertFalse(manager.save({"gui": {"theme": "light"}}))
+        self.assertEqual(manager.load(), existing)
         self.assertFalse(Path(manager.config_path + ".tmp").exists())
 
     def test_explicit_preferences_directory_is_preserved(self):

@@ -116,6 +116,21 @@ DEFAULT_OUTPUT_RATE_HZ = 120
 OUTPUT_RATE_MIN_HZ = 10
 OUTPUT_RATE_MAX_HZ = 250
 
+# Native-output One Euro filter defaults and slider ranges
+DEFAULT_FILTER_ENABLED = True
+FILTER_MIN_CUTOFF_HZ_DEFAULT = 1.0
+FILTER_MIN_CUTOFF_HZ_RANGE = (0.1, 20.0)
+FILTER_MIN_CUTOFF_HZ_STEP = 0.1
+FILTER_BETA_DEFAULT = 0.03
+FILTER_BETA_RANGE = (0.0, 5.0)
+FILTER_BETA_STEP = 0.01
+FILTER_DERIVATIVE_CUTOFF_HZ_DEFAULT = 1.0
+FILTER_DERIVATIVE_CUTOFF_HZ_RANGE = (0.1, 20.0)
+FILTER_DERIVATIVE_CUTOFF_HZ_STEP = 0.1
+CUSTOM_INPUT_LIMIT_DEG_RANGE = (1.0, 180.0)
+CUSTOM_INPUT_LIMIT_DEG_STEP = 0.1
+INPUT_LIMIT_CALIBRATION_POSE_STALE_S = 0.5
+
 # ============================================================================
 # GUI / Display
 # ============================================================================

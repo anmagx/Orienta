@@ -34,8 +34,9 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
         raise_process_priority,
     )
 
-    from src.workers.shared_memory_output import FreeTrackSharedMemory
-    from src.workers.udp_output import UDPOutput
+    from src.outputs.native_output_processing import NativeOutputProcessor
+    from src.outputs.shared_memory_output import FreeTrackSharedMemory
+    from src.outputs.udp_output import UDPOutput
 
     enable_high_res_timer()
     raise_process_priority()
@@ -50,6 +51,7 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
     sent_count = 0
     invalid_count = 0
     last_rate_time = time.perf_counter()
+    native_processor = NativeOutputProcessor()
 
     def close_backend():
         nonlocal backend
@@ -70,6 +72,7 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
             return
         if enabled:
             start_backend()
+            native_processor.reset()
             output_enabled = True
             next_send_time = time.perf_counter()
             if protocol in (OUTPUT_PROTOCOL_FREETRACK, OUTPUT_PROTOCOL_NPCLIENT):
@@ -92,6 +95,7 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
         else:
             output_enabled = False
             close_backend()
+            native_processor.reset()
             log_info(
                 log_queue,
                 "Output Worker",
@@ -150,6 +154,7 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
                             )
                             continue
                         protocol = requested
+                        native_processor.reset()
                         log_info(
                             log_queue,
                             "Output Worker",
@@ -222,6 +227,21 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
                             "UDP output uncapped",
                         )
                     next_send_time = time.perf_counter()
+                elif command[0] == "set_native_processing" and len(command) >= 2:
+                    try:
+                        native_processor.set_settings(command[1])
+                    except (TypeError, ValueError, OverflowError) as error:
+                        log_warning(
+                            log_queue,
+                            "Output Worker",
+                            f"Ignoring invalid native output settings: {error}",
+                        )
+                        continue
+                    log_info(
+                        log_queue,
+                        "Output Worker",
+                        "Native output processing settings updated",
+                    )
                 else:
                     log_warning(
                         log_queue,
@@ -243,8 +263,11 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
 
             if latest_pose is not None and output_enabled and backend is not None:
                 try:
-                    pose = tuple(float(latest_pose[index]) for index in range(3))
-                    if not all(math.isfinite(value) for value in pose):
+                    source_pose = tuple(
+                        float(latest_pose[index])
+                        for index in range(3)
+                    )
+                    if not all(math.isfinite(value) for value in source_pose):
                         raise ValueError("Pose must contain only finite angles")
 
                     now = time.perf_counter()
@@ -254,6 +277,11 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
                         or now >= next_send_time
                     )
                     if send_due:
+                        pose = (
+                            source_pose
+                            if protocol == OUTPUT_PROTOCOL_UDP
+                            else native_processor.process(source_pose, now)
+                        )
                         backend.send_pose(pose)
                         sent_count += 1
                         if protocol == OUTPUT_PROTOCOL_UDP and send_interval > 0:

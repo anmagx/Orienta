@@ -28,11 +28,18 @@ QGroupBox::title {
 }
 
 /* Visualization popup and settings dialog */
-QWidget#visualizationPopup, QDialog#visualizationSettingsDialog {
+QWidget#visualizationPopup,
+QDialog#visualizationSettingsDialog,
+QDialog#nativeOutputSettingsDialog {
      background-color: #ffffff;
      color: #000000;
      border: 1px solid #cccccc;
      border-radius: 4px;
+}
+
+QWidget#nativeOutputCurve {
+    background-color: #ffffff;
+    color: #000000;
 }
 
 /* Buttons */
@@ -126,6 +133,25 @@ QLineEdit:hover {
 }
 
 QLineEdit:disabled {
+    background-color: #f0f0f0;
+    border: 1px solid #cccccc;
+    color: #aaaaaa;
+}
+
+/* Native output numeric controls */
+QDoubleSpinBox {
+    border: 1px solid #adadad;
+    border-radius: 3px;
+    padding: 2px 4px;
+    background-color: #ffffff;
+    color: #000000;
+}
+
+QDoubleSpinBox:focus {
+    border: 2px solid #0078d4;
+}
+
+QDoubleSpinBox:disabled {
     background-color: #f0f0f0;
     border: 1px solid #cccccc;
     color: #aaaaaa;

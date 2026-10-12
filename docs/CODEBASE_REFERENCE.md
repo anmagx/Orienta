@@ -11,11 +11,14 @@ data flow and inter-process contracts.
 | `orienta.py` | Application entry point; owns the parent wait loop. |
 | `src/` | Python source package and runtime assets. |
 | `src/workers/` | All multiprocessing worker implementations and the process manager. |
+| `src/outputs/` | Output pose processing and UDP/FreeTrack shared-memory backends. |
+| `src/filters/` | Native-output filter contract, registry, and implementations. |
 | `src/workers/gui_qt/` | PyQt5 window, panels, and icon helper. |
 | `src/managers/` | Application-wide preference and theme managers used by the GUI process. |
 | `src/util/` | Queue/error/parsing helpers and cross-process logging API. |
 | `src/config/` | Static application defaults. |
 | `src/tests/` | Automated regression tests. |
+| [`docs/TESTING.md`](TESTING.md) | Python test suite, Windows native-client smoke checks, and manual integration scope. |
 | `arduino/` | Example firmware that produces compatible IMU frames. |
 | `src/themes/` | Application-wide light/dark Qt style sheets. |
 | `src/img/` | Window icon and application logo. |
@@ -27,9 +30,9 @@ data flow and inter-process contracts.
 
 ### `orienta.py`
 
-`main()` is intentionally small. It rejects Python older than 3.8, warns for
-Python 3.14+, starts `ProcessHandler`, and waits on its shared stop event. All
-lifecycle policy belongs in the process manager, not in this file.
+`main()` is intentionally small. It rejects Python older than 3.8, starts
+`ProcessHandler`, and waits on its shared stop event. All lifecycle policy
+belongs in the process manager, not in this file.
 
 ### `src/workers/process_man.py`
 
@@ -95,22 +98,36 @@ radians/second, and all user-facing values are degrees.
 `run_worker()` owns the single orientation output queue and control protocol.
 It selects exactly one of UDP, FreeTrack shared memory, or NPClient-compatible
 output. It drains stale poses, maintains backend lifecycle and UDP rate cap,
-and reports output status/rate. Backend implementations are in
-`udp_output.py` and `shared_memory_output.py`. Protocol selection is runtime
-state of this worker rather than a fusion route; selection, configuration, and
-enable commands share its control queue to preserve ordering during switches.
+and reports output status/rate. Backend implementations are in `src/outputs/`.
+Protocol selection is runtime state of this worker rather than a fusion route;
+selection, configuration, and enable commands share its control queue to
+preserve ordering during switches.
 
-### `src/workers/udp_output.py`
+The transport and pose-processing implementations live in `src/outputs/`,
+separate from the process orchestrator. `native_output_processing.py` supplies
+independently testable response-curve, filter dispatch, and offset processing
+for the direct protocols only. UDP poses bypass it. `src/filters/` defines the
+pose-filter contract, parameter metadata, and registry; `one_euro.py` is the
+initial registered filter.
+`gui_qt/panels/native_output_settings_dialog.py` builds the filter dropdown and
+the selected filter's parameter sliders from registry metadata, alongside the
+smooth curve editor, per-axis preset/custom input limits, offsets, validation,
+and preference serialization. Its automatic yaw/pitch calibration is
+implemented in `gui_qt/panels/input_limit_calibration.py`; the worker receives
+validated settings through `set_native_processing`.
+
+### `src/outputs/udp_output.py`
 
 This backend owns the UDP socket and writes opentrack's six-double,
 translation-first packet. It validates finite Euler inputs.
 
-### `src/workers/shared_memory_output.py`
+### `src/outputs/shared_memory_output.py`
 
 The shared-memory backend opens the Windows FreeTrack mapping only while
 either direct protocol is enabled. It writes the fixed-layout `FTHeap` pose,
 handles the game response-table handshake, and owns the shared memory/mutex
-lifecycle. The structure, catalog parser, and conversion logic are tested.
+lifecycle. Translations are written in millimeters. The structure, catalog
+parser, and conversion logic are tested.
 
 ### `native/freetrack_client/`
 
@@ -180,7 +197,7 @@ deliberate latency protection.
 This large module is the primary feature surface:
 
 * `OrientationPanelQt` renders the orientation UI and owns fusion controls.
-  Its Hold Orientation toggle freezes published output without stopping sensor
+  Its Hold Orientation button freezes published output without stopping sensor
   fusion, then returns to live tracking using the configured drift smoothing
   time, transition curve, and correction strength. Hold can be configured as
   momentary or toggle behavior in Preferences. Reset Orientation recenters
@@ -206,12 +223,17 @@ active API.
 
 ### `src/workers/gui_qt/panels/connection_panel.py`
 
-`ConnectionPanelQt` separates Input serial settings from Output selection
-(UDP/opentrack, direct FreeTrack 2.0, or NPClient). It stores port/baud, UDP
-target, and selected output protocol, sends protocol/backend controls to
-`OutputWorker`, manages the selected client registration, and serializes the
-`serial`/`network` preference sections.
-Legacy preferences without an output protocol continue to default to UDP.
+`ConnectionPanelQt` owns the serial sensor port/baud controls, serial worker
+lifecycle, connection/activity state, and the `serial` preference section.
+
+### `src/workers/gui_qt/panels/output_panel.py`
+
+`OutputPanelQt` owns output selection (UDP/opentrack, direct FreeTrack 2.0, or
+NPClient), UDP target, output lifecycle/rate, client registration, and the
+`network` preference section. It sits beside `ConnectionPanelQt` below the
+Orientation panel. Legacy preferences without an output protocol continue to
+default to UDP. The Native Output Settings button is shown only for FreeTrack
+and NPClient.
 `TwoLineButton` is a local rendering implementation, separate from the
 similarly named orientation class.
 
@@ -238,29 +260,33 @@ transport; `logQueue` remains the durable cross-process log transport.
 
 ### `src/workers/gui_qt/panels/about_panel.py`
 
-`AboutPanel` renders metadata, logo, project link, and dependency attribution.
-It is visual only. Its mention of “IMU + CV” is UI text, not evidence that the
-application includes a computer-vision pipeline.
+`AboutPanel` renders metadata, logo, project link, and a short description of
+IMU-based head tracking. It is visual only.
 
 ### `src/workers/gui_qt/panels/base_panel.py`
 
 `BasePanelQt` is a light `QGroupBox` base with optional message callback,
-preference hooks, and a Qt message signal. `ConnectionPanelQt` uses it; panels
-that do not share its group-box model use direct Qt base classes.
+preference hooks, and a Qt message signal. `ConnectionPanelQt` and
+`OutputPanelQt` use it; panels that do not share its group-box model use direct
+Qt base classes.
 
 ### Managers and GUI helper
 
 * `src/managers/preferences_manager.py` uses `src/util/paths.py` to locate
   `%LOCALAPPDATA%\Orienta\config.cfg`, reads nested INI sections, and writes atomically.
-  Its older flat-key helpers coexist with the nested GUI format.
+  Its legacy single-key helpers read and write keys in the `[gui]` section;
+  GUI panels persist their settings in named sections such as `[serial]`,
+  `[network]`, `[orientation]`, and `[native_output]`.
 * `src/managers/theme_manager.py` searches upward for `src/themes/`, reads a requested
   QSS file, and applies it to `QApplication`.
 * `helpers/icon_helper.py` searches upward for `src/img/icon.ico` (or `icon.png`)
   and applies it to a window.
 
-The package `__init__.py` files in `src/workers/`, `src/workers/gui_qt/`, its
-subdirectories, `src/config/`, and `src/util/` document/import package APIs. They have
-no independent runtime loop, but their exports affect import compatibility.
+The package `__init__.py` files establish the package boundaries in
+`src/workers/`, `src/workers/gui_qt/`, its subdirectories, `src/config/`,
+`src/util/`, `src/outputs/`, and `src/filters/`. Some also re-export public
+names; those exports affect import compatibility but have no independent
+runtime loop.
 
 ## Shared configuration and utilities
 

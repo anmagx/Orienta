@@ -55,8 +55,10 @@ to a process must be picklable.
 `ProcessHandler` monitors its `workers` list roughly once per second. A dead
 worker is restarted from its stored target/args up to
 `MAX_WORKER_RESTART_ATTEMPTS` (three). Native access-violation exit codes are
-not restarted to avoid a crash loop. A restarted worker gets the existing
-queues and event; no application state is reconstructed for it.
+not restarted to avoid a crash loop. A restarted worker gets the existing queues and event; the process manager
+does not reconstruct its internal state. When OutputWorker reports `ready`,
+the GUI resends the selected protocol, UDP rate cap, and native processing
+settings; other workers do not have a generic state-restore mechanism.
 
 ## Data-flow diagram
 
@@ -85,7 +87,8 @@ The duplicate queues are intentional:
   backlog to the latest sample so scheduling delays do not accumulate tracking
   latency.
 * **Display queues** are best-effort. The GUI drains them and retains only the
-  most recent sample, avoiding growing display latency.
+  most recent Euler sample for the orientation display; serial monitor data is
+  drained in bounded batches so the GUI does not retain an unbounded backlog.
 * **Control/status queues** carry infrequent state changes and are deliberately
   small (10 or 60 entries).
 
@@ -107,7 +110,7 @@ in [`src/config/config.py`](../src/config/config.py).
 | `eulerDisplayQueue` | Fusion worker | GUI worker | `[yaw, pitch, roll]`; display only |
 | `controlQueue` | GUI/Orientation/Preferences | Fusion worker | Fusion commands described below |
 | `serialControlQueue` | Connection panel | Serial worker | `('start', port, baud)` or `('stop',)` |
-| `outputControlQueue` | GUI panels | Output worker | `('set_protocol', protocol)`, `('set_udp', host, port)`, `('set_enabled', bool)`, and `('set_rate', hz)` |
+| `outputControlQueue` | GUI panels | Output worker | `('set_protocol', protocol)`, `('set_udp', host, port)`, `('set_enabled', bool)`, `('set_rate', hz)`, `('set_native_processing', settings)` |
 | `statusQueue` | Serial, fusion, output workers | GUI worker | `(status_name, value)` worker state/rates |
 | `uiStatusQueue` | Serial and fusion workers | GUI worker | UI-specific `('serial_connection', state)` or `('processing', state)` |
 | `messageQueue` | Serial worker | GUI worker | Human-readable connection/reconnection text |
@@ -229,13 +232,14 @@ preserves all three gyro biases; full reset clears them.
 ### Output worker and backends
 
 [`output_wrk.py`](../src/workers/output_wrk.py) owns the single bounded pose
-queue and dispatches each latest pose to exactly one backend. Protocol,
-enablement, UDP target, and rate-limit commands all use `outputControlQueue`.
+queue and dispatches each latest pose to exactly one backend. Protocol, enablement, UDP target, rate-limit, and native-processing commands
+all use `outputControlQueue`.
 This keeps transport scheduling, backend lifecycle, and status reporting in
 one place while the packet and shared-memory mechanisms remain focused backend
-modules. On worker restart, the GUI resends the selected protocol and rate cap.
+modules. On worker restart, the GUI resends the selected protocol, rate cap,
+and native processing settings.
 
-[`udp_output.py`](../src/workers/udp_output.py) owns the UDP socket and
+[`udp_output.py`](../src/outputs/udp_output.py) owns the UDP socket and
 serializes opentrack packets. UDP is disabled at worker start and enabled only
 by `('set_enabled', True)` with the UDP protocol selected. Sends default to
 uncapped (matching fusion's raw output rate) and can optionally be capped via
@@ -253,7 +257,7 @@ preserving the three leading zero translations.
 
 ### FreeTrack 2.0 and NPClient
 
-The Connection panel selects exactly one protocol. Fusion publishes every
+The Output panel selects exactly one protocol. Fusion publishes every
 valid pose to `outputQueue`; the OutputWorker dispatches it only to the
 selected backend. Protocol choice, UDP destination/rate, and enabled state all
 travel over a single `outputControlQueue`; the shared-memory backend owns its
@@ -262,22 +266,45 @@ Changing the output while Orienta runs switches backends in queue order.
 Games may cache the game-facing DLL they loaded at startup, so changing
 between FreeTrack and NPClient can require restarting the game.
 
-[`shared_memory_output.py`](../src/workers/shared_memory_output.py) is the
+For FreeTrack and NPClient only, `OutputWorker` maps yaw, pitch, and roll
+magnitudes through configured shape-preserving cubic curves spanning each
+axis's selected 30°/45°/60°/75°/90° input limit to at most 180° output.
+The selected filter from `src/filters/` runs on the input angles before curve
+mapping; One Euro is the initial registered filter.
+Changing an axis limit rescales its curve control points. The curve's final
+output is vertically adjustable. The worker then adds rotation and translation
+offsets; final rotations are clamped to ±180°.
+Translation offsets are millimeters in the FreeTrack shared-memory coordinate
+axes. The native settings
+are sent as one validated `set_native_processing` command and persist in the
+`native_output` preferences section. The Native Output Settings button is
+available only while a direct protocol is selected. UDP bypasses this
+processing and continues to forward the fusion angles unchanged.
+
+The Native Output panel can calibrate yaw and pitch limits with topmost,
+borderless prompts on the primary display while a center target remains
+visible. It captures left/right yaw and upper/lower pitch, uses the smaller
+absolute capture for each symmetric axis limit, and stores those two results
+as custom values. Roll remains manually set.
+
+[`shared_memory_output.py`](../src/outputs/shared_memory_output.py) is the
 focused shared-memory backend. It opens the Windows `FT_SharedMem` mapping and
 `FT_Mutext` mutex only while direct output is enabled. It publishes the
 fixed-width `FTHeap` structure, uses radians and FreeTrack yaw/pitch axis signs,
-and sends zero translation. The initial implementation mirrors the published
-pose into the raw-pose fields because the fusion pipeline does not expose a
-distinct raw pose. A pre-existing mapping is reused without resetting its
-frame counter because game readers may keep the mapping alive while output is
-stopped. A separate Orienta-only mutex prevents a second Orienta process from
-publishing concurrently. The publisher responds to a new `GameID` by looking
-it up in the bundled
+and writes translation in millimeters. The initial implementation mirrors the
+published pose into the raw-pose fields because the fusion pipeline does not
+expose a distinct raw pose. A pre-existing mapping is reused without resetting
+its frame counter because game readers may keep the mapping alive while output
+is stopped. A separate Orienta-only mutex prevents a second Orienta process
+from publishing concurrently. The publisher responds to a new `GameID` by
+looking it up in the bundled
 FaceTrackNoIR supported-games catalog, echoing it to `GameID2`, setting its
 8-byte response table (zero for legacy V160 entries and unknown IDs), and
 resetting `DataID`. Duplicate IDs use their first catalog entry, matching
-OpenTrack lookup behavior. The NPClient DLL applies the LinuxTrack data
-transform when the game ID and response ID match and the table is nonzero.
+OpenTrack lookup behavior. The NPClient DLL converts rotations/translations
+to NPClient axis units and applies the LinuxTrack-derived byte-level game
+encoding when the game ID and response ID match and the table is nonzero; this
+is not a second angle response curve.
 
 `data/facetracknoir_supported_games.csv` is the FaceTrackNoIR catalog used by
 the publisher, obtained from the
@@ -339,9 +366,9 @@ refreshes widgets. It owns the single-window layout:
    reusable status/button/input-dialog widgets. `visualization_popup.py` owns
    popup reparenting and geometry persistence. The orientation panel remains
    the coordinator and fusion-control owner.
-* `ConnectionPanelQt` separates Input (serial) from Output (UDP, FreeTrack, or
-  NPClient),
-  starts/stops the selected path, and displays input/output rates and state.
+* `ConnectionPanelQt` owns serial input settings and status. `OutputPanelQt`
+  owns UDP/FreeTrack/NPClient selection, target, native-client lifecycle, and
+  output status. They are peer panels displayed side by side below Orientation.
 * `MessagePanelQt`, `PreferencesPanel`, and `AboutPanel` are shared instances
   opened in dialogs rather than persistent tabs.
 
@@ -371,13 +398,14 @@ hold or toggle behavior, then changes fusion thresholds accordingly. Hold
 Orientation is momentary by default (held while its button or shortcut is
 pressed); the Preferences panel can enable toggle behavior instead.
 
-Orientation hold is a toggle. While held, the fusion filter continues updating
-from sensor data. The selected output remains at the held pose, while the
-display queue continues carrying live orientation for the visualization. Turning hold off
-blends the held output quaternion back to the live filtered orientation over
-the configured drift smoothing time, transition curve, and correction strength.
-The GUI visualization retains a live-style marker at the pose captured when
-hold was enabled, with a yellow dotted orientation line.
+Orientation hold is momentary by default and can be configured as a toggle.
+While held, the fusion filter continues updating from sensor data. The
+selected output remains at the held pose, while the display queue continues
+carrying live orientation for the visualization. Releasing or toggling hold
+off blends the held output quaternion back to the live filtered orientation
+over the configured drift smoothing time, transition curve, and correction
+strength. The GUI visualization retains a live-style marker at the pose
+captured when hold was enabled, with a yellow dotted orientation line.
 
 ## Logging and error behavior
 
@@ -392,10 +420,10 @@ helpers, and queue-health reports. The process monitor checks queue health
 every ten seconds and emits warnings only for warning/critical queues.
 
 Status names currently handled by the GUI include serial connection/data
-activity, message/send rate, `processing`, `drift_correction`, `stationary`,
-and gyro/centre calibration states. When adding a status name, update both the
-producer and `TabbedGUIWorker._handle_status_update`; a producer-only status
-silently has no UI effect.
+activity, message/send rate, `output_status`, `processing`, `drift_correction`,
+`stationary`, and gyro/centre calibration states. When adding a status name,
+update the producer and `TabbedGUIWorker._route_status_update`; a
+producer-only status silently has no UI effect.
 
 ## Persistence and assets
 

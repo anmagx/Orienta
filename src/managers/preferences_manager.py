@@ -8,7 +8,7 @@ Uses atomic writes to prevent corruption if process is killed during save.
 import configparser
 import logging
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.config.config import DEFAULT_THEME, PREFS_FILE_NAME
 from src.util.paths import get_app_data_dir
@@ -48,30 +48,34 @@ class PreferencesManager:
         if config_dir:
             os.makedirs(config_dir, exist_ok=True)
 
-    def load(self) -> Dict[str, str]:
+    def load(self) -> Dict[str, Dict[str, str]]:
         """Load preferences from config file.
 
         Returns:
-            Dictionary of preference key-value pairs.
-            Returns nested structure for PyQt5 compatibility.
+            Section names mapped to their string key-value pairs.
         """
         if not os.path.exists(self.config_path):
             return {}
 
-        cfg = configparser.ConfigParser()
+        cfg = configparser.ConfigParser(interpolation=None)
         try:
-            cfg.read(self.config_path)
+            with open(self.config_path, "r", encoding="utf-8") as preferences_file:
+                cfg.read_file(preferences_file)
 
             result = {}
             for section_name in cfg.sections():
                 result[section_name] = dict(cfg[section_name])
 
             return result
-        except Exception as e:
-            logging.exception("Error loading preferences from %s: %s", self.config_path, e)
+        except (OSError, UnicodeError, configparser.Error) as error:
+            logging.exception(
+                "Error loading preferences from %s: %s",
+                self.config_path,
+                error,
+            )
             return {}
 
-    def save(self, preferences: Dict[str, str]) -> bool:
+    def save(self, preferences: Dict[str, Any]) -> bool:
         """Save preferences to config file using atomic write.
 
         Args:
@@ -81,70 +85,69 @@ class PreferencesManager:
         Returns:
             True if save succeeded, False otherwise
         """
-        cfg = configparser.ConfigParser()
-
-        for section_name, section_data in preferences.items():
-            if isinstance(section_data, dict):
-                cfg[section_name] = {str(k): str(v) for k, v in section_data.items()}
-            else:
-                if "gui" not in cfg:
-                    cfg["gui"] = {}
-                cfg["gui"][str(section_name)] = str(section_data)
-
+        cfg = configparser.ConfigParser(interpolation=None)
         tmp_path = self.config_path + ".tmp"
 
         try:
+            for section_name, section_data in preferences.items():
+                if isinstance(section_data, dict):
+                    cfg[section_name] = {
+                        str(key): str(value)
+                        for key, value in section_data.items()
+                    }
+                else:
+                    if "gui" not in cfg:
+                        cfg["gui"] = {}
+                    cfg["gui"][str(section_name)] = str(section_data)
+
             with open(tmp_path, "w", encoding="utf-8") as f:
                 cfg.write(f)
-
-            try:
-                os.replace(tmp_path, self.config_path)
-            except Exception:
-                try:
-                    if os.path.exists(self.config_path):
-                        os.remove(self.config_path)
-                except Exception:
-                    pass
-                try:
-                    os.rename(tmp_path, self.config_path)
-                except Exception:
-                    with open(tmp_path, "r", encoding="utf-8") as fr:
-                        with open(self.config_path, "w", encoding="utf-8") as fw:
-                            fw.write(fr.read())
-
+            os.replace(tmp_path, self.config_path)
             return True
 
-        except Exception as e:
-            logging.exception("Error saving preferences to %s: %s", self.config_path, e)
+        except (OSError, configparser.Error, TypeError, ValueError) as error:
+            logging.exception(
+                "Error saving preferences to %s: %s",
+                self.config_path,
+                error,
+            )
             try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
+                os.remove(tmp_path)
+            except FileNotFoundError:
                 pass
+            except OSError as cleanup_error:
+                logging.error(
+                    "Could not remove temporary preferences file %s: %s",
+                    tmp_path,
+                    cleanup_error,
+                )
             return False
 
     def get(self, key: str, default: str = "") -> str:
-        """Get a single preference value."""
+        """Get a single legacy flat preference stored in the gui section."""
         prefs = self.load()
-        return prefs.get(key, default)
+        gui_preferences = prefs.get("gui", {})
+        return gui_preferences.get(str(key), default)
 
     def set(self, key: str, value: str) -> bool:
-        """Set a single preference value."""
+        """Set a single legacy flat preference in the gui section."""
         prefs = self.load()
-        prefs[key] = str(value)
+        prefs.setdefault("gui", {})[str(key)] = str(value)
         return self.save(prefs)
 
     def update(self, updates: Dict[str, str]) -> bool:
-        """Update multiple preference values at once."""
+        """Update legacy flat preferences in the gui section."""
         prefs = self.load()
-        prefs.update({str(k): str(v) for k, v in updates.items()})
+        gui_preferences = prefs.setdefault("gui", {})
+        gui_preferences.update({str(key): str(value) for key, value in updates.items()})
         return self.save(prefs)
 
     def delete(self, key: str) -> bool:
-        """Delete a preference key."""
+        """Delete a single legacy flat preference from the gui section."""
         prefs = self.load()
-        if key in prefs:
-            del prefs[key]
+        gui_preferences = prefs.get("gui", {})
+        if str(key) in gui_preferences:
+            del gui_preferences[str(key)]
             return self.save(prefs)
         return True
 
@@ -158,14 +161,8 @@ class PreferencesManager:
 
     def get_theme(self) -> str:
         """Get current theme preference."""
-        prefs = self.load()
-        gui_prefs = prefs.get("gui", {})
-        return gui_prefs.get("theme", DEFAULT_THEME)
+        return self.get("theme", DEFAULT_THEME)
 
     def set_theme(self, theme_name: str) -> bool:
         """Set theme preference."""
-        prefs = self.load()
-        if "gui" not in prefs:
-            prefs["gui"] = {}
-        prefs["gui"]["theme"] = theme_name
-        return self.save(prefs)
+        return self.set("theme", theme_name)
