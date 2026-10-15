@@ -14,6 +14,11 @@ from .critically_damped import (
     CriticallyDampedPoseFilter,
 )
 from .ema import EMA_FILTER, EMA_FILTER_ID, EmaPoseFilter
+from .gyro_adaptive import (
+    GYRO_ADAPTIVE_FILTER,
+    GYRO_ADAPTIVE_FILTER_ID,
+    GyroAdaptivePoseFilter,
+)
 from .hysteresis import (
     HYSTERESIS_FILTER,
     HYSTERESIS_FILTER_ID,
@@ -28,12 +33,13 @@ from .one_euro import (
 
 FILTER_REGISTRY = {
     ONE_EURO_FILTER.identifier: ONE_EURO_FILTER,
+    GYRO_ADAPTIVE_FILTER.identifier: GYRO_ADAPTIVE_FILTER,
     ACCELA_STYLE_FILTER.identifier: ACCELA_STYLE_FILTER,
     CRITICALLY_DAMPED_FILTER.identifier: CRITICALLY_DAMPED_FILTER,
     EMA_FILTER.identifier: EMA_FILTER,
     HYSTERESIS_FILTER.identifier: HYSTERESIS_FILTER,
 }
-DEFAULT_FILTER_ID = ONE_EURO_FILTER_ID
+DEFAULT_FILTER_ID = GYRO_ADAPTIVE_FILTER_ID
 
 
 def available_filters() -> tuple[FilterDefinition, ...]:
@@ -69,6 +75,8 @@ __all__ = [
     "PoseFilter",
     "EMA_FILTER_ID",
     "EmaPoseFilter",
+    "GYRO_ADAPTIVE_FILTER_ID",
+    "GyroAdaptivePoseFilter",
     "ACCELA_STYLE_FILTER_ID",
     "AccelaStylePoseFilter",
     "CRITICALLY_DAMPED_FILTER_ID",

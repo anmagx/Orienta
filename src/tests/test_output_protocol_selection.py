@@ -338,6 +338,56 @@ class OutputBackendTests(unittest.TestCase):
             status_names.append(status_queue.get_nowait()[0])
         self.assertIn("output_status", status_names)
 
+    def test_output_worker_forwards_gyro_rates_to_native_processing(self):
+        from src.outputs.native_output_processing import (
+            NativeOutputProcessor,
+            default_native_output_settings,
+        )
+        from src.workers.output_wrk import _pose_rates, run_worker
+
+        self.assertEqual(_pose_rates([1, 2, 3, 4, 5, 6]), (4.0, 5.0, 6.0))
+        self.assertIsNone(_pose_rates([1.0, 2.0, 3.0]))
+        self.assertIsNone(_pose_rates([1.0, 2.0, 3.0, float("nan"), 0.0, 0.0]))
+
+        stop_event = threading.Event()
+        pose_queue = Queue()
+        control_queue = Queue()
+        pose_queue.put([1.0, 2.0, 3.0, -10.0, 5.0, 0.5])
+        native_settings = default_native_output_settings()
+        native_settings["filter_type"] = "gyro_adaptive"
+        control_queue.put(("set_native_processing", native_settings))
+        control_queue.put(("set_protocol", OUTPUT_PROTOCOL_FREETRACK))
+        control_queue.put(("set_enabled", True))
+        received_rates = []
+        original_process = NativeOutputProcessor.process
+
+        def spy(processor, pose, timestamp, rates=None):
+            received_rates.append(rates)
+            return original_process(processor, pose, timestamp, rates)
+
+        class SharedMemoryBackend:
+            mapping_already_exists = False
+
+            def send_pose(self, actual_pose):
+                stop_event.set()
+
+            def close(self):
+                pass
+
+        shared_module = types.SimpleNamespace(
+            FreeTrackSharedMemory=Mock(return_value=SharedMemoryBackend())
+        )
+        with patch.dict(
+            sys.modules,
+            {
+                "src.outputs.udp_output": types.SimpleNamespace(UDPOutput=Mock()),
+                "src.outputs.shared_memory_output": shared_module,
+            },
+        ), patch.object(NativeOutputProcessor, "process", spy):
+            run_worker(pose_queue, control_queue, stop_event, Queue())
+
+        self.assertEqual(received_rates[0], (-10.0, 5.0, 0.5))
+
     def test_output_worker_switches_native_filter_while_output_is_active(self):
         from src.filters import FILTER_REGISTRY
         from src.filters.base import FilterDefinition

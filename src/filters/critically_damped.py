@@ -117,4 +117,8 @@ CRITICALLY_DAMPED_FILTER = FilterDefinition(
     label=CRITICALLY_DAMPED_FILTER_LABEL,
     parameters=CRITICALLY_DAMPED_FILTER_PARAMETERS,
     factory=CriticallyDampedPoseFilter,
+    description=(
+        "Gives movement a smooth, controlled response. Slower settings "
+        "reduce jitter but add delay."
+    ),
 )

@@ -89,21 +89,24 @@ game-ID handshake after Orienta's curves have been applied.
 ### Selectable filtering
 
 - Keep native pose filters in `src/filters/`, with a shared filter contract,
-  filter metadata/registry, and one implementation per module. One Euro is
-  the default registered filter; EMA, hysteresis jitter suppression, and a
-  critically damped smoother and an Accela-inspired adaptive response are
+  filter metadata/registry, and one implementation per module. Gyro-assisted
+  (IMU) is the default registered filter; One Euro, EMA, hysteresis, a
+  critically damped smoother, and an Accela-inspired adaptive response are
   also available. New filters must remain addable without putting algorithm
   code in the output worker or settings dialog.
-- Add a filter dropdown to Native Output Settings. Build filter-specific
-  controls and tooltips from each registered filter's metadata, and persist
-  selection plus per-filter settings in the `native_output` section.
+- Build the Native Output Settings filter dropdown, a plain-language filter
+  description, and setting annotations from registered filter metadata.
+  Persist selection plus per-filter settings in the `native_output` section.
 - Keep One Euro's adaptive low-pass settings for low-speed smoothing,
   fast-movement responsiveness, and velocity-estimate stability. EMA exposes
   a fixed smoothing cutoff in Hz. Tooltips explain that lower cutoffs smooth
   more but add lag. The critically damped filter exposes a natural response
   frequency; lower values settle more gradually and higher values respond
   faster. The Accela-inspired filter uses a per-axis deadzone and a smooth
-  vector-magnitude response boost. Keep defaults, slider ranges, and steps
+  vector-magnitude response boost. The gyro-assisted filter exposes rest
+  smoothing (Hz), a motion threshold (deg/s), and a rest deadzone; it reads
+  gyro-derived Euler rates that fusion appends to each pose. Keep defaults,
+  slider ranges, and steps
   configurable in `src/config/config.py`; document upstream inspiration and
   licensing in `docs/THIRD_PARTY_NOTICES.md`.
 - Use monotonic sample timestamps, reset filter state when native output is

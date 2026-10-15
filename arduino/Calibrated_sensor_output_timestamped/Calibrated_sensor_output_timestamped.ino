@@ -67,30 +67,54 @@ void setup() {
   }
 }
 
+const unsigned long SAMPLE_INTERVAL_US = 4000; // 250Hz
+
 void loop() {
-  static unsigned long startTime = millis();
-  float timeSec = (millis() - startTime) / 1000.0;
-static unsigned long lastUpdate = 0;
-  const unsigned long UPDATE_INTERVAL = 4; // 4ms = 250Hz target (adjust as needed)
-  
-  // Only update at consistent intervals
-  if (millis() - lastUpdate >= UPDATE_INTERVAL) {
-    lastUpdate = millis();
-    
-    float timeSec = (millis() - startTime) / 1000.0;
+  // micros() gives the host exact per-sample dt for gyro integration; millis()
+  // quantized dt to 1ms (+-25% of a 4ms period), which showed up as jitter.
+  static bool started = false;
+  static unsigned long nextSampleUs;
+  static unsigned long lastMicros;
+  static unsigned long elapsedSec = 0;  // seconds + microseconds never wrap,
+  static unsigned long elapsedUs = 0;   // unlike raw micros() (~71 minutes)
 
-    IMU.update();
-    IMU.getAccel(&accelData);
-    IMU.getGyro(&gyroData);
-
-    // Use String concatenation - Arduino compatible and faster than multiple prints
-    String output = String(timeSec, 4) + "," + 
-                    String(accelData.accelX, 4) + "," +
-                    String(accelData.accelY, 4) + "," +
-                    String(accelData.accelZ, 4) + "," +
-                    String(gyroData.gyroX, 4) + "," +
-                    String(gyroData.gyroY, 4) + "," +
-                    String(gyroData.gyroZ, 4);
-    Serial.println(output);
+  unsigned long now = micros();
+  if (!started) {
+    started = true;
+    lastMicros = now;
+    nextSampleUs = now;
   }
+
+  // Fixed-cadence schedule: advancing by the interval (instead of
+  // "last = now") keeps the sample rate exact without cumulative drift.
+  if ((long)(now - nextSampleUs) < 0) {
+    return;
+  }
+  nextSampleUs += SAMPLE_INTERVAL_US;
+  if ((long)(now - nextSampleUs) >= (long)SAMPLE_INTERVAL_US) {
+    nextSampleUs = now + SAMPLE_INTERVAL_US;  // fell far behind: resync
+  }
+
+  elapsedUs += now - lastMicros;
+  lastMicros = now;
+  while (elapsedUs >= 1000000UL) {
+    elapsedUs -= 1000000UL;
+    elapsedSec++;
+  }
+  char timeStr[20];
+  snprintf(timeStr, sizeof(timeStr), "%lu.%06lu", elapsedSec, elapsedUs);
+
+  IMU.update();
+  IMU.getAccel(&accelData);
+  IMU.getGyro(&gyroData);
+
+  // Use String concatenation - Arduino compatible and faster than multiple prints
+  String output = String(timeStr) + "," + 
+                  String(accelData.accelX, 4) + "," +
+                  String(accelData.accelY, 4) + "," +
+                  String(accelData.accelZ, 4) + "," +
+                  String(gyroData.gyroX, 4) + "," +
+                  String(gyroData.gyroY, 4) + "," +
+                  String(gyroData.gyroZ, 4);
+  Serial.println(output);
 }

@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 )
 
 from src.managers.preferences_manager import PreferencesManager
-from src.config.config import DEFAULT_THEME, THEMES_ENABLED, ALPHA_YAW, ALPHA_ROLL, ALPHA_PITCH, THRESH_DEBOUNCE_MS, STATIONARY_GYRO_THRESHOLD, STATIONARY_DEBOUNCE_S, DRIFT_SMOOTHING_TIME, DRIFT_TRANSITION_CURVE, GYRO_BIAS_CAL_SAMPLES, QUEUE_PUT_TIMEOUT
+from src.config.config import DEFAULT_THEME, THEMES_ENABLED, ACCEL_TAU_PITCH, ACCEL_TAU_ROLL, ACCEL_TAU_RANGE, ACCEL_TAU_STEP, THRESH_DEBOUNCE_MS, STATIONARY_GYRO_THRESHOLD, STATIONARY_DEBOUNCE_S, DRIFT_SMOOTHING_TIME, DRIFT_TRANSITION_CURVE, GYRO_BIAS_CAL_SAMPLES, QUEUE_PUT_TIMEOUT
 from src.workers.gui_qt.panels.base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, DIALOG_CONTENT_MARGIN
 
 from src.util.error_utils import (
@@ -57,9 +57,9 @@ class PreferencesPanel(QWidget):
         self.input_command_queue = input_command_queue
         self.input_response_queue = input_response_queue
         
-        # Drift correction alpha values
-        self.alpha_pitch = ALPHA_PITCH
-        self.alpha_roll = ALPHA_ROLL
+        # Accelerometer tilt-correction time constants (seconds)
+        self.accel_tau_pitch = ACCEL_TAU_PITCH
+        self.accel_tau_roll = ACCEL_TAU_ROLL
         
         # Flag to prevent preference saves during initial load
         self._loading = True
@@ -81,16 +81,16 @@ class PreferencesPanel(QWidget):
         self.invert_pitch = False
         self.invert_roll = False
         
-        # Debounce timers for alpha updates
-        self._alpha_pitch_timer = QTimer()
-        self._alpha_pitch_timer.setSingleShot(True)
-        self._alpha_pitch_timer.timeout.connect(self._apply_alpha_pitch)
-        self._pending_alpha_pitch = None
+        # Debounce timers for accel time-constant updates
+        self._accel_tau_pitch_timer = QTimer()
+        self._accel_tau_pitch_timer.setSingleShot(True)
+        self._accel_tau_pitch_timer.timeout.connect(self._apply_accel_tau_pitch)
+        self._pending_accel_tau_pitch = None
         
-        self._alpha_roll_timer = QTimer()
-        self._alpha_roll_timer.setSingleShot(True)
-        self._alpha_roll_timer.timeout.connect(self._apply_alpha_roll)
-        self._pending_alpha_roll = None
+        self._accel_tau_roll_timer = QTimer()
+        self._accel_tau_roll_timer.setSingleShot(True)
+        self._accel_tau_roll_timer.timeout.connect(self._apply_accel_tau_roll)
+        self._pending_accel_tau_roll = None
         
         self._stationary_gyro_timer = QTimer()
         self._stationary_gyro_timer.setSingleShot(True)
@@ -267,46 +267,38 @@ class PreferencesPanel(QWidget):
         drift_layout = QVBoxLayout()
         drift_layout.setSpacing(DEFAULT_SPACING)
         
-        # Pitch alpha slider
-        # Header for pitch/roll stability controls
+        # Accelerometer tilt-correction time-constant sliders
         pitch_header = QLabel("Pitch & Roll stability")
         pitch_header.setStyleSheet("font-weight: 600; margin-bottom: 6px;")
         drift_layout.addWidget(pitch_header)
 
         pitch_layout = QHBoxLayout()
-        pitch_label = QLabel("Pitch Alpha:")
+        pitch_label = QLabel("Pitch Accel Time:")
         pitch_label.setMinimumWidth(80)
-        self.alpha_pitch_slider = QSlider(Qt.Horizontal)
-        self.alpha_pitch_slider.setMinimum(950)  # 0.95
-        self.alpha_pitch_slider.setMaximum(999)  # 0.999
-        self.alpha_pitch_slider.setValue(int(self.alpha_pitch * 1000))
-        self.alpha_pitch_slider.valueChanged.connect(self._on_alpha_pitch_changed)
-        self.alpha_pitch_value = QLabel(f"{self.alpha_pitch:.3f}")
-        self.alpha_pitch_value.setMinimumWidth(50)
+        self.accel_tau_pitch_slider = self._make_accel_tau_slider(self.accel_tau_pitch)
+        self.accel_tau_pitch_slider.valueChanged.connect(self._on_accel_tau_pitch_changed)
+        self.accel_tau_pitch_value = QLabel(f"{self.accel_tau_pitch:.1f} s")
+        self.accel_tau_pitch_value.setMinimumWidth(50)
         
         pitch_layout.addWidget(pitch_label)
-        pitch_layout.addWidget(self.alpha_pitch_slider)
-        pitch_layout.addWidget(self.alpha_pitch_value)
+        pitch_layout.addWidget(self.accel_tau_pitch_slider)
+        pitch_layout.addWidget(self.accel_tau_pitch_value)
         drift_layout.addLayout(pitch_layout)
         
-        # Roll alpha slider
         roll_layout = QHBoxLayout()
-        roll_label = QLabel("Roll Alpha:")
+        roll_label = QLabel("Roll Accel Time:")
         roll_label.setMinimumWidth(80)
-        self.alpha_roll_slider = QSlider(Qt.Horizontal)
-        self.alpha_roll_slider.setMinimum(950)  # 0.95
-        self.alpha_roll_slider.setMaximum(999)  # 0.999
-        self.alpha_roll_slider.setValue(int(self.alpha_roll * 1000))
-        self.alpha_roll_slider.valueChanged.connect(self._on_alpha_roll_changed)
-        self.alpha_roll_value = QLabel(f"{self.alpha_roll:.3f}")
-        self.alpha_roll_value.setMinimumWidth(50)
+        self.accel_tau_roll_slider = self._make_accel_tau_slider(self.accel_tau_roll)
+        self.accel_tau_roll_slider.valueChanged.connect(self._on_accel_tau_roll_changed)
+        self.accel_tau_roll_value = QLabel(f"{self.accel_tau_roll:.1f} s")
+        self.accel_tau_roll_value.setMinimumWidth(50)
         
         roll_layout.addWidget(roll_label)
-        roll_layout.addWidget(self.alpha_roll_slider)
-        roll_layout.addWidget(self.alpha_roll_value)
+        roll_layout.addWidget(self.accel_tau_roll_slider)
+        roll_layout.addWidget(self.accel_tau_roll_value)
         drift_layout.addLayout(roll_layout)
 
-        # Divider rafter before the alpha tooltip
+        # Divider rafter before the accel time tooltip
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setFrameShadow(QFrame.Sunken)
@@ -314,12 +306,15 @@ class PreferencesPanel(QWidget):
         divider.setFixedHeight(LINE_THICKNESS)
         drift_layout.addWidget(divider)
 
-        # Short tooltip specific to alpha sliders (placed under Roll Alpha)
-        alpha_info_label = QLabel("Higher alpha = more gyro dominance.")
-        alpha_info_label.setStyleSheet("color: #666666; font-size: 10px;")
-        alpha_info_label.setWordWrap(True)
-        alpha_info_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        drift_layout.addWidget(alpha_info_label)
+        accel_tau_info_label = QLabel(
+            "Time the accelerometer takes to level pitch/roll. Longer = less "
+            "jitter from head movement and vibration; shorter = faster "
+            "recovery from gyro drift."
+        )
+        accel_tau_info_label.setStyleSheet("color: #666666; font-size: 10px;")
+        accel_tau_info_label.setWordWrap(True)
+        accel_tau_info_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        drift_layout.addWidget(accel_tau_info_label)
 
         # Header for drift correction controls
         drift_curve_header = QLabel("Drift Correction (when near center)")
@@ -530,7 +525,7 @@ class PreferencesPanel(QWidget):
         cal_prefs.update(prefs.get('orientation', {}))
         
         # Load and apply all calibration settings
-        self._load_alpha_settings(cal_prefs)
+        self._load_accel_tau_settings(cal_prefs)
         self._load_stationary_settings(cal_prefs)
         self._load_drift_settings(cal_prefs)
         self._load_gyro_settings(cal_prefs)
@@ -601,51 +596,55 @@ class PreferencesPanel(QWidget):
                 self.preferences_changed.emit()  # Notify parent to save all preferences
     
     
-    def _on_alpha_pitch_changed(self, value):
-        """Handle pitch alpha slider change with debouncing."""
-        self.alpha_pitch = value / 1000.0
-        self.alpha_pitch_value.setText(f"{self.alpha_pitch:.3f}")
-        
-        # Store pending value for debounced sending
-        self._pending_alpha_pitch = self.alpha_pitch
-        
-        # Restart debounce timer
-        self._alpha_pitch_timer.stop()
-        self._alpha_pitch_timer.start(THRESH_DEBOUNCE_MS)
-        
-        # Debounced preference save
+    @staticmethod
+    def _accel_tau_to_slider(value):
+        low, high = ACCEL_TAU_RANGE
+        return int(round(max(low, min(high, float(value))) / ACCEL_TAU_STEP))
+
+    def _make_accel_tau_slider(self, value):
+        slider = QSlider(Qt.Horizontal)
+        slider.setMinimum(self._accel_tau_to_slider(ACCEL_TAU_RANGE[0]))
+        slider.setMaximum(self._accel_tau_to_slider(ACCEL_TAU_RANGE[1]))
+        slider.setValue(self._accel_tau_to_slider(value))
+        return slider
+
+    def _set_accel_tau_display(self, axis, value):
+        getattr(self, f'accel_tau_{axis}_slider').setValue(self._accel_tau_to_slider(value))
+        getattr(self, f'accel_tau_{axis}_value').setText(f"{value:.1f} s")
+
+    def _on_accel_tau_pitch_changed(self, value):
+        """Handle pitch accel time-constant slider change with debouncing."""
+        self.accel_tau_pitch = round(value * ACCEL_TAU_STEP, 3)
+        self.accel_tau_pitch_value.setText(f"{self.accel_tau_pitch:.1f} s")
+        self._pending_accel_tau_pitch = self.accel_tau_pitch
+        self._accel_tau_pitch_timer.stop()
+        self._accel_tau_pitch_timer.start(THRESH_DEBOUNCE_MS)
         self._trigger_preference_save()
     
-    def _on_alpha_roll_changed(self, value):
-        """Handle roll alpha slider change with debouncing."""
-        self.alpha_roll = value / 1000.0
-        self.alpha_roll_value.setText(f"{self.alpha_roll:.3f}")
-        
-        # Store pending value for debounced sending
-        self._pending_alpha_roll = self.alpha_roll
-        
-        # Restart debounce timer
-        self._alpha_roll_timer.stop()
-        self._alpha_roll_timer.start(THRESH_DEBOUNCE_MS)
-        
-        # Debounced preference save
+    def _on_accel_tau_roll_changed(self, value):
+        """Handle roll accel time-constant slider change with debouncing."""
+        self.accel_tau_roll = round(value * ACCEL_TAU_STEP, 3)
+        self.accel_tau_roll_value.setText(f"{self.accel_tau_roll:.1f} s")
+        self._pending_accel_tau_roll = self.accel_tau_roll
+        self._accel_tau_roll_timer.stop()
+        self._accel_tau_roll_timer.start(THRESH_DEBOUNCE_MS)
         self._trigger_preference_save()
     
-    def _apply_alpha_pitch(self):
-        """Apply pitch alpha value to fusion worker (debounced)."""
-        if self._pending_alpha_pitch is not None:
+    def _apply_accel_tau_pitch(self):
+        """Apply pitch accel time constant to fusion worker (debounced)."""
+        if self._pending_accel_tau_pitch is not None:
             try:
-                self._send_control_command(('set_alpha_pitch', self._pending_alpha_pitch))
-                self._pending_alpha_pitch = None
+                self._send_control_command(('set_accel_tau_pitch', self._pending_accel_tau_pitch))
+                self._pending_accel_tau_pitch = None
             except Exception:
                 pass
     
-    def _apply_alpha_roll(self):
-        """Apply roll alpha value to fusion worker (debounced)."""
-        if self._pending_alpha_roll is not None:
+    def _apply_accel_tau_roll(self):
+        """Apply roll accel time constant to fusion worker (debounced)."""
+        if self._pending_accel_tau_roll is not None:
             try:
-                self._send_control_command(('set_alpha_roll', self._pending_alpha_roll))
-                self._pending_alpha_roll = None
+                self._send_control_command(('set_accel_tau_roll', self._pending_accel_tau_roll))
+                self._pending_accel_tau_roll = None
             except Exception:
                 pass
     
@@ -899,9 +898,9 @@ class PreferencesPanel(QWidget):
             # Apply the default theme; persistence happens via the save below
             self.theme_changed.emit(DEFAULT_THEME)
         
-        # Reset alpha values to defaults
-        self.alpha_pitch = ALPHA_PITCH
-        self.alpha_roll = ALPHA_ROLL
+        # Reset accel tilt-correction time constants to defaults
+        self.accel_tau_pitch = ACCEL_TAU_PITCH
+        self.accel_tau_roll = ACCEL_TAU_ROLL
         
         # Reset stationary detection parameters to defaults
         self.stationary_gyro_threshold = STATIONARY_GYRO_THRESHOLD
@@ -948,10 +947,8 @@ class PreferencesPanel(QWidget):
             self.orientation_panel.set_invert_roll(self.invert_roll)
         
         # Update sliders and labels
-        self.alpha_pitch_slider.setValue(int(self.alpha_pitch * 1000))
-        self.alpha_pitch_value.setText(f"{self.alpha_pitch:.3f}")
-        self.alpha_roll_slider.setValue(int(self.alpha_roll * 1000))
-        self.alpha_roll_value.setText(f"{self.alpha_roll:.3f}")
+        self._set_accel_tau_display('pitch', ACCEL_TAU_PITCH)
+        self._set_accel_tau_display('roll', ACCEL_TAU_ROLL)
         
         # Update stationary detection sliders
         self.stationary_gyro_slider.setValue(int(self.stationary_gyro_threshold * 10))
@@ -981,16 +978,16 @@ class PreferencesPanel(QWidget):
         self.gyro_samples_value.setText(str(def_val))
         
         # Update fusion worker with debounced values
-        self._pending_alpha_pitch = self.alpha_pitch
-        self._pending_alpha_roll = self.alpha_roll
+        self._pending_accel_tau_pitch = self.accel_tau_pitch
+        self._pending_accel_tau_roll = self.accel_tau_roll
         self._pending_stationary_gyro = self.stationary_gyro_threshold
         self._pending_stationary_debounce = self.stationary_debounce_s
         self._pending_drift_smoothing = self.drift_smoothing_time
         self._pending_drift_strength = self.drift_correction_strength
         
         # Apply immediately (no debounce needed for reset)
-        self._apply_alpha_pitch()
-        self._apply_alpha_roll()
+        self._apply_accel_tau_pitch()
+        self._apply_accel_tau_roll()
         self._apply_stationary_gyro()
         self._apply_stationary_debounce()
         self._apply_drift_smoothing()
@@ -1022,17 +1019,19 @@ class PreferencesPanel(QWidget):
         if not getattr(self, '_loading', False):
             self.preferences_changed.emit()
     
-    def _load_alpha_settings(self, cal_prefs):
-        """Load alpha filter settings."""
-        if 'alpha_pitch' in cal_prefs:
-            self.alpha_pitch = float(cal_prefs['alpha_pitch'])
-            self.alpha_pitch_slider.setValue(int(self.alpha_pitch * 1000))
-            self.alpha_pitch_value.setText(f"{self.alpha_pitch:.3f}")
-        
-        if 'alpha_roll' in cal_prefs:
-            self.alpha_roll = float(cal_prefs['alpha_roll'])
-            self.alpha_roll_slider.setValue(int(self.alpha_roll * 1000))
-            self.alpha_roll_value.setText(f"{self.alpha_roll:.3f}")
+    def _load_accel_tau_settings(self, cal_prefs):
+        """Load accel tilt-correction time constants.
+
+        Legacy per-sample 'alpha_*' keys are intentionally ignored: their
+        default (0.98) corresponds to an overly fast 0.2 s correction.
+        """
+        for axis in ('pitch', 'roll'):
+            key = f'accel_tau_{axis}'
+            if key in cal_prefs:
+                low, high = ACCEL_TAU_RANGE
+                value = max(low, min(high, float(cal_prefs[key])))
+                setattr(self, key, value)
+                self._set_accel_tau_display(axis, value)
     
     def _load_stationary_settings(self, cal_prefs):
         """Load stationary detection settings."""
@@ -1168,14 +1167,9 @@ class PreferencesPanel(QWidget):
                 ('set_drift_smoothing_time', self.drift_smoothing_time)
             )
             
-            # Apply alpha values to fusion worker
-            if 'alpha_pitch' in cal_prefs:
-                alpha_pitch = float(cal_prefs['alpha_pitch'])
-                self._send_control_command(('set_alpha_pitch', alpha_pitch))
-            
-            if 'alpha_roll' in cal_prefs:
-                alpha_roll = float(cal_prefs['alpha_roll'])
-                self._send_control_command(('set_alpha_roll', alpha_roll))
+            # Apply accel tilt-correction time constants to fusion worker
+            self._send_control_command(('set_accel_tau_pitch', self.accel_tau_pitch))
+            self._send_control_command(('set_accel_tau_roll', self.accel_tau_roll))
             
             # Apply drift correction strength
             if 'drift_correction_strength' in cal_prefs:
@@ -1221,8 +1215,8 @@ class PreferencesPanel(QWidget):
         This panel returns reset-timing and orientation-hold behavior settings.
         """
         return {
-            'alpha_pitch': f"{self.alpha_pitch:.3f}",
-            'alpha_roll': f"{self.alpha_roll:.3f}",
+            'accel_tau_pitch': f"{self.accel_tau_pitch:.1f}",
+            'accel_tau_roll': f"{self.accel_tau_roll:.1f}",
             'stationary_gyro_threshold': f"{self.stationary_gyro_threshold:.1f}",
             'stationary_debounce_s': f"{self.stationary_debounce_s:.3f}",
             'drift_smoothing_time': f"{self.drift_smoothing_time:.1f}",

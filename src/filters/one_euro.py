@@ -176,4 +176,8 @@ ONE_EURO_FILTER = FilterDefinition(
     label=ONE_EURO_FILTER_LABEL,
     parameters=ONE_EURO_FILTER_PARAMETERS,
     factory=OneEuroPoseFilter,
+    description=(
+        "Smooths small movements, then automatically responds faster as you "
+        "turn. A flexible general-purpose filter."
+    ),
 )

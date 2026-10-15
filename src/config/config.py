@@ -69,10 +69,36 @@ MAX_WORKER_RESTART_ATTEMPTS = 3  # maximum restart attempts per worker
 # ============================================================================
 ACCEL_THRESHOLD = 0.15  # g-units: threshold for stationary detection
 DEFAULT_CENTER_THRESHOLD = 5.0  # degrees: threshold for "near center" detection
-ALPHA_YAW = 0.98   # Complementary filter alpha for yaw (higher = more gyro dominance)
-ALPHA_ROLL = 0.98  # Complementary filter alpha for roll (higher = smoother accel correction)
-ALPHA_PITCH = 0.98 # Complementary filter alpha for pitch (higher = smoother accel correction)
 ALPHA_DRIFT_CORRECTION = 0.99  # Alpha for drift correction when stationary
+
+# Accelerometer tilt correction (pitch/roll). The gyro provides all short-term
+# motion; the accelerometer only pulls slow gyro drift back to level. Time
+# constants are in seconds and independent of the sample rate. Short values
+# let head translation/vibration leak into the output as jitter.
+ACCEL_TAU_PITCH = 1.0
+ACCEL_TAU_ROLL = 1.0
+ACCEL_TAU_RANGE = (0.2, 10.0)
+ACCEL_TAU_STEP = 0.1
+# 2nd-order low-pass cutoff (Hz) applied to the accel-vs-gyro tilt error.
+# Filtering the error instead of raw accel adds no lag to real head motion.
+ACCEL_INNOVATION_CUTOFF_HZ = 1.5
+# Soft accel trust: Gaussian width (g) of the |accel| - 1g deviation, and the
+# Gaussian width (deg/s) of trust vs. head rotation rate. Turning moves an
+# off-axis sensor in a circle, so centripetal/tangential acceleration reads as
+# false tilt. The rate is peak-held and decays with ACCEL_TRUST_HOLD_S so
+# trust stays low through turn reversals, where the rate briefly crosses zero
+# but the angular acceleration peaks.
+ACCEL_TRUST_SIGMA_G = 0.05
+ACCEL_TRUST_GYRO_RATE_DPS = 30.0
+ACCEL_TRUST_HOLD_S = 0.5
+# Integral gain (1/s^2) of the online gyro bias estimate driven by the tilt
+# error; tracks residual pitch/roll bias left after manual calibration.
+# Learning pauses while center assist pulls the pose (that error is not gyro
+# bias) and when the tilt error exceeds GYRO_BIAS_TRACKING_MAX_ERROR_DEG
+# (resets, jumps), so the estimate cannot wind up into a drift source.
+GYRO_BIAS_TRACKING_GAIN = 0.05
+GYRO_BIAS_TRACKING_LIMIT_DPS = 0.5
+GYRO_BIAS_TRACKING_MAX_ERROR_DEG = 1.5
 
 # Time delta validation
 DT_MIN = 0.001  # seconds: reject dt smaller than this (likely duplicate)
@@ -151,6 +177,30 @@ ACCELA_STYLE_ACCELERATION_SCALE_DEG_STEP = 0.25
 ACCELA_STYLE_DEADZONE_DEG_DEFAULT = 0.03
 ACCELA_STYLE_DEADZONE_DEG_RANGE = (0.0, 0.5)
 ACCELA_STYLE_DEADZONE_DEG_STEP = 0.01
+# Gyro-assisted filter: classifies motion from gyro-derived Euler rates
+# (published with each pose) instead of guessing from angle changes.
+GYRO_ADAPTIVE_REST_HZ_DEFAULT = 1.0
+GYRO_ADAPTIVE_REST_HZ_RANGE = (0.2, 5.0)
+GYRO_ADAPTIVE_REST_HZ_STEP = 0.1
+GYRO_ADAPTIVE_MOTION_THRESHOLD_DPS_DEFAULT = 2.0
+GYRO_ADAPTIVE_MOTION_THRESHOLD_DPS_RANGE = (0.5, 10.0)
+GYRO_ADAPTIVE_MOTION_THRESHOLD_DPS_STEP = 0.5
+GYRO_ADAPTIVE_DEADZONE_DEG_DEFAULT = 0.05
+GYRO_ADAPTIVE_DEADZONE_DEG_RANGE = (0.0, 0.5)
+GYRO_ADAPTIVE_DEADZONE_DEG_STEP = 0.01
+GYRO_ADAPTIVE_MOVING_HZ = 25.0          # near pass-through while moving
+GYRO_ADAPTIVE_RATE_LOWPASS_HZ = 1.5     # 2-pole; averages tremor out of the rate
+GYRO_ADAPTIVE_FAST_RATE_MULTIPLIER = 6.0  # snap detection on the raw rate peak
+GYRO_ADAPTIVE_RATE_RELEASE_S = 0.15     # peak-rate hold through short pauses
+GYRO_ADAPTIVE_TREMOR_MULTIPLIER = 4.0   # snap threshold >= k * learned tremor rms
+GYRO_ADAPTIVE_TREMOR_TAU_S = 2.0
+GYRO_ADAPTIVE_CATCH_UP_DEG = (1.0, 4.0)  # open fully for large ungyro'd jumps
+# While another axis moves, an axis's motion threshold drops to this fraction,
+# so the minor component of a diagonal turn is not held back. Noise on an idle
+# axis still averages out and keeps it smoothed.
+GYRO_ADAPTIVE_CROSS_AXIS_THRESHOLD_FLOOR = 0.5
+# Ignore brief counter-rotation before treating it as an intentional reversal.
+GYRO_ADAPTIVE_REVERSAL_CONFIRM_S = 0.10
 CUSTOM_INPUT_LIMIT_DEG_RANGE = (1.0, 180.0)
 CUSTOM_INPUT_LIMIT_DEG_STEP = 0.1
 INPUT_LIMIT_CALIBRATION_POSE_STALE_S = 0.5

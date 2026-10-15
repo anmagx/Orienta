@@ -155,8 +155,10 @@ result is:
 (yaw, pitch, roll, drift_active, is_stationary)
 ```
 
-`FusionWorker` parses raw samples, calls `update`, validates that the resulting
-Euler angles are finite (rejecting NaN/Infinity), drops any non-finite frames with
+`FusionWorker` drains all queued raw samples and parses and calls `update` for
+each one, because skipping samples degrades gyro integration. Only the final
+pose of each batch is published. The worker validates that the resulting Euler
+angles are finite (rejecting NaN/Infinity), drops any non-finite frames with
 rate-limited logging, places valid Euler `[yaw, pitch, roll]` values into both
 Euler queues, and reports state changes. Its processing flow is:
 
@@ -166,10 +168,26 @@ Euler queues, and reports state changes. Its processing flow is:
 4. Subtract the stationary-estimated raw sensor biases `gyro_bias_roll`,
    `gyro_bias_pitch`, and `gyro_bias_yaw` from `gx`, `gy`, and `gz`, respectively,
    then integrate angular velocity into the quaternion. These names identify
-   sensor axes, not independent Euler angular rates.
-5. If acceleration magnitude is close enough to 1 g, calculate accelerometer
-   roll/pitch and blend those with quaternion-derived roll/pitch using the
-   independent pitch/roll alphas. Yaw remains gyro-only.
+   sensor axes, not independent Euler angular rates. The quaternion lives in
+   the IMU's right-handed frame, which the accelerometer and gyro share, so
+   all three gyro axes are integrated unmodified. The application's yaw sign
+   is the opposite of the IMU's, so `_euler_from_quat`/`_quat_from_euler`
+   negate yaw at the Euler boundary. Negating `gz` during integration would
+   mirror the gyro frame and turn yaw into pitch/roll on a tilted sensor.
+5. Correct tilt with the accelerometer as body-rate feedback (Mahony-style).
+   The error is the cross product of the normalized acceleration and the
+   quaternion's predicted gravity direction. It is low-passed
+   (`ACCEL_INNOVATION_CUTOFF_HZ`) and weighted by how close `|a|` is to 1 g and
+   by a peak-held head rotation rate (`ACCEL_TRUST_GYRO_RATE_DPS`, decaying
+   over `ACCEL_TRUST_HOLD_S`). This rejects vibration, linear accelerations,
+   and the centripetal/tangential acceleration of an off-axis sensor during
+   turns, including at turn reversals where the rate briefly crosses zero. Gains are `1/tau`, where tau is the per-axis time constant in
+   seconds (`ACCEL_TAU_PITCH`/`ACCEL_TAU_ROLL`), so correction strength does not
+   depend on sample rate; `tau = inf` disables it. A clamped integral term
+   (`GYRO_BIAS_TRACKING_*`) tracks residual gyro bias. It stops learning while
+   center assist is engaged or the tilt error is large, because that
+   disagreement is not gyro bias and would otherwise wind up into drift. Yaw remains gyro-only. The first valid sample
+   seeds tilt from the accelerometer.
 6. Call a pose stationary only when valid acceleration and bias-corrected gyro magnitude
    below `STATIONARY_GYRO_THRESHOLD` persist for
    `STATIONARY_DEBOUNCE_S`.
@@ -213,7 +231,7 @@ Existing commands are:
 | `('set_center_threshold', degrees)` | Set the shared near-centre threshold |
 | `('set_threshold', yaw, pitch, roll)` | Set all independent thresholds |
 | `('set_center_threshold_yaw/pitch/roll', degrees)` | Set one threshold |
-| `('set_alpha_yaw/pitch/roll', alpha)` | Set filter blend alpha (`0..1`) |
+| `('set_accel_tau_pitch/roll', seconds)` | Set accelerometer tilt-correction time constant (`> 0`) |
 | `('set_drift_smoothing_time', seconds)` | Set positive smoothing duration |
 | `('set_drift_curve_type', name)` | `exponential`, `linear`, `cosine`, or `quadratic` |
 | `('set_drift_correction_strength', strength)` | Set strength in `(0, 1]` |
@@ -270,8 +288,15 @@ For FreeTrack and NPClient only, `OutputWorker` maps yaw, pitch, and roll
 magnitudes through configured shape-preserving cubic curves spanning each
 axis's selected 30°/45°/60°/75°/90° input limit to at most 180° output.
 The selected filter from `src/filters/` runs on the input angles before curve
-mapping; One Euro remains the default. EMA, hysteresis jitter suppression, and
-a critically damped and Accela-inspired smoother are also available.
+mapping; Gyro-assisted (IMU) is the default native filter. One Euro, EMA,
+hysteresis jitter suppression, a critically damped filter, and an
+Accela-inspired smoother are also available. Fusion publishes each pose as
+`[yaw, pitch, roll, yaw_rate, pitch_rate, roll_rate]`, where the rates are
+gyro-derived Euler
+rates in deg/s with the same sign conventions as the angles (zero while the
+orientation is held). The worker forwards them to filters that set
+`accepts_rates`; the gyro-assisted filter uses them to smooth heavily only
+while the head is still and to pass movement through with little lag.
 Changing an axis limit rescales its curve control points. The curve's final
 output is vertically adjustable. The worker then adds rotation and translation
 offsets; final rotations are clamped to ±180°.

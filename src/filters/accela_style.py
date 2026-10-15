@@ -170,4 +170,8 @@ ACCELA_STYLE_FILTER = FilterDefinition(
     label=ACCELA_STYLE_FILTER_LABEL,
     parameters=ACCELA_STYLE_FILTER_PARAMETERS,
     factory=AccelaStylePoseFilter,
+    description=(
+        "Smooths small changes and responds faster to larger ones. It can "
+        "balance jitter reduction and turn responsiveness, but may add lag."
+    ),
 )

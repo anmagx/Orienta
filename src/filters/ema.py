@@ -111,4 +111,8 @@ EMA_FILTER = FilterDefinition(
     label=EMA_FILTER_LABEL,
     parameters=EMA_FILTER_PARAMETERS,
     factory=EmaPoseFilter,
+    description=(
+        "Applies steady smoothing to all movement. More smoothing reduces "
+        "jitter but adds delay to turns."
+    ),
 )

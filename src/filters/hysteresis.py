@@ -133,4 +133,8 @@ HYSTERESIS_FILTER = FilterDefinition(
     label=HYSTERESIS_FILTER_LABEL,
     parameters=HYSTERESIS_FILTER_PARAMETERS,
     factory=HysteresisPoseFilter,
+    description=(
+        "Ignores tiny changes until they cross a threshold. It suppresses "
+        "jitter strongly, but small intentional movements may not register."
+    ),
 )

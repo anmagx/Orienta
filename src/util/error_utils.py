@@ -199,7 +199,8 @@ def parse_imu_line(line: str) -> Tuple[float, Tuple[float, float, float], Tuple[
     """
     Parse and validate IMU CSV line.
     
-    Expected format: Time,Ax,Ay,Az,Gx,Gy,Gz
+    Expected format: Time,Ax,Ay,Az,Gx,Gy,Gz[,Mx,My,Mz]
+    Optional magnetometer values at the end of the row are currently ignored.
     
     Args:
         line: CSV string from IMU
@@ -213,6 +214,7 @@ def parse_imu_line(line: str) -> Tuple[float, Tuple[float, float, float], Tuple[
     Raises:
         ValueError: If line is malformed or contains invalid/unreasonable values
     """
+    # Read only time, acceleration, and gyro; ignore any appended sensor fields.
     values = parse_csv_line(line, 7, "IMU data")
     
     timestamp = values[0]

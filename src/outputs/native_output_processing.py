@@ -351,8 +351,12 @@ class NativeOutputProcessor:
         self._unwrapped_yaw_input = None
         self._last_pose_time = None
 
-    def process(self, pose, timestamp):
-        """Return a six-axis native pose in degrees and millimeters."""
+    def process(self, pose, timestamp, rates=None):
+        """Return a six-axis native pose in degrees and millimeters.
+
+        ``rates`` are optional gyro-derived yaw/pitch/roll rates (deg/s) for
+        filters that set ``accepts_rates``.
+        """
         if not isinstance(pose, (list, tuple)) or len(pose) < 3:
             raise ValueError("Native output pose requires yaw, pitch, and roll")
         angles = tuple(
@@ -377,7 +381,12 @@ class NativeOutputProcessor:
         angles = (self._unwrapped_yaw_input, angles[1], angles[2])
 
         if self.settings["filter_enabled"]:
-            filtered_angles = self._filter.process(angles, timestamp)
+            if getattr(self._filter, "accepts_rates", False):
+                filtered_angles = self._filter.process(
+                    angles, timestamp, rates
+                )
+            else:
+                filtered_angles = self._filter.process(angles, timestamp)
         else:
             filtered_angles = angles
 

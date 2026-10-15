@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QStackedWidget,
     QTabWidget,
@@ -245,9 +246,16 @@ def native_output_preferences_from_section(section, log_warning=None):
         "filter_beta": "beta",
         "filter_derivative_cutoff_hz": "derivative_cutoff_hz",
     }
-    if ONE_EURO_FILTER_ID not in filter_settings and any(
+    has_legacy_one_euro_values = any(
         key in section for key in legacy_one_euro_keys
+    )
+    if (
+        has_legacy_one_euro_values
+        and not section.get("filter_type")
+        and not serialized_filter_settings
     ):
+        settings["filter_type"] = ONE_EURO_FILTER_ID
+    if ONE_EURO_FILTER_ID not in filter_settings and has_legacy_one_euro_values:
         one_euro_defaults = get_filter_definition(
             ONE_EURO_FILTER_ID
         ).default_settings()
@@ -629,7 +637,11 @@ class NativeOutputSettingsDialog(QDialog):
         self._loading = False
 
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
         description_label = QLabel(
             "These settings apply only to direct FreeTrack and NPClient "
             "output. Rotation values follow Orienta's yaw/pitch/roll axes; "
@@ -744,21 +756,32 @@ class NativeOutputSettingsDialog(QDialog):
         filter_type_row.addWidget(self.filter_type_combo, 1)
         filter_layout.addLayout(filter_type_row)
 
+        self.filter_description_label = QLabel()
+        self.filter_description_label.setStyleSheet(
+            "color: #666666; font-size: 10px;"
+        )
+        self.filter_description_label.setWordWrap(True)
+        filter_layout.addWidget(self.filter_description_label)
+
         self.filter_settings_stack = QStackedWidget()
         self.filter_controls_by_type = {}
         self.filter_value_labels_by_type = {}
+        self.filter_parameter_annotations_by_type = {}
         self._filter_slider_specs_by_type = {}
         self._filter_settings_by_type = {
             identifier: definition.default_settings()
             for identifier, definition in self.filter_definitions.items()
         }
         for definition in self.filter_definitions.values():
-            filter_page, controls, value_labels, slider_specs = (
+            filter_page, controls, value_labels, annotations, slider_specs = (
                 self._build_filter_settings_page(definition)
             )
             self.filter_settings_stack.addWidget(filter_page)
             self.filter_controls_by_type[definition.identifier] = controls
             self.filter_value_labels_by_type[definition.identifier] = value_labels
+            self.filter_parameter_annotations_by_type[definition.identifier] = (
+                annotations
+            )
             self._filter_slider_specs_by_type[definition.identifier] = slider_specs
         filter_layout.addWidget(self.filter_settings_stack)
         self.filter_controls = self.filter_controls_by_type[
@@ -797,23 +820,28 @@ class NativeOutputSettingsDialog(QDialog):
             self.offset_controls[key] = spin
         layout.addWidget(offsets_group)
 
+        scroll_area.setWidget(content_widget)
+        root_layout.addWidget(scroll_area, 1)
+
         footer = QHBoxLayout()
         self.status_label = QLabel()
         self.reset_all_button = QPushButton("Reset Native Output Settings")
         self.reset_all_button.clicked.connect(self.reset_defaults)
         footer.addWidget(self.status_label, 1)
         footer.addWidget(self.reset_all_button)
-        layout.addLayout(footer)
+        root_layout.addLayout(footer)
 
     def _build_filter_settings_page(self, definition):
         page = QWidget()
         layout = QGridLayout(page)
         controls = {}
         value_labels = {}
+        annotations = {}
         slider_specs = {}
         settings = self._filter_settings_by_type[definition.identifier]
 
         for row, parameter in enumerate(definition.parameters):
+            control_row = row * 2
             label = QLabel(parameter.label)
             label.setToolTip(parameter.tooltip)
             slider = QSlider(Qt.Horizontal)
@@ -842,14 +870,19 @@ class NativeOutputSettingsDialog(QDialog):
                     position,
                 )
             )
-            layout.addWidget(label, row, 0)
-            layout.addWidget(slider, row, 1)
-            layout.addWidget(value_label, row, 2)
+            annotation = QLabel(parameter.tooltip)
+            annotation.setStyleSheet("color: #666666; font-size: 10px;")
+            annotation.setWordWrap(True)
+            annotations[parameter.key] = annotation
+            layout.addWidget(label, control_row, 0)
+            layout.addWidget(slider, control_row, 1)
+            layout.addWidget(value_label, control_row, 2)
+            layout.addWidget(annotation, control_row + 1, 0, 1, 3)
             value_label.setText(self._format_filter_parameter(
                 parameter,
                 settings[parameter.key],
             ))
-        return page, controls, value_labels, slider_specs
+        return page, controls, value_labels, annotations, slider_specs
 
     @staticmethod
     def _make_spinbox(minimum, maximum, decimals, step=None):
@@ -899,6 +932,9 @@ class NativeOutputSettingsDialog(QDialog):
             return
         page_index = list(self.filter_controls_by_type).index(filter_id)
         self.filter_settings_stack.setCurrentIndex(page_index)
+        self.filter_description_label.setText(
+            self.filter_definitions[filter_id].description
+        )
         self.filter_controls = self.filter_controls_by_type[filter_id]
         self.filter_value_labels = self.filter_value_labels_by_type[filter_id]
         self._filter_slider_specs = self._filter_slider_specs_by_type[filter_id]
@@ -960,6 +996,9 @@ class NativeOutputSettingsDialog(QDialog):
                 normalized["filter_type"]
             )
             self.filter_settings_stack.setCurrentIndex(filter_page_index)
+            self.filter_description_label.setText(
+                self.filter_definitions[normalized["filter_type"]].description
+            )
             self.filter_controls = self.filter_controls_by_type[
                 normalized["filter_type"]
             ]

@@ -24,6 +24,15 @@ OUTPUT_PROTOCOLS = (
 )
 
 
+def _pose_rates(pose):
+    """Return gyro-derived yaw/pitch/roll rates published after the angles."""
+    try:
+        rates = tuple(float(pose[index]) for index in range(3, 6))
+    except (IndexError, TypeError, ValueError):
+        return None
+    return rates if all(math.isfinite(rate) for rate in rates) else None
+
+
 def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
                log_queue=None):
     """Consume the latest pose and send it through the selected output backend."""
@@ -280,7 +289,11 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
                         pose = (
                             source_pose
                             if protocol == OUTPUT_PROTOCOL_UDP
-                            else native_processor.process(source_pose, now)
+                            else native_processor.process(
+                                source_pose,
+                                now,
+                                _pose_rates(latest_pose),
+                            )
                         )
                         backend.send_pose(pose)
                         sent_count += 1

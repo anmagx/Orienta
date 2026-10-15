@@ -17,9 +17,8 @@ from .config import (
     DEFAULT_SERIAL_BAUD,
     
     # Filter parameters
-    ALPHA_YAW,
-    ALPHA_PITCH,
-    ALPHA_ROLL,
+    ACCEL_TAU_PITCH,
+    ACCEL_TAU_ROLL,
     DEFAULT_CENTER_THRESHOLD,
     
     # Queue settings
@@ -36,9 +35,8 @@ __all__ = [
     'APP_VERSION',
     'DEFAULT_SERIAL_PORT',
     'DEFAULT_SERIAL_BAUD',
-    'ALPHA_YAW',
-    'ALPHA_PITCH',
-    'ALPHA_ROLL',
+    'ACCEL_TAU_PITCH',
+    'ACCEL_TAU_ROLL',
     'DEFAULT_CENTER_THRESHOLD',
     'QUEUE_SIZE_DATA',
     'QUEUE_SIZE_DISPLAY',

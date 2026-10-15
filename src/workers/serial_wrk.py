@@ -172,9 +172,10 @@ def serial_thread(messageQueue=None, serialQueue=None, serialDisplayQueue=None, 
                         mps_count = 0
                         last_mps_time = now
             else:
-                # small sleep to avoid busy loop when no data
+                # Brief sleep to avoid a busy loop when no data. Kept short
+                # so lines reach fusion promptly instead of in large bursts.
                 try:
-                    time.sleep(0.01)
+                    time.sleep(0.001)
                 except KeyboardInterrupt:
                     break
         except KeyboardInterrupt:

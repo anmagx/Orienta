@@ -10,9 +10,15 @@ import math
 from src.config.config import (
      ACCEL_THRESHOLD,
      DEFAULT_CENTER_THRESHOLD,
-     ALPHA_YAW,
-     ALPHA_PITCH,
-     ALPHA_ROLL,
+     ACCEL_TAU_PITCH,
+     ACCEL_TAU_ROLL,
+     ACCEL_INNOVATION_CUTOFF_HZ,
+     ACCEL_TRUST_SIGMA_G,
+     ACCEL_TRUST_GYRO_RATE_DPS,
+    ACCEL_TRUST_HOLD_S,
+     GYRO_BIAS_TRACKING_GAIN,
+     GYRO_BIAS_TRACKING_LIMIT_DPS,
+    GYRO_BIAS_TRACKING_MAX_ERROR_DEG,
      ALPHA_DRIFT_CORRECTION,
         GYRO_BIAS_CAL_SAMPLES,
     LEVEL_CAL_SAMPLES,
@@ -57,9 +63,21 @@ class QuaternionComplementaryFilter:
     """
 
     def __init__(self, accel_threshold=ACCEL_THRESHOLD, center_threshold=DEFAULT_CENTER_THRESHOLD, center_threshold_yaw=None, center_threshold_pitch=None, center_threshold_roll=None, logQueue=None):
-        self.alpha_roll = ALPHA_ROLL
-        self.alpha_pitch = ALPHA_PITCH
-        self.alpha_yaw = ALPHA_YAW
+        # Accelerometer tilt correction time constants (seconds); math.inf
+        # disables accel correction for that axis.
+        self.accel_tau_pitch = ACCEL_TAU_PITCH
+        self.accel_tau_roll = ACCEL_TAU_ROLL
+        self.accel_innovation_cutoff_hz = ACCEL_INNOVATION_CUTOFF_HZ
+        self.accel_trust_sigma_g = ACCEL_TRUST_SIGMA_G
+        self.accel_trust_gyro_rate_dps = ACCEL_TRUST_GYRO_RATE_DPS
+        self.accel_trust_hold_s = ACCEL_TRUST_HOLD_S
+        self.gyro_bias_tracking_gain = GYRO_BIAS_TRACKING_GAIN
+        self.gyro_bias_tracking_limit = math.radians(GYRO_BIAS_TRACKING_LIMIT_DPS)
+        self.gyro_bias_tracking_max_error = math.sin(
+            math.radians(GYRO_BIAS_TRACKING_MAX_ERROR_DEG)
+        )
+        self._reset_tilt_state()
+        self.euler_rates = (0.0, 0.0, 0.0)
         self.alpha_drift = ALPHA_DRIFT_CORRECTION
         self.drift_smoothing_time = DRIFT_SMOOTHING_TIME
         self.drift_curve_type = DRIFT_TRANSITION_CURVE  # Load from config
@@ -124,8 +142,14 @@ class QuaternionComplementaryFilter:
             w1*z2 + x1*y2 - y1*x2 + z1*w2
         )
 
+    # self.q is the physical sensor orientation in the IMU's right-handed frame
+    # (shared by accel and gyro). The application's yaw sign is the opposite
+    # of the IMU's, so yaw is negated only when converting to/from Euler
+    # angles. Negating gz during integration instead would mirror the gyro
+    # frame against the accelerometer and turn yaw into pitch/roll whenever
+    # the sensor is not perfectly level.
     def _euler_from_quat(self, q):
-        # returns (yaw, pitch, roll) in degrees
+        # returns application (yaw, pitch, roll) in degrees
         w, x, y, z = q
         # roll (x-axis rotation)
         t0 = 2.0 * (w * x + y * z)
@@ -140,12 +164,13 @@ class QuaternionComplementaryFilter:
         # yaw (z-axis)
         t3 = 2.0 * (w * z + x * y)
         t4 = 1.0 - 2.0 * (y * y + z * z)
-        yaw = math.degrees(math.atan2(t3, t4))
+        yaw = -math.degrees(math.atan2(t3, t4))
 
         return yaw, pitch, roll
 
     def _quat_from_euler(self, yaw, pitch, roll):
-        # input degrees
+        # input: application Euler angles in degrees
+        yaw = -yaw
         cy = math.cos(math.radians(yaw) * 0.5)
         sy = math.sin(math.radians(yaw) * 0.5)
         cp = math.cos(math.radians(pitch) * 0.5)
@@ -158,6 +183,23 @@ class QuaternionComplementaryFilter:
         y = cr * sp * cy + sr * cp * sy
         z = cr * cp * sy - sr * sp * cy
         return (w, x, y, z)
+
+    @staticmethod
+    def _euler_rates_from_body(gx, gy, gz, pitch_deg, roll_deg):
+        """Application (yaw, pitch, roll) rates in deg/s from body rates."""
+        pitch = math.radians(pitch_deg)
+        roll = math.radians(roll_deg)
+        sin_roll = math.sin(roll)
+        cos_roll = math.cos(roll)
+        # ZYX kinematics are singular at +/-90 deg pitch; clamp the divisor.
+        cos_pitch = math.cos(pitch)
+        if abs(cos_pitch) < 1e-3:
+            cos_pitch = math.copysign(1e-3, cos_pitch)
+        vertical = sin_roll * gy + cos_roll * gz
+        roll_rate = gx + math.sin(pitch) / cos_pitch * vertical
+        pitch_rate = cos_roll * gy - sin_roll * gz
+        yaw_rate = -vertical / cos_pitch
+        return yaw_rate, pitch_rate, roll_rate
 
     def recenter_to_current(self):
         """Set the output origin to the filter's current full orientation."""
@@ -327,6 +369,7 @@ class QuaternionComplementaryFilter:
             for axis in range(3)
         )
         self.gyro_bias_roll, self.gyro_bias_pitch, self.gyro_bias_yaw = biases
+        self._reset_tilt_state()
 
     def _correct_gyro(self, gyro):
         return (
@@ -341,7 +384,85 @@ class QuaternionComplementaryFilter:
         pitch = math.atan2(-ax, math.sqrt(ay*ay + az*az)) * 180.0 / math.pi
         return roll, pitch
 
+    def _reset_tilt_state(self, reset_bias=True):
+        """Clear the tilt-error low-pass state (and optionally the online bias)."""
+        self._tilt_err_lp1 = [0.0, 0.0, 0.0]
+        self._tilt_rate_envelope = 0.0
+        self._tilt_err_lp2 = [0.0, 0.0, 0.0]
+        if reset_bias or not hasattr(self, '_tilt_bias'):
+            self._tilt_bias = [0.0, 0.0, 0.0]
+
+    def _integrate_body_rates(self, q, wx, wy, wz, dt):
+        """Rotate q by body rates (rad/s) over dt using the exact rotation."""
+        rx, ry, rz = wx * dt, wy * dt, wz * dt
+        angle = math.sqrt(rx*rx + ry*ry + rz*rz)
+        if angle > 1e-12:
+            s = math.sin(0.5 * angle) / angle
+            dq = (math.cos(0.5 * angle), rx * s, ry * s, rz * s)
+        else:
+            dq = (1.0, 0.5 * rx, 0.5 * ry, 0.5 * rz)
+        return self._quat_normalize(self._quat_mul(q, dq))
+
+    def _tilt_correction_rates(self, accel, accel_mag, gyro_mag_dps, dt, learn_bias=True):
+        """Return body-rate corrections (rad/s) that pull pitch/roll toward accel.
+
+        The error between measured gravity and the gyro-predicted gravity
+        direction is low-passed, weighted by how trustworthy the accel sample
+        is, and fed back proportionally with a time constant per axis plus an
+        integral term that tracks residual gyro bias.
+        """
+        if self.accel_trust_hold_s > 0:
+            decay = math.exp(-dt / self.accel_trust_hold_s)
+            self._tilt_rate_envelope = max(gyro_mag_dps, self._tilt_rate_envelope * decay)
+        else:
+            self._tilt_rate_envelope = gyro_mag_dps
+
+        gain_roll = 0.0 if self.accel_tau_roll <= 0 else 1.0 / self.accel_tau_roll
+        gain_pitch = 0.0 if self.accel_tau_pitch <= 0 else 1.0 / self.accel_tau_pitch
+        if gain_roll == 0.0 and gain_pitch == 0.0:
+            self._tilt_bias = [0.0, 0.0, 0.0]
+            return 0.0, 0.0, 0.0
+        if accel_mag < 0.1:
+            return 0.0, 0.0, 0.0
+
+        w, x, y, z = self.q
+        # Predicted gravity direction in the body frame: R^T * (0, 0, 1).
+        vx = 2.0 * (x*z - w*y)
+        vy = 2.0 * (w*x + y*z)
+        vz = w*w - x*x - y*y + z*z
+        ax, ay, az = (component / accel_mag for component in accel)
+        error = (ay*vz - az*vy, az*vx - ax*vz, ax*vy - ay*vx)
+
+        if self.accel_innovation_cutoff_hz > 0:
+            k = -math.expm1(-2.0 * math.pi * self.accel_innovation_cutoff_hz * dt)
+            lp1, lp2 = self._tilt_err_lp1, self._tilt_err_lp2
+            for i in range(3):
+                lp1[i] += k * (error[i] - lp1[i])
+                lp2[i] += k * (lp1[i] - lp2[i])
+            error = lp2
+
+        deviation = (accel_mag - 1.0) / self.accel_trust_sigma_g
+        rate = self._tilt_rate_envelope / self.accel_trust_gyro_rate_dps
+        weight = math.exp(-0.5 * (deviation * deviation + rate * rate))
+
+        gains = (gain_roll, gain_pitch, 0.5 * (gain_roll + gain_pitch))
+        error_mag = math.sqrt(sum(component * component for component in error))
+        learn_bias = learn_bias and error_mag < self.gyro_bias_tracking_max_error
+        ki = self.gyro_bias_tracking_gain * weight * dt if learn_bias else 0.0
+        limit = self.gyro_bias_tracking_limit
+        bias = self._tilt_bias
+        for i in range(3):
+            if gains[i] > 0.0:
+                bias[i] = max(-limit, min(limit, bias[i] + ki * error[i]))
+            else:
+                bias[i] = 0.0
+        return tuple(
+            weight * gains[i] * error[i] + bias[i] for i in range(3)
+        )
+
     def update(self, gyro, accel, timestamp):
+        # Gyro-derived Euler rates for output filters; zero unless integrated.
+        self.euler_rates = (0.0, 0.0, 0.0)
         # Maintain same semantics as ComplementaryFilter.update
         if self.last_time is None:
             try:
@@ -352,6 +473,12 @@ class QuaternionComplementaryFilter:
             # Initialization logged via log_info; avoid console prints in worker
             self.last_time = timestamp
             self.q = (1.0, 0.0, 0.0, 0.0)
+            accel_mag = math.sqrt(sum(component * component for component in accel))
+            if abs(accel_mag - 1.0) < self.accel_threshold:
+                # Start level with gravity so slow tilt correction need not converge.
+                roll, pitch = self._accel_to_rp(accel)
+                self.q = self._quat_normalize(self._quat_from_euler(0.0, pitch, roll))
+            self._reset_tilt_state(reset_bias=False)
             return 0.0, 0.0, 0.0, False, False
 
         dt = timestamp - self.last_time
@@ -372,24 +499,24 @@ class QuaternionComplementaryFilter:
 
         gx, gy, gz = self._correct_gyro(gyro)
 
-        # Integrate quaternion using gyro (deg/s -> rad/s).
-        # gz is negated because the IMU's yaw axis points opposite the
-        # application's yaw convention in the shipped sensor mounting.
-        omega = (0.0, math.radians(gx), math.radians(gy), math.radians(-gz))
-        q = self.q
-        qd = self._quat_mul(q, omega)
-        q = (
-            q[0] + 0.5 * qd[0] * dt,
-            q[1] + 0.5 * qd[1] * dt,
-            q[2] + 0.5 * qd[2] * dt,
-            q[3] + 0.5 * qd[3] * dt,
-        )
-        q = self._quat_normalize(q)
+        # Body rates in rad/s, in the IMU frame (see _euler_from_quat).
+        wx = math.radians(gx)
+        wy = math.radians(gy)
+        wz = math.radians(gz)
 
-        # accel-based roll/pitch correction (if accel valid)
         ax, ay, az = accel
         accel_mag = math.sqrt(ax*ax + ay*ay + az*az)
         gyro_mag = math.sqrt(gx*gx + gy*gy + gz*gz)
+
+        # Center assist deliberately pulls the pose away from the gyro/accel
+        # solution; that disagreement must not be learned as gyro bias.
+        cx, cy, cz = self._tilt_correction_rates(
+            accel, accel_mag, gyro_mag, dt,
+            learn_bias=self._drift_correction_start is None,
+        )
+        q = self._integrate_body_rates(
+            self.q, wx + cx, wy + cy, wz + cz, dt
+        )
 
         accel_ok = False
         if accel_mag >= 0.01:
@@ -409,28 +536,8 @@ class QuaternionComplementaryFilter:
             """Optimized smallest angle difference using modulo (O(1) vs O(n))."""
             diff = (a - b + 180.0) % 360.0 - 180.0
             return abs(diff)
-        
-        # Apply normal accelerometer blending first (when not in drift correction)
-        if accel_ok:
-            accel_roll, accel_pitch = self._accel_to_rp((ax, ay, az))
-            
-            # Get current orientation from gyro-integrated quaternion
-            current_yaw, gyro_pitch, gyro_roll = self._euler_from_quat(q)
-            
-            # Blend roll and pitch separately using their respective alpha values
-            # Higher alpha = more gyro, lower alpha = more accel
-            blended_roll = self.alpha_roll * gyro_roll + (1.0 - self.alpha_roll) * accel_roll
-            blended_pitch = self.alpha_pitch * gyro_pitch + (1.0 - self.alpha_pitch) * accel_pitch
-            
-            # Yaw stays from gyro integration (no magnetometer available)
-            # Convert back to quaternion with blended roll/pitch and gyro yaw
-            q = self._quat_from_euler(current_yaw, blended_pitch, blended_roll)
-            # q was just built from these exact angles; reuse them instead of
-            # re-decomposing q with another round of trig calls.
-            yaw_est, pitch_est, roll_est = current_yaw, blended_pitch, blended_roll
-        else:
-            # q wasn't reconstructed from known angles here, so it must be decomposed.
-            yaw_est, pitch_est, roll_est = self._euler_from_quat(q)
+
+        yaw_est, pitch_est, roll_est = self._euler_from_quat(q)
 
         # Drift assistance follows the current output origin, including any
         # user recentering, without changing the stored level-calibration offsets.
@@ -496,6 +603,7 @@ class QuaternionComplementaryFilter:
             yaw, pitch, roll = corrected_yaw, corrected_pitch, corrected_roll
         else:
             yaw, pitch, roll = yaw_est, pitch_est, roll_est
+        self.euler_rates = self._euler_rates_from_body(gx, gy, gz, pitch, roll)
         # Store angles for next frame's smoothness calculation
         self._last_yaw = yaw
         self._last_pitch = pitch
@@ -527,6 +635,7 @@ class QuaternionComplementaryFilter:
         self.q = (1.0, 0.0, 0.0, 0.0)
         self.clear_recenter_offsets()
         self._drift_correction_start = None
+        self._reset_tilt_state(reset_bias=False)
     
     
 
@@ -604,6 +713,7 @@ def run_worker(
     DIAG_INTERVAL_S = 2.0
     diag_last_report = time.perf_counter()
     diag_samples = 0
+    diag_imu_samples = 0
     diag_wait_s = 0.0
     diag_parse_s = 0.0
     diag_update_s = 0.0
@@ -701,6 +811,7 @@ def run_worker(
                                 yaw0 = getattr(filter, 'center_offset_yaw', 0.0)
                                 q = filter._quat_from_euler(yaw0, accel_pitch, accel_roll)
                                 filter.q = filter._quat_normalize(q)
+                                filter._reset_tilt_state(reset_bias=False)
                                 filter.last_time = ts
                                 seeded = True
                                 try:
@@ -737,6 +848,7 @@ def run_worker(
                 elif cmd == 'reset' or (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'reset'):
                     # Full reset: reset orientation and clear runtime calibration
                     filter.reset()
+                    filter._reset_tilt_state(reset_bias=True)
                     # Clear timing and stationary debounce state so the filter
                     # reinitializes cleanly when new data arrives after a stop/start.
                     try:
@@ -833,37 +945,17 @@ def run_worker(
                             log_warning(logQueue, "Fusion Worker", f"Invalid roll center threshold: {new_val}")
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error setting roll center threshold: {e}")
-                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_alpha_yaw':
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] in ('set_accel_tau_pitch', 'set_accel_tau_roll'):
+                    axis = 'pitch' if cmd[0] == 'set_accel_tau_pitch' else 'roll'
                     try:
                         new_val = float(cmd[1])
-                        if 0.0 <= new_val <= 1.0:  # Alpha values must be between 0 and 1
-                            filter.alpha_yaw = new_val
-                            log_info(logQueue, "Fusion Worker", f"Alpha yaw updated to {new_val}")
-                            # Alpha yaw update logged; skip console print
+                        if new_val > 0.0:
+                            setattr(filter, f'accel_tau_{axis}', new_val)
+                            log_info(logQueue, "Fusion Worker", f"Accel {axis} correction time constant updated to {new_val} s")
                         else:
-                            log_warning(logQueue, "Fusion Worker", f"Invalid alpha yaw: {new_val}")
+                            log_warning(logQueue, "Fusion Worker", f"Invalid accel {axis} time constant: {new_val}")
                     except Exception as e:
-                        log_warning(logQueue, "Fusion Worker", f"Error setting alpha yaw: {e}")
-                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_alpha_pitch':
-                    try:
-                        new_val = float(cmd[1])
-                        if 0.0 <= new_val <= 1.0:  # Alpha values must be between 0 and 1
-                            filter.alpha_pitch = new_val
-                            log_info(logQueue, "Fusion Worker", f"Alpha pitch updated to {new_val}")
-                        else:
-                            log_warning(logQueue, "Fusion Worker", f"Invalid alpha pitch: {new_val}")
-                    except Exception as e:
-                        log_warning(logQueue, "Fusion Worker", f"Error setting alpha pitch: {e}")
-                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_alpha_roll':
-                    try:
-                        new_val = float(cmd[1])
-                        if 0.0 <= new_val <= 1.0:  # Alpha values must be between 0 and 1
-                            filter.alpha_roll = new_val
-                            log_info(logQueue, "Fusion Worker", f"Alpha roll updated to {new_val}")
-                        else:
-                            log_warning(logQueue, "Fusion Worker", f"Invalid alpha roll: {new_val}")
-                    except Exception as e:
-                        log_warning(logQueue, "Fusion Worker", f"Error setting alpha roll: {e}")
+                        log_warning(logQueue, "Fusion Worker", f"Error setting accel {axis} time constant: {e}")
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_drift_smoothing_time':
                     try:
                         new_val = float(cmd[1])
@@ -1090,23 +1182,25 @@ def run_worker(
             # timeout window before retrying and measurably capping throughput.
             _diag_t0 = time.perf_counter()
             line = safe_queue_get(serialQueue, timeout=0.05, default=None)
+            lines = []
             if line is not None:
-                # Drain the ENTIRE backlog to the true latest sample, not just a
-                # few items. If this process was starved of CPU time (e.g. by a
-                # demanding game) while data kept arriving, a small capped drain
-                # would only claw back a handful of samples per iteration,
-                # forcing many iterations to grind through a stale backlog
-                # before catching up to real time - this is the "desync"/replay
-                # lag under load. serialQueue's maxsize bounds this loop already.
+                # Drain the ENTIRE backlog, but integrate every sample rather
+                # than only the latest: skipping samples makes gyro integration
+                # hold one reading across the gap (amplifying noise/vibration)
+                # and makes accel correction strength depend on CPU load.
+                # Only the final pose of the batch is published, so a starved
+                # process still catches up to real time in one iteration.
+                # serialQueue's maxsize bounds this loop already.
+                lines.append(line)
                 while True:
                     newer = safe_queue_get(serialQueue, timeout=0.0, default=None)
                     if newer is None:
                         break
-                    line = newer
+                    lines.append(newer)
             _diag_t1 = time.perf_counter()
             diag_wait_s += (_diag_t1 - _diag_t0)
             
-            if line is None:
+            if not lines:
                 # No data available - check if we should send inactive status
                 current_time = time.time()
                 
@@ -1140,19 +1234,29 @@ def run_worker(
                 continue
             
             try:
-                # Parse and validate IMU data using error_utils
-                _diag_t2 = time.perf_counter()
-                timestamp, accel, gyro = parse_imu_line(line)
-                _diag_t3 = time.perf_counter()
-                diag_parse_s += (_diag_t3 - _diag_t2)
-                
+                # Parse, validate and integrate every queued IMU sample.
+                result = None
+                for sample_line in lines:
+                    _diag_t2 = time.perf_counter()
+                    try:
+                        timestamp, accel, gyro = parse_imu_line(sample_line)
+                    except ValueError as e:
+                        malformed_counter += 1
+                        if malformed_counter % 100 == 0:
+                            log_warning(logQueue, "Fusion Worker", f"Skipping malformed IMU lines: {malformed_counter} total; last error: {e}")
+                        continue
+                    _diag_t3 = time.perf_counter()
+                    diag_parse_s += (_diag_t3 - _diag_t2)
+                    result = filter.update(gyro, accel, timestamp)
+                    diag_update_s += (time.perf_counter() - _diag_t3)
+                    diag_imu_samples += 1
+                if result is None:
+                    continue
+
                 # Update data timestamp
                 last_data_time = time.time()
-                
-                # Update filter
-                yaw, pitch, roll, drift_active, is_stationary = filter.update(gyro, accel, timestamp)
-                _diag_t4 = time.perf_counter()
-                diag_update_s += (_diag_t4 - _diag_t3)
+
+                yaw, pitch, roll, drift_active, is_stationary = result
 
                 # If a center recalibration was scheduled by a recent recenter, run it now
                 if getattr(filter, '_pending_center_cal', None):
@@ -1263,8 +1367,18 @@ def run_worker(
                     )
                 
                 # Put Euler angles into output queues
-                # Format: [Yaw, Pitch, Roll]
+                # Format: [Yaw, Pitch, Roll, YawRate, PitchRate, RollRate];
+                # rates are gyro-derived deg/s for motion-aware output filters.
                 euler_data = [output_yaw, output_pitch, output_roll]
+                if filter.orientation_held:
+                    euler_data.extend((0.0, 0.0, 0.0))
+                else:
+                    yaw_rate, pitch_rate, roll_rate = filter.euler_rates
+                    euler_data.extend((
+                        -yaw_rate if filter.invert_yaw else yaw_rate,
+                        -pitch_rate if filter.invert_pitch else pitch_rate,
+                        -roll_rate if filter.invert_roll else roll_rate,
+                    ))
 
                 # Validate output is finite before publishing to either output.
                 _diag_t5 = time.perf_counter()
@@ -1323,15 +1437,18 @@ def run_worker(
 
                 if _diag_t6 - diag_last_report >= DIAG_INTERVAL_S and diag_samples > 0:
                     n = diag_samples
+                    m = max(diag_imu_samples, 1)
                     log_info(
                         logQueue, "Fusion Timing",
-                        f"{n / (_diag_t6 - diag_last_report):.1f} samples/s over {n} samples - "
-                        f"avg ms: wait={1000*diag_wait_s/n:.3f} parse={1000*diag_parse_s/n:.3f} "
-                        f"update={1000*diag_update_s/n:.3f} publish={1000*diag_publish_s/n:.3f} "
-                        f"iter_total={1000*diag_iter_s/n:.3f}"
+                        f"{diag_imu_samples / (_diag_t6 - diag_last_report):.1f} IMU samples/s in "
+                        f"{n / (_diag_t6 - diag_last_report):.1f} batches/s - "
+                        f"avg ms per batch: wait={1000*diag_wait_s/n:.3f} "
+                        f"publish={1000*diag_publish_s/n:.3f} iter_total={1000*diag_iter_s/n:.3f}; "
+                        f"per sample: parse={1000*diag_parse_s/m:.3f} update={1000*diag_update_s/m:.3f}"
                     )
                     diag_last_report = _diag_t6
                     diag_samples = 0
+                    diag_imu_samples = 0
                     diag_wait_s = diag_parse_s = diag_update_s = diag_publish_s = diag_iter_s = 0.0
                 
             except ValueError as e:

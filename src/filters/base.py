@@ -42,6 +42,7 @@ class FilterDefinition:
     label: str
     parameters: tuple[FilterParameter, ...]
     factory: Callable[[dict[str, float]], PoseFilter]
+    description: str = ""
 
     def default_settings(self) -> dict[str, float]:
         return {parameter.key: parameter.default for parameter in self.parameters}

@@ -75,10 +75,16 @@ pose to `outputQueue`; `OutputWorker` chooses the active backend.
 
 Important state fields:
 
-* `q`: normalized orientation quaternion `[w, x, y, z]`;
+* `q`: normalized orientation quaternion `[w, x, y, z]` in the IMU's
+  right-handed sensor frame (application yaw is its negation; see
+  `_euler_from_quat`);
 * `last_time`: IMU timing baseline, not wall-clock time;
 * `gyro_bias_roll`, `gyro_bias_pitch`, `gyro_bias_yaw`: stationary-estimated raw
   sensor `gx`, `gy`, `gz` biases, subtracted before integration and stationary detection;
+* `accel_tau_pitch`, `accel_tau_roll`: accelerometer tilt-correction time
+  constants in seconds (`math.inf` disables correction);
+* `_tilt_bias`: online residual gyro-bias estimate from the tilt-correction
+  integral term;
 * `center_offset_*`: level/rest-pose offsets;
 * `center_threshold_*`: independent limits before auto-drift correction;
 * `invert_*`: output axis inversion;
@@ -107,13 +113,24 @@ The transport and pose-processing implementations live in `src/outputs/`,
 separate from the process orchestrator. `native_output_processing.py` supplies
 independently testable response-curve, filter dispatch, and offset processing
 for the direct protocols only. UDP poses bypass it. `src/filters/` defines the
-pose-filter contract, parameter metadata, and registry. `one_euro.py` is the
-default filter; `ema.py` provides fixed-cutoff exponential smoothing, and
+pose-filter contract, parameter metadata, and registry. `gyro_adaptive.py` is
+the default native filter; `one_euro.py` provides general-purpose adaptive
+smoothing, `ema.py` fixed-cutoff exponential smoothing, and
 `hysteresis.py` suppresses small movements with an adjustable deadband.
 `critically_damped.py` provides a second-order response that settles without
 overshoot for a fixed target, and `accela_style.py` uses a deadzone and
 vector-magnitude adaptive response. See [third-party notices](THIRD_PARTY_NOTICES.md)
-for its upstream attribution.
+for its upstream attribution. `gyro_adaptive.py` is an original IMU-specific
+filter: it classifies rest, sustained motion, and snaps per axis from the
+gyro-derived rates published by fusion (falling back to the pose derivative),
+learns the user's tremor level while still, and fades between a low rest
+cutoff with a soft deadzone and near pass-through while moving. Movement on
+one axis lowers the other axes' motion threshold
+(`GYRO_ADAPTIVE_CROSS_AXIS_THRESHOLD_FLOOR`) so diagonal turns are followed
+without opening idle axes to noise.
+The snap peak is released when a rate reversal starts; a sustained reversal is
+accepted after `GYRO_ADAPTIVE_REVERSAL_CONFIRM_S`, while a fast counter-turn
+still opens immediately from its own rate.
 `gui_qt/panels/native_output_settings_dialog.py` builds the filter dropdown and
 the selected filter's parameter sliders from registry metadata, alongside the
 smooth curve editor, per-axis preset/custom input limits, offsets, validation,

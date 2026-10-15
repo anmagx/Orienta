@@ -38,10 +38,10 @@ from src.outputs.native_output_processing import (
 
 
 class NativeOutputProcessingTests(unittest.TestCase):
-    def test_one_euro_filter_is_registered_with_its_settings(self):
+    def test_gyro_adaptive_is_the_default_and_all_filters_are_described(self):
         settings = default_native_output_settings()
         normalized = normalize_native_output_settings(settings)
-        self.assertEqual(normalized["filter_type"], "one_euro")
+        self.assertEqual(normalized["filter_type"], "gyro_adaptive")
         self.assertEqual(
             set(normalized["filter_settings"]["one_euro"]),
             {"min_cutoff_hz", "beta", "derivative_cutoff_hz"},
@@ -50,11 +50,19 @@ class NativeOutputProcessingTests(unittest.TestCase):
             [definition.identifier for definition in available_filters()],
             [
                 "one_euro",
+                "gyro_adaptive",
                 "accela_style",
                 "critically_damped",
                 "ema",
                 "hysteresis",
             ],
+        )
+        self.assertTrue(
+            all(definition.description for definition in available_filters())
+        )
+        self.assertEqual(
+            normalized["filter_settings"]["gyro_adaptive"],
+            {"rest_hz": 1.0, "motion_threshold_dps": 2.0, "deadzone_deg": 0.05},
         )
         self.assertEqual(
             normalized["filter_settings"]["accela_style"],
@@ -409,7 +417,7 @@ class NativeOutputProcessingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finite"):
             processor.process((0, float("nan"), 0), 1.0)
         settings = default_native_output_settings()
-        settings["filter_settings"]["one_euro"]["beta"] = float("inf")
+        settings["filter_settings"]["gyro_adaptive"]["rest_hz"] = float("inf")
         with self.assertRaisesRegex(ValueError, "finite"):
             normalize_native_output_settings(settings)
 
@@ -487,9 +495,13 @@ class NativeOutputProcessingTests(unittest.TestCase):
             },
             warnings.append,
         )
+        expected = normalize_native_output_settings(
+            default_native_output_settings()
+        )
+        expected["filter_type"] = "one_euro"
         self.assertEqual(
             loaded,
-            normalize_native_output_settings(default_native_output_settings()),
+            expected,
         )
         self.assertEqual(len(warnings), 5)
 
@@ -598,16 +610,48 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
 
         panel = NativeOutputSettingsDialog(Queue())
         self.addCleanup(panel.close)
-        self.assertEqual(panel.filter_type_combo.currentData(), "one_euro")
-        panel.filter_controls["beta"].setValue(42)
+        self.assertEqual(panel.filter_type_combo.currentData(), "gyro_adaptive")
+        panel.filter_controls["rest_hz"].setValue(6)
         panel._save_timer.stop()
         settings = panel.get_settings()
         section = panel.get_preferences()
         restored = native_output_preferences_from_section(section)
-        self.assertEqual(restored["filter_type"], "one_euro")
+        self.assertEqual(restored["filter_type"], "gyro_adaptive")
         self.assertEqual(
             restored["filter_settings"],
             settings["filter_settings"],
+        )
+
+    def test_filter_and_parameter_annotations_are_visible_and_update(self):
+        from queue import Queue
+
+        panel = NativeOutputSettingsDialog(Queue())
+        self.addCleanup(panel.close)
+        filter_id = panel.filter_type_combo.currentData()
+        definition = get_filter_definition(filter_id)
+        self.assertEqual(panel.filter_description_label.text(), definition.description)
+        self.assertIn("#666666", panel.filter_description_label.styleSheet())
+        for filter_definition in available_filters():
+            annotations = panel.filter_parameter_annotations_by_type[
+                filter_definition.identifier
+            ]
+            self.assertEqual(
+                set(annotations),
+                {parameter.key for parameter in filter_definition.parameters},
+            )
+            for parameter in filter_definition.parameters:
+                annotation = annotations[parameter.key]
+                self.assertEqual(annotation.text(), parameter.tooltip)
+                self.assertTrue(annotation.wordWrap())
+                self.assertIn("#666666", annotation.styleSheet())
+
+        index = panel.filter_type_combo.findData("ema")
+        panel.filter_type_combo.setCurrentIndex(index)
+        ema = get_filter_definition("ema")
+        self.assertEqual(panel.filter_description_label.text(), ema.description)
+        self.assertEqual(
+            panel.filter_parameter_annotations_by_type["ema"]["cutoff_hz"].text(),
+            ema.parameters[0].tooltip,
         )
 
     def test_ema_filter_can_be_selected_and_its_setting_persisted(self):
@@ -1080,6 +1124,9 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         control_queue = Queue()
         panel = NativeOutputSettingsDialog(control_queue)
         self.addCleanup(panel.close)
+        panel.filter_type_combo.setCurrentIndex(
+            panel.filter_type_combo.findData("one_euro")
+        )
         beta_slider = panel.filter_controls["beta"]
         minimum_slider = panel.filter_controls["min_cutoff_hz"]
         self.assertIsInstance(beta_slider, QSlider)
@@ -1187,6 +1234,9 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         theme_dir = Path(__file__).resolve().parents[1] / "themes"
         panel = NativeOutputSettingsDialog()
         try:
+            panel.filter_type_combo.setCurrentIndex(
+                panel.filter_type_combo.findData("one_euro")
+            )
             for theme, dialog_color, curve_color, slider_color in (
                 ("dark", "#3c3c3c", "#2b2b2b", "#2b2b2b"),
                 ("light", "#ffffff", "#ffffff", "#e1e1e1"),

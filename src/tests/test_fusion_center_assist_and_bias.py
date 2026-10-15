@@ -13,8 +13,8 @@ from src.workers.fusion_wrk import QuaternionComplementaryFilter, run_worker
 class CenterAssistTests(unittest.TestCase):
     def make_filter(self, curve='cosine'):
         filter_instance = QuaternionComplementaryFilter()
-        filter_instance.alpha_pitch = 1.0
-        filter_instance.alpha_roll = 1.0
+        filter_instance.accel_tau_pitch = math.inf
+        filter_instance.accel_tau_roll = math.inf
         filter_instance.drift_curve_type = curve
         filter_instance._stationary_debounce_s = 0.0
         filter_instance.last_time = 0.0
@@ -184,7 +184,7 @@ class GyroBiasTests(unittest.TestCase):
         reference = QuaternionComplementaryFilter(center_threshold=0.0)
         actual.calibrate_gyro_bias([bias])
         for filter_instance in (actual, reference):
-            filter_instance.alpha_pitch = filter_instance.alpha_roll = 1.0
+            filter_instance.accel_tau_pitch = filter_instance.accel_tau_roll = math.inf
             filter_instance.last_time = 0.0
             filter_instance.q = filter_instance._quat_from_euler(20, 15, 30)
         for index in range(1, 251):
@@ -211,8 +211,8 @@ class GyroBiasTests(unittest.TestCase):
 
 
 class GyroBiasWorkerTests(unittest.TestCase):
-    def run_commands(self, commands, calibration_batches):
-        filter_instance = QuaternionComplementaryFilter()
+    def run_commands(self, commands, calibration_batches, filter_instance=None):
+        filter_instance = filter_instance or QuaternionComplementaryFilter()
         serial_queue = Queue()
         control_queue = Queue()
         status_queue = Queue()
@@ -287,6 +287,17 @@ class GyroBiasWorkerTests(unittest.TestCase):
                 )
                 self.assertEqual(filter_instance.gyro_calibrated, command == 'reset_orientation')
                 self.assertIn(('gyro_calibrated', command == 'reset_orientation'), statuses)
+
+    def test_full_reset_clears_online_bias_but_recenter_keeps_it(self):
+        for command in ('reset_orientation', 'reset'):
+            with self.subTest(command=command):
+                filter_instance = QuaternionComplementaryFilter()
+                filter_instance._tilt_bias = [0.01, -0.02, 0.0]
+                filter_instance, _, _ = self.run_commands(
+                    [command], [], filter_instance=filter_instance,
+                )
+                expected = [0.0, 0.0, 0.0] if command == 'reset' else [0.01, -0.02, 0.0]
+                self.assertEqual(filter_instance._tilt_bias, expected)
 
 
 if __name__ == "__main__":
