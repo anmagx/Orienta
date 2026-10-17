@@ -15,6 +15,7 @@ from src.config.config import (
     QUEUE_PUT_TIMEOUT,
 )
 from src.util.error_utils import safe_queue_get, safe_queue_put
+from src.util.tracking_sample import TrackingSample
 
 
 OUTPUT_PROTOCOLS = (
@@ -22,15 +23,6 @@ OUTPUT_PROTOCOLS = (
     OUTPUT_PROTOCOL_FREETRACK,
     OUTPUT_PROTOCOL_NPCLIENT,
 )
-
-
-def _pose_rates(pose):
-    """Return gyro-derived yaw/pitch/roll rates published after the angles."""
-    try:
-        rates = tuple(float(pose[index]) for index in range(3, 6))
-    except (IndexError, TypeError, ValueError):
-        return None
-    return rates if all(math.isfinite(rate) for rate in rates) else None
 
 
 def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
@@ -258,26 +250,45 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
                         f"Ignoring unknown command: {command}",
                     )
 
-            latest_pose = safe_queue_get(pose_queue, timeout=0.02, default=None)
-            if latest_pose is not None:
+            batch = safe_queue_get(pose_queue, timeout=0.02, default=None)
+            batches = []
+            if batch is not None:
+                batches.append(batch)
                 while True:
-                    newer_pose = safe_queue_get(
+                    newer_batch = safe_queue_get(
                         pose_queue,
                         timeout=0.0,
                         default=None,
                     )
-                    if newer_pose is None:
+                    if newer_batch is None:
                         break
-                    latest_pose = newer_pose
+                    batches.append(newer_batch)
 
-            if latest_pose is not None and output_enabled and backend is not None:
+            if batches and output_enabled and backend is not None:
                 try:
-                    source_pose = tuple(
-                        float(latest_pose[index])
-                        for index in range(3)
-                    )
-                    if not all(math.isfinite(value) for value in source_pose):
-                        raise ValueError("Pose must contain only finite angles")
+                    pose = None
+                    for batch in batches:
+                        for sample in batch:
+                            if not isinstance(sample, TrackingSample):
+                                raise ValueError("Expected a sensor-timestamped tracking sample")
+                            if not (
+                                len(sample.angles) == len(sample.rates) == 3
+                                and all(math.isfinite(value) for value in (
+                                    sample.timestamp, *sample.angles, *sample.rates
+                                ))
+                            ):
+                                raise ValueError("Tracking sample must contain finite time, angles and rates")
+                            if sample.reset_filter:
+                                native_processor.reset()
+                            pose = (
+                                sample.angles
+                                if protocol == OUTPUT_PROTOCOL_UDP
+                                else native_processor.process(
+                                    sample.angles, sample.timestamp, sample.rates
+                                )
+                            )
+                    if pose is None:
+                        continue
 
                     now = time.perf_counter()
                     send_due = (
@@ -286,15 +297,6 @@ def run_worker(pose_queue, control_queue, stop_event, status_queue=None,
                         or now >= next_send_time
                     )
                     if send_due:
-                        pose = (
-                            source_pose
-                            if protocol == OUTPUT_PROTOCOL_UDP
-                            else native_processor.process(
-                                source_pose,
-                                now,
-                                _pose_rates(latest_pose),
-                            )
-                        )
                         backend.send_pose(pose)
                         sent_count += 1
                         if protocol == OUTPUT_PROTOCOL_UDP and send_interval > 0:

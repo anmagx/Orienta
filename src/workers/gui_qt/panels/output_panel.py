@@ -83,7 +83,7 @@ class OutputPanelQt(BasePanelQt):
             OUTPUT_PROTOCOL_FREETRACK,
         )
         self.output_protocol_combo.addItem(
-            "NPClient (TrackIR-compatible)",
+            "TrackIR-compatible",
             OUTPUT_PROTOCOL_NPCLIENT,
         )
         protocol_row.addWidget(self.output_protocol_combo, 1)
@@ -112,16 +112,15 @@ class OutputPanelQt(BasePanelQt):
         layout.addWidget(self.udp_settings_widget)
 
         self.native_output_settings_btn = QPushButton(
-            "Native Output Settings..."
+            "Native Output Settings"
         )
         self.native_output_settings_btn.clicked.connect(
             self._open_native_output_settings
         )
-        layout.addWidget(self.native_output_settings_btn)
 
         layout.addStretch()
         self.output_toggle_btn = TwoLineButton(
-            "Start UDP",
+            "Start Tracking",
             self._output_rate_text,
         )
         self.output_toggle_btn.setMinimumHeight(
@@ -134,6 +133,7 @@ class OutputPanelQt(BasePanelQt):
         self.output_toggle_btn.setProperty("status", "")
         self.output_toggle_btn.clicked.connect(self.toggle_output)
         self.udp_toggle_btn = self.output_toggle_btn
+        layout.addWidget(self.native_output_settings_btn)
         layout.addWidget(self.output_toggle_btn)
 
         self.output_protocol_combo.currentIndexChanged.connect(
@@ -479,9 +479,8 @@ class OutputPanelQt(BasePanelQt):
         self.output_protocol_combo.setCurrentIndex(index)
 
     def _refresh_output_button_text(self):
-        protocol = self._protocol_label(self.output_protocol)
         action = "Stop" if self.output_enabled else "Start"
-        main_label = f"{action} {protocol}"
+        main_label = f"{action} Tracking"
         if hasattr(self.output_toggle_btn, "setParts"):
             self.output_toggle_btn.setParts(main_label, self._output_rate_text)
         else:

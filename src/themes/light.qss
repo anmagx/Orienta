@@ -9,6 +9,16 @@ QMainWindow {
     color: #000000;
 }
 
+QWidget#orientationVisualization {
+    background-color: #ffffff;
+}
+
+/* Default frame for top-level application windows */
+QWidget:window {
+    border: 1px solid #cccccc;
+    border-radius: 4px;
+}
+
 /* Group boxes and panels */
 QGroupBox {
     font-weight: bold;
@@ -27,14 +37,49 @@ QGroupBox::title {
     color: #333333;
 }
 
-/* Visualization popup and settings dialog */
-QWidget#visualizationPopup,
-QDialog#visualizationSettingsDialog,
-QDialog#nativeOutputSettingsDialog {
-     background-color: #ffffff;
-     color: #000000;
-     border: 1px solid #cccccc;
-     border-radius: 4px;
+/* Dialogs share one themed surface; top-level windows share a common border. */
+QDialog {
+    background-color: #ffffff;
+    color: #000000;
+}
+
+QWidget#visualizationPopup {
+    background-color: #ffffff;
+    color: #000000;
+    border: none;
+    border-radius: 4px;
+}
+
+QWidget#visualizationPopupWindow {
+    background-color: transparent;
+    border: none;
+}
+
+QWidget#aboutPanel,
+QFrame#messagePanel {
+    background-color: #ffffff;
+    color: #000000;
+    border: none;
+}
+
+QTextEdit#messageSerialText,
+QTextEdit#messageLogText {
+    background-color: #ffffff;
+    color: #000000;
+    border: 1px solid #cccccc;
+    border-radius: 3px;
+}
+
+QScrollArea#preferencesScroll,
+QWidget#preferencesPanel,
+QWidget#preferencesContainer,
+QScrollArea#nativeOutputSettingsScroll,
+QWidget#nativeOutputSettingsContent,
+QWidget#sensorSettingsContent,
+QWidget#visualizationSettingsContent {
+    background-color: #ffffff;
+    color: #000000;
+    border: none;
 }
 
 QWidget#nativeOutputCurve {
@@ -112,6 +157,10 @@ QPushButton[status="error"]:pressed {
 QLabel {
     color: #000000;
     background-color: transparent;
+}
+
+QLabel[mutedText="true"] {
+    color: #666666;
 }
 
 /* Line edits (text inputs) */

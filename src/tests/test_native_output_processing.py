@@ -13,7 +13,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt5.QtGui import QMouseEvent, QPalette
-from PyQt5.QtWidgets import QApplication, QDialog, QFrame, QSlider
+from PyQt5.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFrame,
+    QGroupBox,
+    QSlider,
+    QWidget,
+)
 
 from src.filters import FILTER_REGISTRY, available_filters, get_filter_definition
 from src.filters.base import FilterDefinition, FilterParameter
@@ -23,6 +30,7 @@ from src.workers.gui_qt.panels.native_output_settings_dialog import (
     native_output_preferences_from_section,
     native_output_section_from_settings,
 )
+from src.workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from src.workers.gui_qt.panels.input_limit_calibration import (
     InputMagnitudeCalibration,
     symmetric_limits_from_samples,
@@ -44,7 +52,12 @@ class NativeOutputProcessingTests(unittest.TestCase):
         self.assertEqual(normalized["filter_type"], "gyro_adaptive")
         self.assertEqual(
             set(normalized["filter_settings"]["one_euro"]),
-            {"min_cutoff_hz", "beta", "derivative_cutoff_hz"},
+            {
+                "min_cutoff_hz",
+                "beta",
+                "derivative_cutoff_hz",
+                "deadzone_deg",
+            },
         )
         self.assertEqual(
             [definition.identifier for definition in available_filters()],
@@ -98,6 +111,56 @@ class NativeOutputProcessingTests(unittest.TestCase):
         wrapped = ema.process((-179.0, 0.0, 0.0), 2.01)[0]
         self.assertGreater(wrapped, 179.0)
         self.assertLess(wrapped, 181.0)
+
+    def test_one_euro_soft_deadzone_holds_jitter_and_blends_crossings(self):
+        settings = {
+            "min_cutoff_hz": 20.0,
+            "beta": 0.0,
+            "derivative_cutoff_hz": 1.0,
+            "deadzone_deg": 0.1,
+        }
+        filtered = get_filter_definition("one_euro").create(settings)
+        self.assertEqual(
+            filtered.process((0.0, 0.0, 0.0), 1.0),
+            (0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            filtered.process((0.02, -0.03, 0.04), 1.01),
+            (0.0, 0.0, 0.0),
+        )
+
+        smooth = get_filter_definition("one_euro").create(settings)
+        smooth.process((0.0, 0.0, 0.0), 2.0)
+        blended = smooth.process((0.15, 0.0, 0.0), 2.01)[0]
+
+        no_deadzone = get_filter_definition("one_euro").create({
+            **settings,
+            "deadzone_deg": 0.0,
+        })
+        no_deadzone.process((0.0, 0.0, 0.0), 2.0)
+        unfiltered_crossing = no_deadzone.process((0.15, 0.0, 0.0), 2.01)[0]
+        self.assertGreater(blended, 0.0)
+        self.assertLess(blended, unfiltered_crossing)
+
+    def test_one_euro_deadzone_is_symmetric_and_smooth_at_both_edges(self):
+        from src.filters.one_euro import _soft_deadzone_error
+
+        deadzone = 0.1
+        self.assertEqual(_soft_deadzone_error(deadzone, deadzone), 0.0)
+        self.assertEqual(_soft_deadzone_error(-deadzone, deadzone), 0.0)
+        self.assertAlmostEqual(
+            _soft_deadzone_error(deadzone + 1e-6, deadzone),
+            -_soft_deadzone_error(-deadzone - 1e-6, deadzone),
+        )
+        self.assertAlmostEqual(
+            _soft_deadzone_error(2.0 * deadzone - 1e-6, deadzone),
+            2.0 * deadzone - 1e-6,
+            places=6,
+        )
+        self.assertEqual(
+            _soft_deadzone_error(2.0 * deadzone, deadzone),
+            2.0 * deadzone,
+        )
 
     def test_ema_filter_resets_on_invalid_sample_interval(self):
         ema = get_filter_definition("ema").create({"cutoff_hz": 2.0})
@@ -257,6 +320,31 @@ class NativeOutputProcessingTests(unittest.TestCase):
             settings["filter_settings"]["accela_style"],
         )
 
+    def test_one_euro_deadzone_can_be_selected_and_persisted(self):
+        from queue import Queue
+
+        self._app = QApplication.instance() or QApplication([])
+        panel = NativeOutputSettingsDialog(Queue())
+        self.addCleanup(panel.close)
+        index = panel.filter_type_combo.findData("one_euro")
+        self.assertGreaterEqual(index, 0)
+        panel.filter_type_combo.setCurrentIndex(index)
+        panel.filter_controls["deadzone_deg"].setValue(5)
+        panel._save_timer.stop()
+
+        settings = panel.get_settings()
+        restored = native_output_preferences_from_section(
+            panel.get_preferences()
+        )
+        self.assertEqual(
+            settings["filter_settings"]["one_euro"]["deadzone_deg"],
+            0.05,
+        )
+        self.assertEqual(
+            restored["filter_settings"]["one_euro"]["deadzone_deg"],
+            0.05,
+        )
+
     def test_legacy_filter_values_migrate_to_filter_settings_map(self):
         settings = native_output_preferences_from_section({
             "filter_enabled": "true",
@@ -271,6 +359,7 @@ class NativeOutputProcessingTests(unittest.TestCase):
                 "min_cutoff_hz": 1.7,
                 "beta": 0.42,
                 "derivative_cutoff_hz": 2.3,
+                "deadzone_deg": 0.03,
             },
         )
 
@@ -630,7 +719,8 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         filter_id = panel.filter_type_combo.currentData()
         definition = get_filter_definition(filter_id)
         self.assertEqual(panel.filter_description_label.text(), definition.description)
-        self.assertIn("#666666", panel.filter_description_label.styleSheet())
+        self.assertTrue(panel.filter_description_label.property("mutedText"))
+        self.assertIn("font-size: 10px", panel.filter_description_label.styleSheet())
         for filter_definition in available_filters():
             annotations = panel.filter_parameter_annotations_by_type[
                 filter_definition.identifier
@@ -643,7 +733,8 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
                 annotation = annotations[parameter.key]
                 self.assertEqual(annotation.text(), parameter.tooltip)
                 self.assertTrue(annotation.wordWrap())
-                self.assertIn("#666666", annotation.styleSheet())
+                self.assertTrue(annotation.property("mutedText"))
+                self.assertIn("font-size: 10px", annotation.styleSheet())
 
         index = panel.filter_type_combo.findData("ema")
         panel.filter_type_combo.setCurrentIndex(index)
@@ -858,7 +949,7 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         )
         self.assertTrue(panel.native_output_settings_btn.isHidden())
 
-    def test_connection_panel_contains_only_serial_settings(self):
+    def test_connection_panel_contains_serial_and_sensor_settings(self):
         from queue import Queue
 
         from src.workers.gui_qt.panels.base_panel import BasePanelQt
@@ -875,6 +966,10 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         self.assertEqual(serial_panel.title(), "Serial Settings")
         self.assertTrue(hasattr(serial_panel, "port_combo"))
         self.assertTrue(hasattr(serial_panel, "baud_combo"))
+        self.assertEqual(
+            serial_panel.sensor_settings_button.text(),
+            "Sensor settings",
+        )
         self.assertFalse(hasattr(serial_panel, "output_protocol_combo"))
         self.assertIsInstance(output_panel, BasePanelQt)
         self.assertEqual(output_panel.title(), "Output")
@@ -916,10 +1011,30 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
             serial_panel.toggle_button,
         )
         self.assertIs(
+            serial_panel.content_layout.itemAt(
+                serial_panel.content_layout.count() - 2
+            ).widget(),
+            serial_panel.sensor_settings_button,
+        )
+        self.assertLess(
+            serial_panel.sensor_settings_button.sizeHint().height(),
+            serial_panel.toggle_button.sizeHint().height(),
+        )
+        self.assertIs(
             output_panel.content_layout.itemAt(
                 output_panel.content_layout.count() - 1
             ).widget(),
             output_panel.output_toggle_btn,
+        )
+        self.assertIs(
+            output_panel.content_layout.itemAt(
+                output_panel.content_layout.count() - 2
+            ).widget(),
+            output_panel.native_output_settings_btn,
+        )
+        self.assertEqual(
+            output_panel.output_toggle_btn.text(),
+            "Start Tracking",
         )
         for panel in (serial_panel, output_panel, orientation_panel):
             self.assertEqual(panel.layout().contentsMargins().left(), CONTENT_MARGINS[0])
@@ -1081,14 +1196,23 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
             calibration._intro.container.objectName(),
             "visualizationPopup",
         )
+        self.assertEqual(
+            calibration._intro.objectName(),
+            "visualizationPopupWindow",
+        )
         self.assertIn(
             "border-radius",
             calibration._intro.container.styleSheet(),
         )
+        self.assertIn("border: none", calibration._intro.container.styleSheet())
         calibration._intro.start_button.click()
         self.assertIsNotNone(calibration._target)
         self.assertEqual(calibration._target.width(), calibration._target.height())
         self.assertEqual(calibration._target.container.objectName(), "visualizationPopup")
+        self.assertEqual(
+            calibration._target.objectName(),
+            "visualizationPopupWindow",
+        )
         self.assertIsInstance(calibration._prompt.container, QFrame)
         self.assertEqual(calibration._prompt.width(), calibration._prompt.height())
         self.assertIn("border-radius", calibration._prompt.container.styleSheet())
@@ -1231,7 +1355,9 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
     def test_settings_popout_follows_light_and_dark_themes(self):
         app = QApplication.instance()
         previous_stylesheet = app.styleSheet()
-        theme_dir = Path(__file__).resolve().parents[1] / "themes"
+        from src.managers.theme_manager import ThemeManager
+
+        theme_manager = ThemeManager(app)
         panel = NativeOutputSettingsDialog()
         try:
             panel.filter_type_combo.setCurrentIndex(
@@ -1240,10 +1366,10 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
             for theme, dialog_color, curve_color, slider_color in (
                 ("dark", "#3c3c3c", "#2b2b2b", "#2b2b2b"),
                 ("light", "#ffffff", "#ffffff", "#e1e1e1"),
+                ("solarized_dark", "#073642", "#002b36", "#002b36"),
+                ("solarized_light", "#fdf6e3", "#eee8d5", "#eee8d5"),
             ):
-                app.setStyleSheet(
-                    (theme_dir / f"{theme}.qss").read_text(encoding="utf-8")
-                )
+                theme_manager.load_theme(theme)
                 panel.open_window()
                 app.processEvents()
                 dialog = panel
@@ -1259,11 +1385,104 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
                     dialog_color,
                 )
                 self.assertEqual(
+                    dialog.layout().getContentsMargins(),
+                    (6, 6, 6, 6),
+                )
+                scroll = panel.findChild(QWidget, "nativeOutputSettingsScroll")
+                content = panel.findChild(QWidget, "nativeOutputSettingsContent")
+                self.assertIsNotNone(scroll)
+                self.assertIsNotNone(content)
+                self.assertEqual(content.layout().getContentsMargins(), (6, 6, 6, 6))
+                curves_group = next(
+                    group for group in panel.findChildren(QGroupBox)
+                    if group.title() == "Axis response curves"
+                )
+                disclaimer = curves_group.layout().itemAt(0).widget()
+                self.assertTrue(
+                    disclaimer.text().startswith(
+                        "These settings apply only to direct FreeTrack and NPClient"
+                    )
+                )
+                self.assertIs(disclaimer.parentWidget(), curves_group)
+                for group in panel.findChildren(QGroupBox):
+                    self.assertEqual(
+                        group.layout().getContentsMargins(),
+                        (6, 6, 6, 6),
+                    )
+                for widget in (scroll, scroll.viewport(), content):
+                    self.assertEqual(
+                        widget.palette().color(QPalette.Window).name(),
+                        dialog_color,
+                    )
+                self.assertEqual(
                     curve.palette().color(QPalette.Window).name(),
                     curve_color,
                 )
         finally:
             panel.close()
+            app.setStyleSheet(previous_stylesheet)
+
+    def test_preferences_content_matches_native_output_content_theme(self):
+        app = QApplication.instance()
+        previous_stylesheet = app.styleSheet()
+        from src.managers.theme_manager import ThemeManager
+
+        theme_manager = ThemeManager(app)
+        preferences = PreferencesPanel()
+        native_output = NativeOutputSettingsDialog()
+        preferences_dialog = QDialog()
+        preferences_dialog.setObjectName("preferencesDialog")
+        preferences_dialog.setAttribute(Qt.WA_StyledBackground, True)
+        preferences_dialog.setAutoFillBackground(True)
+        preferences_dialog.setStyleSheet(app.styleSheet())
+        self.addCleanup(preferences.close)
+        self.addCleanup(native_output.close)
+        self.addCleanup(preferences_dialog.close)
+        try:
+            for theme, expected_color, border_color in (
+                ("dark", "#3c3c3c", "#555555"),
+                ("light", "#ffffff", "#cccccc"),
+                ("solarized_dark", "#073642", "#586e75"),
+                ("solarized_light", "#fdf6e3", "#93a1a1"),
+            ):
+                theme_manager.load_theme(theme)
+                preferences_dialog.setStyleSheet(app.styleSheet())
+                stylesheet = app.styleSheet()
+                self.assertIn("QWidget:window", stylesheet)
+                expected_border_rule = (
+                    f"border-color: {border_color};"
+                    if theme.startswith("solarized_")
+                    else f"border: 1px solid {border_color};"
+                )
+                self.assertIn(expected_border_rule, stylesheet)
+                preferences.ensurePolished()
+                native_output.ensurePolished()
+                app.processEvents()
+                preferences_content = preferences.findChild(
+                    QWidget, "preferencesContainer"
+                )
+                native_content = native_output.findChild(
+                    QWidget, "nativeOutputSettingsContent"
+                )
+                self.assertIsNotNone(preferences_content)
+                self.assertIsNotNone(native_content)
+                for widget in (
+                    preferences_dialog,
+                    preferences,
+                    preferences.findChild(QWidget, "preferencesScroll"),
+                    preferences_content,
+                    native_content,
+                ):
+                    widget.ensurePolished()
+                    self.assertEqual(
+                        widget.palette().color(QPalette.Window).name(),
+                        expected_color,
+                    )
+                self.assertEqual(
+                    preferences_content.palette().color(QPalette.Window).name(),
+                    native_content.palette().color(QPalette.Window).name(),
+                )
+        finally:
             app.setStyleSheet(previous_stylesheet)
 
 

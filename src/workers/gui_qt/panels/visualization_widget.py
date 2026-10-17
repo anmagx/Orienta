@@ -53,10 +53,9 @@ class OrientationVisualizationWidget(QWidget):
         self.invert_roll = False
         
         # Widget appearance - use shared line thickness for border
-        try:
-            self.setStyleSheet(f"background-color: black; border: {LINE_THICKNESS}px solid gray;")
-        except Exception:
-            self.setStyleSheet("background-color: black; border: 1px solid gray;")
+        self.setObjectName("orientationVisualization")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
 
     def update_orientation(self, pitch, yaw, roll):
         """

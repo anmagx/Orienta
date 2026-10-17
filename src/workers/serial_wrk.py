@@ -12,6 +12,35 @@ from src.config.config import (
     QUEUE_PUT_TIMEOUT
 )
 from src.util.error_utils import safe_queue_put, safe_queue_get
+from src.util.sensor_settings import sensor_settings_command
+
+
+def _send_sensor_command(ser, cmd, uiStatusQueue, logQueue):
+    from src.util.log_utils import log_warning
+
+    try:
+        if len(cmd) < 2:
+            raise ValueError("Missing sensor command")
+        operation = cmd[1]
+        values = cmd[2] if operation == "SET" and len(cmd) > 2 else None
+        payload = sensor_settings_command(operation, values)
+        ser.write(payload)
+    except ValueError as error:
+        message = f"Invalid sensor settings request: {error}"
+        safe_queue_put(
+            uiStatusQueue,
+            ("sensor_settings_error", message),
+            timeout=QUEUE_PUT_TIMEOUT,
+        )
+        log_warning(logQueue, "Serial Worker", message)
+    except SerialException as error:
+        message = f"Could not send sensor settings request: {error}"
+        safe_queue_put(
+            uiStatusQueue,
+            ("sensor_settings_error", message),
+            timeout=QUEUE_PUT_TIMEOUT,
+        )
+        log_warning(logQueue, "Serial Worker", message)
 
 def open_serial(port, baud, retry_delay, messageQueue, stop_event=None, serialControlQueue=None, statusQueue=None, uiStatusQueue=None):
     """Try to open serial port repeatedly until successful.
@@ -45,6 +74,15 @@ def open_serial(port, baud, retry_delay, messageQueue, stop_event=None, serialCo
                     baud = int(cmd[2])
                 except Exception:
                     pass
+            elif cmd[0] == "sensor_command":
+                safe_queue_put(
+                    uiStatusQueue,
+                    (
+                        "sensor_settings_error",
+                        "Sensor settings require an active serial connection.",
+                    ),
+                    timeout=QUEUE_PUT_TIMEOUT,
+                )
 
         try:
             ser = serial.Serial(port, baud, timeout=SERIAL_TIMEOUT)
@@ -112,6 +150,18 @@ def serial_thread(messageQueue=None, serialQueue=None, serialDisplayQueue=None, 
                     # reset counters on start
                     mps_count = 0
                     last_mps_time = time.time()
+                elif cmd[0] == "sensor_command":
+                    if ser is None:
+                        safe_queue_put(
+                            uiStatusQueue,
+                            (
+                                "sensor_settings_error",
+                                "Sensor settings require an active serial connection.",
+                            ),
+                            timeout=QUEUE_PUT_TIMEOUT,
+                        )
+                    else:
+                        _send_sensor_command(ser, cmd, uiStatusQueue, logQueue)
                 elif cmd[0] == 'stop':
                     if ser is not None:
                         log_info(logQueue, "Serial Worker", "Stopping serial connection")
@@ -140,6 +190,20 @@ def serial_thread(messageQueue=None, serialQueue=None, serialDisplayQueue=None, 
             if ser.in_waiting:
                 data = ser.readline().decode('utf-8', errors='ignore').strip()
                 if data:
+                    if data.startswith("!SENSOR,"):
+                        safe_queue_put(
+                            serialDisplayQueue,
+                            data,
+                            timeout=QUEUE_PUT_TIMEOUT,
+                            queue_name="serialDisplayQueue",
+                        )
+                        safe_queue_put(
+                            uiStatusQueue,
+                            ("sensor_settings_response", data),
+                            timeout=QUEUE_PUT_TIMEOUT,
+                        )
+                        continue
+
                     # forward serial payload with queue monitoring
                     if not safe_queue_put(serialQueue, data, timeout=QUEUE_PUT_TIMEOUT, 
                                          log_failures=True, context="Serial data", queue_name="serialQueue"):

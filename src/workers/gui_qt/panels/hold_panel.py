@@ -32,7 +32,7 @@ class HoldPanelQt(QWidget):
         layout.addStretch()
 
     def _set_normal_style(self):
-        self.hold_still_label.setStyleSheet("color: #666666;")
+        self.hold_still_label.setProperty("mutedText", True)
 
     def _on_blink_timer(self):
         if not self._is_scrolling:

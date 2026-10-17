@@ -86,6 +86,11 @@ class UserDataPathsTests(unittest.TestCase):
         self.assertEqual(loaded["native_output"], initial["native_output"])
         self.assertEqual(loaded["network"], initial["network"])
 
+    def test_solarized_theme_identifier_persists(self):
+        manager = PreferencesManager(config_dir=str(self.root / "solarized"))
+        self.assertTrue(manager.set_theme("solarized_dark"))
+        self.assertEqual(manager.get_theme(), "solarized_dark")
+
     def test_failed_atomic_replace_preserves_existing_preferences(self):
         manager = PreferencesManager(config_dir=str(self.root / "atomic"))
         existing = {
@@ -183,6 +188,14 @@ class UserDataPathsTests(unittest.TestCase):
             connection_panel=SimpleNamespace(),
             orientation_panel=SimpleNamespace(),
             preferences_panel=SimpleNamespace(),
+            sensor_settings_preferences={
+                "gyro_range": 1000,
+                "accel_range": 2,
+                "sensor_rate": 1000,
+                "gyro_lpf": 42,
+                "accel_lpf": 41,
+                "output_rate": 250,
+            },
             theme_manager=SimpleNamespace(get_current_theme=lambda: "dark"),
             preferences_manager=Mock(),
             log_queue=Queue(),
@@ -190,7 +203,10 @@ class UserDataPathsTests(unittest.TestCase):
         gui.preferences_manager.save.return_value = False
         TabbedGUIWorker.save_preferences(gui)
         gui.preferences_manager.save.assert_called_once_with(
-            {"gui": {"selected_tab": "0", "theme": "dark"}}
+            {
+                "sensor": gui.sensor_settings_preferences,
+                "gui": {"selected_tab": "0", "theme": "dark"},
+            }
         )
         self.assertEqual(
             gui.log_queue.get_nowait(),

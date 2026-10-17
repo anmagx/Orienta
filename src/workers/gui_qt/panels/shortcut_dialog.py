@@ -5,9 +5,13 @@ import queue
 from PyQt5.QtWidgets import QApplication, QDialog, QDialogButtonBox, QVBoxLayout, QLabel
 from PyQt5.QtCore import QTimer, Qt
 
+from src.config.config import (
+    DEFAULT_SPACING,
+    DIALOG_CONTENT_MARGIN,
+    QUEUE_PUT_TIMEOUT,
+)
 from src.util.error_utils import safe_queue_put
-from src.config.config import QUEUE_PUT_TIMEOUT
-from .base_panel import DEFAULT_SPACING, DIALOG_CONTENT_MARGIN
+from src.util.windows_titlebar import schedule_windows_titlebar_theme
 
 
 class KeyCaptureDialog(QDialog):
@@ -17,6 +21,7 @@ class KeyCaptureDialog(QDialog):
                  input_response_queue=None, owner_panel=None):
         super().__init__(parent)
         self.setWindowTitle("Capture Reset Shortcut")
+        schedule_windows_titlebar_theme(self)
         self.setModal(True)
         self.setMinimumSize(300, 150)
         self.input_command_queue = input_command_queue

@@ -82,6 +82,15 @@ class OrientationHoldTests(unittest.TestCase):
         self.assertAlmostEqual(resumed_pose[0], 90.0)
         self.assertIsNone(self.filter._held_output_q)
 
+    def test_release_before_first_sample_starts_resume_on_sensor_clock(self):
+        self.filter.apply_orientation_hold(0.0, 0.0, 0.0, now=0.0)
+        self.filter.set_orientation_hold(True)
+        self.filter.set_orientation_hold(False)
+        first = self.filter.apply_orientation_hold(90.0, 0.0, 0.0, now=0.004)
+        last = self.filter.apply_orientation_hold(90.0, 0.0, 0.0, now=2.004)
+        self.assertAlmostEqual(first[0], 0.0)
+        self.assertAlmostEqual(last[0], 90.0)
+
     def test_resume_uses_configured_curve_smoothing_time_and_strength(self):
         self.filter.drift_smoothing_time = 2.0
         self.filter.drift_correction_strength = 0.3

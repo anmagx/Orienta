@@ -30,6 +30,9 @@ from src.workers.gui_qt.panels.preferences_panel import PreferencesPanel
 from src.workers.gui_qt.panels.native_output_settings_dialog import (
     NativeOutputSettingsDialog,
 )
+from src.workers.gui_qt.panels.sensor_settings_dialog import (
+    SensorSettingsDialog,
+)
 from src.workers.gui_qt.panels.about_panel import AboutPanel
 from src.workers.gui_qt.panels.orientation_panel import HoldPanelQt
 
@@ -46,6 +49,9 @@ from src.config.config import (
     APP_NAME, APP_VERSION,
 )
 from src.util.log_utils import log_info, log_warning, log_error
+from src.util.error_utils import safe_queue_put
+from src.util.sensor_settings import normalize_sensor_settings
+from src.util.windows_titlebar import install_windows_titlebar_theme_sync
 
 
 class TabbedGUISignals(QObject):
@@ -122,6 +128,8 @@ class TabbedGUIWorker(QMainWindow):
         
         # Initialize managers
         self.preferences_manager = PreferencesManager()
+        self.sensor_settings_preferences = None
+        self.sensor_settings_dialog = None
         self.theme_manager = ThemeManager(QApplication.instance())
         self.native_output_dialog = NativeOutputSettingsDialog(
             self.output_control_queue,
@@ -221,6 +229,7 @@ class TabbedGUIWorker(QMainWindow):
             self._log_message,
             padding=6,
             on_serial_stop=None,
+            on_sensor_settings=self._open_sensor_settings,
         )
         self.output_panel = OutputPanelQt(
             connection_output_row,
@@ -494,6 +503,11 @@ class TabbedGUIWorker(QMainWindow):
         elif status_type == 'serial_connection':
             self._safe_panel_call('connection_panel', 'update_connection_status', value)
             if ui_status:
+                if self.sensor_settings_dialog is not None:
+                    self.sensor_settings_dialog.set_connected(
+                        value == "connected",
+                        read_on_connect=value == "connected",
+                    )
                 self._safe_panel_call('orientation_panel', 'update_serial_connection_status', value)
                 # Only clear calibration on unexpected disconnect or error. Preserve
                 # user-configured drift thresholds when the serial port is stopped
@@ -530,6 +544,50 @@ class TabbedGUIWorker(QMainWindow):
             self._safe_panel_call('output_panel', 'update_output_status', value)
         elif status_type == 'stationary':
             self._safe_panel_call('orientation_panel', 'update_device_status', bool(value))
+        elif status_type == 'sensor_settings_response':
+            self._safe_panel_call(
+                'sensor_settings_dialog',
+                'handle_device_response',
+                value,
+            )
+        elif status_type == 'sensor_settings_error':
+            self._safe_panel_call(
+                'sensor_settings_dialog',
+                'handle_transport_error',
+                value,
+            )
+
+    def _send_sensor_settings_command(self, command):
+        if not self.connection_panel.is_connected:
+            return False
+        if not safe_queue_put(
+            self.serial_control_queue,
+            ("sensor_command",) + tuple(command),
+            timeout=0.1,
+        ):
+            self._log_message("Could not queue sensor settings command")
+            return False
+        return True
+
+    def _open_sensor_settings(self):
+        if self.sensor_settings_dialog is None:
+            self.sensor_settings_dialog = SensorSettingsDialog(
+                self._send_sensor_settings_command,
+                preferences=self.sensor_settings_preferences,
+                connected=self.connection_panel.is_connected,
+                parent=self,
+            )
+            self.sensor_settings_dialog.preferences_changed.connect(
+                self._on_sensor_preferences_changed
+            )
+        self.sensor_settings_dialog.show()
+        self.sensor_settings_dialog.raise_()
+        self.sensor_settings_dialog.activateWindow()
+        self.sensor_settings_dialog.request_settings()
+
+    def _on_sensor_preferences_changed(self, preferences):
+        self.sensor_settings_preferences = dict(preferences)
+        self.save_preferences()
 
     def _handle_status_update(self, status_type: str, value):
         """Handle worker status updates."""
@@ -629,6 +687,11 @@ class TabbedGUIWorker(QMainWindow):
             # Apply preferences to each panel
             if hasattr(self.connection_panel, 'set_prefs') and 'serial' in prefs:
                 self.connection_panel.set_prefs(prefs['serial'])
+
+            if "sensor" in prefs:
+                self.sensor_settings_preferences = normalize_sensor_settings(
+                    prefs["sensor"]
+                )
 
             if (
                 hasattr(self, 'output_panel')
@@ -734,6 +797,14 @@ class TabbedGUIWorker(QMainWindow):
             
             if hasattr(self.connection_panel, 'get_prefs'):
                 prefs['serial'] = self.connection_panel.get_prefs()
+
+            sensor_preferences = getattr(
+                self,
+                "sensor_settings_preferences",
+                None,
+            )
+            if sensor_preferences is not None:
+                prefs["sensor"] = dict(sensor_preferences)
 
             if hasattr(self, 'output_panel') and hasattr(self.output_panel, 'get_prefs'):
                 prefs['network'] = self.output_panel.get_prefs()
@@ -854,6 +925,10 @@ def start_gui_worker(
     
     # Show window
     main_window.show()
+    install_windows_titlebar_theme_sync(
+        app,
+        lambda message: log_warning(log_queue, 'GUI', message),
+    )
     
     log_info(log_queue, 'GUI', "Started")
     

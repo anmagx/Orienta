@@ -29,7 +29,9 @@ The only diy required is soldering up your sensor and your board and mounting it
 - Smooth autocentering when stationary and near center
 - UDP output for opentrack, direct FreeTrack 2.0 output, and NPClient output
   for TrackIR-compatible games
-- PyQt5 interface with light and dark themes.
+- PyQt5 interface with Light, Dark, Solarized Light, and Solarized Dark themes.
+- Native Windows title bars follow the Windows app light/dark preference,
+  independently of Orienta's in-app theme, and update when that preference changes.
 
 ## Installation
 
@@ -100,6 +102,36 @@ match your device.
 
 Magnetometers are currently not supported. 
 
+### Alternative MPU6500 tracking sketch
+
+[MPU6500_tracking](arduino/MPU6500_tracking/MPU6500_tracking.ino) is a standalone
+sketch using FastIMU 1.3.0's rate, filter, and sample-timestamp APIs. Open it
+from its own folder in the Arduino IDE; the original sketches are unchanged.
+It uses 500000 baud, a 1000 Hz internal accel/gyro rate, 250 Hz polling/output,
+a +/-1000 degrees/second gyro range, and a +/-2 g accelerometer range. The
+hardware low-pass filters remain at 42 Hz for gyro and 41 Hz for accel.
+
+It does not perform startup gyro or accelerometer calibration. After warm-up,
+keep the sensor still and trigger Orienta's gyro calibration. No accelerometer
+bias correction is applied; Orienta's level calibration is not a replacement
+for sensor-bias calibration.
+
+The sketch uses I2C SDA pin 6 and SCL pin 7 at address `0x68`, configured by
+`I2C_SDA_PIN` and `I2C_SCL_PIN` near the top of the sketch. Change those
+constants to match your board wiring. It emits the same seven-field CSV format,
+using FastIMU read timestamps extended across microsecond-counter rollover, and
+skips unchanged samples.
+These timestamps mark register reads, not hardware conversion times. Initialization
+or configuration errors, or 100 ms without fresh synchronized samples, print an
+error and stop acquisition until reset. FastIMU does not expose I2C transfer
+status through `update()`, so this freshness check cannot detect every bus fault.
+
+The sketch also accepts runtime commands from Orienta's **Sensor settings**
+dialog. Range, sensor rate, low-pass cutoff, and output rate changes are applied
+without reflashing; the dialog requests and displays the values read back from
+the MPU6500 registers. Settings chosen in the dialog are stored in Orienta's
+preferences and are not silently assumed to be the hardware's current state.
+
 ## Usage
 
 You will obviously need to find a way to mount your sensor on your head. In the example I use a 3D-printed case for the sensor itself and the arduino nano that both clip to my headset. Many, if not most IMUs will want to be mounted a specific up-direction to give accurate accelerometer readings - tilted on the side or on it's head will probably not work, but flipped 180° is fine. The app allows for flipping axis in the preferences section. 
@@ -133,6 +165,32 @@ Smoothing time controls engagement and the sustained correction rate, while
 strength scales that rate. Center assist is not an absolute yaw reference and
 can pull small held glances inward. Recenter preserves gyro calibration; a
 full reset clears all three bias estimates.
+
+### Fusion and output filtering
+
+Fusion integrates every valid IMU sample using its sensor timestamp. Direct
+FreeTrack and NPClient output filters also process every fused sample on that
+same clock, including samples delivered in a batch; only the latest result is
+sent to the game. Host scheduling and output transmission timing do not set
+filter time steps. UDP continues to send unmapped, unfiltered fused angles for
+processing in opentrack. A backwards sensor-clock jump restarts timing history
+without clearing the calibrated gyro bias or orientation.
+
+Accelerometer correction is evaluated after gyro propagation. Trust decreases
+for abnormal acceleration magnitude, fast rotation, and rapidly changing
+gravity disagreement that is not explained by gyro motion. Rejected observations
+are attenuated before entering the correction low-pass filters. Their stored
+error cannot keep pushing in an obsolete direction after a disturbance ends,
+and proportional tilt correction is limited to 2 degrees/second. Online tilt-bias
+learning additionally requires 0.5 seconds of continuously trustworthy, quiet,
+small-error observations.
+
+These protections reduce translation-induced false tilt; they cannot always
+distinguish sustained acceleration from gravity or provide an absolute yaw
+reference. Center assistance and its settings are unchanged.
+Sensor gaps over 100 ms, clock restarts, or a full output queue reset output
+filter history at the next sample rather than smoothing across missing data.
+Output-queue losses are reported in the application log.
 
 ### User data
 

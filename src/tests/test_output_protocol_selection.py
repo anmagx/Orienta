@@ -3,13 +3,14 @@
 import os
 import sys
 import ctypes
+import math
 import struct
 import tempfile
 import threading
 import types
 import unittest
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from src.util.game_client_registration import (
     NPClientRegistration,
 )
 from src.workers.output_wrk import OUTPUT_PROTOCOLS
+from src.util.tracking_sample import TrackingSample
 from src.outputs.shared_memory_output import (
     FTData,
     FTHeap,
@@ -37,6 +39,11 @@ from src.outputs.shared_memory_output import (
 )
 from src.workers.gui_qt.panels.output_panel import OutputPanelQt
 from src.outputs.udp_output import UDPOutput
+
+
+def _pose_batch(pose, timestamp=1.0):
+    rates = tuple(pose[3:6]) if len(pose) >= 6 else (0.0, 0.0, 0.0)
+    return (TrackingSample(timestamp, tuple(pose[:3]), rates),)
 
 
 class OutputProtocolSelectionTests(unittest.TestCase):
@@ -56,6 +63,21 @@ class OutputProtocolSelectionTests(unittest.TestCase):
 
     def test_udp_is_default_and_legacy_network_preferences_still_load(self):
         self.assertEqual(self.panel.get_output_protocol(), OUTPUT_PROTOCOL_UDP)
+        self.assertEqual(
+            self.panel.output_toggle_btn.text(),
+            "Start Tracking",
+        )
+        self.assertEqual(
+            [
+                self.panel.output_protocol_combo.itemText(index)
+                for index in range(self.panel.output_protocol_combo.count())
+            ],
+            [
+                "UDP (opentrack)",
+                "FreeTrack 2.0 (Direct)",
+                "TrackIR-compatible",
+            ],
+        )
         self.panel.set_prefs({
             "network": {
                 "udp_ip": "127.0.0.2",
@@ -80,6 +102,7 @@ class OutputProtocolSelectionTests(unittest.TestCase):
 
         self.panel.output_toggle_btn.click()
         self.assertTrue(self.panel.output_enabled)
+        self.assertEqual(self.panel.output_toggle_btn.text(), "Stop Tracking")
         self.assertEqual(
             self.output_control_queue.get_nowait(),
             ("set_enabled", True),
@@ -103,6 +126,7 @@ class OutputProtocolSelectionTests(unittest.TestCase):
         )
         panel.toggle_output()
         registration.register.assert_called_once_with()
+        self.assertEqual(panel.output_toggle_btn.text(), "Stop Tracking")
         self.assertEqual(
             panel.output_control_queue.get_nowait(),
             ("set_enabled", True),
@@ -285,7 +309,7 @@ class OutputBackendTests(unittest.TestCase):
         control_queue = Queue()
         status_queue = Queue()
         pose = [25.0, -10.0, 3.0]
-        pose_queue.put(pose)
+        pose_queue.put(_pose_batch(pose))
         native_settings = default_native_output_settings()
         native_settings["filter_enabled"] = False
         native_settings["input_limits"]["yaw"] = 30.0
@@ -343,26 +367,24 @@ class OutputBackendTests(unittest.TestCase):
             NativeOutputProcessor,
             default_native_output_settings,
         )
-        from src.workers.output_wrk import _pose_rates, run_worker
-
-        self.assertEqual(_pose_rates([1, 2, 3, 4, 5, 6]), (4.0, 5.0, 6.0))
-        self.assertIsNone(_pose_rates([1.0, 2.0, 3.0]))
-        self.assertIsNone(_pose_rates([1.0, 2.0, 3.0, float("nan"), 0.0, 0.0]))
+        from src.workers.output_wrk import run_worker
 
         stop_event = threading.Event()
         pose_queue = Queue()
         control_queue = Queue()
-        pose_queue.put([1.0, 2.0, 3.0, -10.0, 5.0, 0.5])
+        pose_queue.put(_pose_batch([1.0, 2.0, 3.0, -10.0, 5.0, 0.5], 12.004))
         native_settings = default_native_output_settings()
         native_settings["filter_type"] = "gyro_adaptive"
         control_queue.put(("set_native_processing", native_settings))
         control_queue.put(("set_protocol", OUTPUT_PROTOCOL_FREETRACK))
         control_queue.put(("set_enabled", True))
         received_rates = []
+        received_times = []
         original_process = NativeOutputProcessor.process
 
         def spy(processor, pose, timestamp, rates=None):
             received_rates.append(rates)
+            received_times.append(timestamp)
             return original_process(processor, pose, timestamp, rates)
 
         class SharedMemoryBackend:
@@ -387,6 +409,102 @@ class OutputBackendTests(unittest.TestCase):
             run_worker(pose_queue, control_queue, stop_event, Queue())
 
         self.assertEqual(received_rates[0], (-10.0, 5.0, 0.5))
+        self.assertEqual(received_times, [12.004])
+
+    def test_native_filtering_is_identical_across_batches_and_host_timing(self):
+        from src.outputs.native_output_processing import (
+            NativeOutputProcessor,
+            default_native_output_settings,
+        )
+        from src.workers.output_wrk import run_worker
+
+        samples = tuple(
+            TrackingSample(
+                index / 250,
+                (3.0 * math.sin(index / 80), 0.0, 0.0),
+                (9.375 * math.cos(index / 80), 0.0, 0.0),
+                reset_filter=index == 250,
+            )
+            for index in range(501)
+        )
+        for filter_id in ("one_euro", "gyro_adaptive"):
+            settings = default_native_output_settings()
+            settings["filter_type"] = filter_id
+            expected_processor = NativeOutputProcessor(settings)
+            expected = []
+            for sample in samples:
+                if sample.reset_filter:
+                    expected_processor.reset()
+                expected.append(expected_processor.process(
+                    sample.angles, sample.timestamp, sample.rates
+                ))
+            for batch_size, drain_backlog, host_step in (
+                (1, False, 0.004),
+                (17, False, 0.035),
+                (80, True, 0.001),
+            ):
+                with self.subTest(filter=filter_id, batch_size=batch_size):
+                    pose_queue = Queue()
+                    control_queue = Queue()
+                    stop_event = threading.Event()
+                    pending = [
+                        samples[index:index + batch_size]
+                        for index in range(0, len(samples), batch_size)
+                    ]
+                    control_queue.put(("set_native_processing", settings))
+                    control_queue.put(("set_protocol", OUTPUT_PROTOCOL_FREETRACK))
+                    control_queue.put(("set_enabled", True))
+                    observed = []
+                    sent = []
+                    host_time = 1000.0
+                    original_process = NativeOutputProcessor.process
+
+                    def process(processor, angles, timestamp, rates=None):
+                        result = original_process(processor, angles, timestamp, rates)
+                        observed.append((timestamp, result))
+                        return result
+
+                    def get_sample(queue, timeout=0.0, default=None):
+                        if queue is pose_queue:
+                            if pending and (timeout > 0.0 or drain_backlog):
+                                return pending.pop(0)
+                            return default
+                        try:
+                            return queue.get_nowait()
+                        except Empty:
+                            return default
+
+                    def clock():
+                        nonlocal host_time
+                        host_time += host_step
+                        return host_time
+
+                    class Backend:
+                        mapping_already_exists = False
+
+                        def send_pose(self, pose):
+                            sent.append(pose)
+                            if not pending:
+                                stop_event.set()
+
+                        def close(self):
+                            pass
+
+                    with patch(
+                        "src.outputs.shared_memory_output.FreeTrackSharedMemory",
+                        return_value=Backend(),
+                    ), patch(
+                        "src.workers.output_wrk.safe_queue_get", side_effect=get_sample
+                    ), patch(
+                        "src.workers.output_wrk.time.perf_counter", side_effect=clock
+                    ), patch.object(NativeOutputProcessor, "process", process):
+                        run_worker(pose_queue, control_queue, stop_event)
+
+                    self.assertEqual([t for t, _ in observed], [s.timestamp for s in samples])
+                    self.assertEqual([pose for _, pose in observed], expected)
+                    self.assertEqual(sent[-1], expected[-1])
+                    if drain_backlog:
+                        self.assertEqual(len(sent), 1)
 
     def test_output_worker_switches_native_filter_while_output_is_active(self):
         from src.filters import FILTER_REGISTRY
@@ -421,7 +539,7 @@ class OutputBackendTests(unittest.TestCase):
             control_queue.put(("set_native_processing", initial_settings))
             control_queue.put(("set_protocol", OUTPUT_PROTOCOL_FREETRACK))
             control_queue.put(("set_enabled", True))
-            pose_queue.put([0.0, 0.0, 0.0])
+            pose_queue.put(_pose_batch([0.0, 0.0, 0.0]))
             writes = []
 
             class SharedMemoryBackend:
@@ -434,7 +552,7 @@ class OutputBackendTests(unittest.TestCase):
                             "set_native_processing",
                             switched_settings,
                         ))
-                        pose_queue.put([60.0, 0.0, 0.0])
+                        pose_queue.put(_pose_batch([60.0, 0.0, 0.0], 1.004))
                     else:
                         stop_event.set()
 
@@ -469,7 +587,7 @@ class OutputBackendTests(unittest.TestCase):
         pose_queue = Queue()
         control_queue = Queue()
         pose = [4.0, -2.0, 1.0]
-        pose_queue.put(pose)
+        pose_queue.put(_pose_batch(pose))
         native_settings = default_native_output_settings()
         native_settings["filter_enabled"] = False
         native_settings["offsets"]["yaw_deg"] = 90.0

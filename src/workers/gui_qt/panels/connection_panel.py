@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
 )
@@ -39,9 +40,11 @@ class ConnectionPanelQt(BasePanelQt):
         message_callback,
         padding=6,
         on_serial_stop=None,
+        on_sensor_settings=None,
     ):
         self.serial_control_queue = serial_control_queue
         self.on_serial_stop = on_serial_stop
+        self.on_sensor_settings = on_sensor_settings
         self.padding = padding
         self._port_value = DEFAULT_SERIAL_PORT
         self._baud_value = str(DEFAULT_SERIAL_BAUD)
@@ -101,7 +104,6 @@ class ConnectionPanelQt(BasePanelQt):
         baud_row.addWidget(self.baud_combo)
         layout.addLayout(baud_row)
 
-        layout.addStretch()
         self.toggle_button = TwoLineButton("Start Serial", self._serial_rate_text)
         self.toggle_button.setMinimumHeight(
             BUTTON_MIN_HEIGHT + BUTTON_EXTRA_HEIGHT
@@ -112,8 +114,24 @@ class ConnectionPanelQt(BasePanelQt):
         )
         self.toggle_button.setProperty("status", "")
         self.toggle_button.clicked.connect(self.toggle_serial)
+        self.sensor_settings_button = QPushButton("Sensor settings")
+        self.sensor_settings_button.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Fixed,
+        )
+        self.sensor_settings_button.clicked.connect(self._open_sensor_settings)
+        layout.addStretch()
+        layout.addWidget(self.sensor_settings_button)
         layout.addWidget(self.toggle_button)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def _open_sensor_settings(self):
+        if callable(self.on_sensor_settings):
+            self.on_sensor_settings()
+
+    @property
+    def is_connected(self):
+        return self._is_running and self._connection_status == "connected"
 
     def _on_port_changed(self, port):
         self._port_value = port

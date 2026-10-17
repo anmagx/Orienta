@@ -4,10 +4,20 @@ from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout,
                              QStackedWidget, QDialogButtonBox)
 from PyQt5.QtCore import Qt, QTimer, QRect, QEvent
 
-from src.config.config import QUEUE_PUT_TIMEOUT
+from src.config.config import (
+    DEFAULT_SPACING,
+    DIALOG_CONTENT_MARGIN,
+    QUEUE_PUT_TIMEOUT,
+)
+from .dialog_utils import (
+    configure_dialog,
+    configure_section_layout,
+    create_dialog_content,
+    create_close_button,
+)
 from src.util.error_utils import safe_queue_put
 from src.workers.gui_qt.panels.about_panel import AboutPanel
-from .base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, CONTENT_MARGINS, BUTTON_MIN_HEIGHT, BUTTON_EXTRA_HEIGHT, DIALOG_CONTENT_MARGIN
+from .base_panel import ui_log as _ui_log, LINE_THICKNESS, CONTENT_MARGINS, BUTTON_MIN_HEIGHT, BUTTON_EXTRA_HEIGHT
 from .preferences_panel import PreferencesPanel
 from .message_panel import MessagePanelQt
 from .visualization_widget import OrientationVisualizationWidget, SquareContainer
@@ -773,7 +783,7 @@ class OrientationPanelQt(QGroupBox):
 
             # Preferences button (always active)
             try:
-                self.preferences_button = QPushButton("Preferences...")
+                self.preferences_button = QPushButton("Preferences")
                 try:
                     # Use a slightly smaller minimum so Preferences button doesn't become overly tall
                     desired_h = max(self.preferences_button.sizeHint().height(), BUTTON_MIN_HEIGHT - 16)
@@ -1103,12 +1113,10 @@ class OrientationPanelQt(QGroupBox):
                 parent_window = None
 
             dialog = QDialog(parent_window if parent_window is not None else self)
+            dlg_layout = configure_dialog(dialog, "preferencesDialog", "Preferences")
             self._support_dialogs['preferences'] = dialog
             dialog.setAttribute(Qt.WA_DeleteOnClose, False)
-            dialog.setWindowTitle("Preferences")
             dialog.setModal(False)
-            dlg_layout = QVBoxLayout(dialog)
-            dlg_layout.setContentsMargins(DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN)
 
             prefs_widget = None
             # If a preferences_panel exists (created by GUI worker), prefer to reuse it
@@ -1226,12 +1234,10 @@ class OrientationPanelQt(QGroupBox):
                 parent_window = None
 
             dialog = QDialog(parent_window if parent_window is not None else self)
+            dlg_layout = configure_dialog(dialog, "monitorDialog", "Monitor / Logs")
             self._support_dialogs['monitor'] = dialog
             dialog.setAttribute(Qt.WA_DeleteOnClose, False)
-            dialog.setWindowTitle("Monitor / Logs")
             dialog.setModal(False)
-            dlg_layout = QVBoxLayout(dialog)
-            dlg_layout.setContentsMargins(DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN)
 
             msg_widget = None
             # Prefer the shared message panel owned by the main window.
@@ -1255,6 +1261,10 @@ class OrientationPanelQt(QGroupBox):
 
             if msg_widget is not None:
                 dlg_layout.addWidget(msg_widget)
+            footer = QHBoxLayout()
+            footer.addStretch()
+            footer.addWidget(create_close_button(dialog))
+            dlg_layout.addLayout(footer)
 
             # Apply parent's palette/style so the dialog matches the app theme
             try:
@@ -1318,12 +1328,10 @@ class OrientationPanelQt(QGroupBox):
                 parent_window = None
 
             dialog = QDialog(parent_window if parent_window is not None else self)
+            dlg_layout = configure_dialog(dialog, "aboutDialog", "About")
             self._support_dialogs['about'] = dialog
             dialog.setAttribute(Qt.WA_DeleteOnClose, False)
-            dialog.setWindowTitle("About")
             dialog.setModal(False)
-            dlg_layout = QVBoxLayout(dialog)
-            dlg_layout.setContentsMargins(DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN)
 
             about_widget = None
             # Prefer the shared about panel owned by the main window.
@@ -1346,6 +1354,10 @@ class OrientationPanelQt(QGroupBox):
 
             if about_widget is not None:
                 dlg_layout.addWidget(about_widget)
+            footer = QHBoxLayout()
+            footer.addStretch()
+            footer.addWidget(create_close_button(dialog))
+            dlg_layout.addLayout(footer)
 
             # Apply parent's palette/style so the dialog matches the app theme
             try:
@@ -1464,7 +1476,7 @@ class OrientationPanelQt(QGroupBox):
 
             # Frameless translucent top-level widget so we can draw rounded corners
             popup = QWidget(None, Qt.Window | Qt.FramelessWindowHint | Qt.Tool)
-            popup.setObjectName('visualizationPopup')
+            popup.setObjectName('visualizationPopupWindow')
             popup.setAttribute(Qt.WA_StyledBackground, True)
             popup.setWindowFlags(popup.windowFlags() | Qt.WindowStaysOnTopHint)
             # Allow per-pixel transparency so rounded corners are truly transparent
@@ -1516,14 +1528,17 @@ class OrientationPanelQt(QGroupBox):
             except Exception:
                 pass
 
-            # Minimal inline overrides: adjust corner radius and border thickness
-            # while leaving colors to the global stylesheet so the popup follows
-            # the current theme (dark/light).
+            # Keep the inner surface rounded without drawing a second window frame.
             try:
                 radius = 10
-                container.setStyleSheet(f"border-radius: {radius}px; border: 1px solid palette(mid);")
+                container.setStyleSheet(
+                    f"border-radius: {radius}px; border: none;"
+                )
             except Exception:
-                container.setStyleSheet("border-radius: 10px; border: 1px solid #555555; background-color: #3c3c3c; color: #ffffff; ")
+                container.setStyleSheet(
+                    "border-radius: 10px; border: none; "
+                    "background-color: #3c3c3c; color: #ffffff;"
+                )
 
             # Layout: place the rounded container inside popup with zero margins
             outer_layout = QVBoxLayout(popup)
@@ -1753,16 +1768,12 @@ class OrientationPanelQt(QGroupBox):
         """Open a small dialog allowing the user to set popout size and position."""
         try:
             dlg = QDialog(self)
-            dlg.setObjectName('visualizationSettingsDialog')
-            dlg.setAttribute(Qt.WA_StyledBackground, True)
-            dlg.setWindowTitle("Visualization Settings")
-            layout = QVBoxLayout(dlg)
-            # Reduce vertical spacing and margins so the dialog is compact
-            try:
-                layout.setSpacing(6)
-                layout.setContentsMargins(DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN)
-            except Exception:
-                pass
+            layout = configure_dialog(
+                dlg, "visualizationSettingsDialog", "Visualization Settings"
+            )
+            content_layout = create_dialog_content(
+                dlg, layout, "visualizationSettingsContent"
+            )
 
             # Remember the original geometry so Cancel can restore it
             orig_geom = None
@@ -1781,8 +1792,7 @@ class OrientationPanelQt(QGroupBox):
                 group = QGroupBox("Popout Settings")
                 group.setObjectName('visualizationSettingsGroup')
                 group_layout = QVBoxLayout(group)
-                group_layout.setSpacing(6)
-                group_layout.setContentsMargins(DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN, DIALOG_CONTENT_MARGIN)
+                configure_section_layout(group_layout)
             except Exception:
                 group = None
                 group_layout = None
@@ -1791,7 +1801,7 @@ class OrientationPanelQt(QGroupBox):
             size_row = QHBoxLayout()
             try:
                 size_row.setContentsMargins(0, 2, 0, 2)
-                size_row.setSpacing(6)
+                size_row.setSpacing(DEFAULT_SPACING)
             except Exception:
                 pass
             size_row.addWidget(QLabel("Popout size:"))
@@ -1819,13 +1829,13 @@ class OrientationPanelQt(QGroupBox):
             if group_layout is not None:
                 group_layout.addLayout(size_row)
             else:
-                layout.addLayout(size_row)
+                content_layout.addLayout(size_row)
 
             # Opacity setting (0-100 mapped to 0.0-1.0)
             opacity_row = QHBoxLayout()
             try:
                 opacity_row.setContentsMargins(0, 2, 0, 2)
-                opacity_row.setSpacing(6)
+                opacity_row.setSpacing(DEFAULT_SPACING)
             except Exception:
                 pass
             opacity_row.addWidget(QLabel("Popout opacity:"))
@@ -1846,13 +1856,13 @@ class OrientationPanelQt(QGroupBox):
             if group_layout is not None:
                 group_layout.addLayout(opacity_row)
             else:
-                layout.addLayout(opacity_row)
+                content_layout.addLayout(opacity_row)
 
             # Position options
             pos_row = QHBoxLayout()
             try:
                 pos_row.setContentsMargins(0, 2, 0, 2)
-                pos_row.setSpacing(6)
+                pos_row.setSpacing(DEFAULT_SPACING)
             except Exception:
                 pass
             pos_row.addWidget(QLabel("Position:"))
@@ -1946,7 +1956,7 @@ class OrientationPanelQt(QGroupBox):
             if group_layout is not None:
                 group_layout.addLayout(pos_row)
             else:
-                layout.addLayout(pos_row)
+                content_layout.addLayout(pos_row)
 
             # Live apply: when sliders change, update popup immediately
             def _apply_live():
@@ -2020,7 +2030,7 @@ class OrientationPanelQt(QGroupBox):
             # Insert the labeled group into the dialog before buttons
             try:
                 if group is not None:
-                    layout.addWidget(group)
+                    content_layout.addWidget(group)
             except Exception:
                 pass
 

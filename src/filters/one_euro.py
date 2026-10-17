@@ -13,6 +13,9 @@ from src.config.config import (
     FILTER_MIN_CUTOFF_HZ_DEFAULT,
     FILTER_MIN_CUTOFF_HZ_RANGE,
     FILTER_MIN_CUTOFF_HZ_STEP,
+    ACCELA_STYLE_DEADZONE_DEG_DEFAULT,
+    ACCELA_STYLE_DEADZONE_DEG_RANGE,
+    ACCELA_STYLE_DEADZONE_DEG_STEP,
 )
 from .base import FilterDefinition, FilterParameter
 from .utils import low_pass_alpha as _low_pass_alpha, wrap_delta_degrees
@@ -64,16 +67,44 @@ ONE_EURO_FILTER_PARAMETERS = (
         decimals=1,
         unit="Hz",
     ),
+    FilterParameter(
+        key="deadzone_deg",
+        label="Jitter deadzone",
+        tooltip=(
+            "Hold changes within this angular error (degrees). Errors blend "
+            "smoothly from zero to full response over the next deadzone-width "
+            "to avoid a sharp threshold."
+        ),
+        minimum=ACCELA_STYLE_DEADZONE_DEG_RANGE[0],
+        maximum=ACCELA_STYLE_DEADZONE_DEG_RANGE[1],
+        step=ACCELA_STYLE_DEADZONE_DEG_STEP,
+        default=ACCELA_STYLE_DEADZONE_DEG_DEFAULT,
+        decimals=2,
+        unit="°",
+    ),
 )
+
+
+def _soft_deadzone_error(error, deadzone_deg):
+    magnitude = abs(error)
+    if deadzone_deg <= 0.0 or magnitude >= 2.0 * deadzone_deg:
+        return error
+    if magnitude <= deadzone_deg:
+        return 0.0
+
+    blend = (magnitude - deadzone_deg) / deadzone_deg
+    blend = blend * blend * (3.0 - 2.0 * blend)
+    return error * blend
 
 
 class _OneEuroAxisFilter:
     def __init__(self, min_cutoff_hz, beta, derivative_cutoff_hz,
-                 wrap_degrees=False):
+                 wrap_degrees=False, deadzone_deg=0.0):
         self.min_cutoff_hz = min_cutoff_hz
         self.beta = beta
         self.derivative_cutoff_hz = derivative_cutoff_hz
         self.wrap_degrees = wrap_degrees
+        self.deadzone_deg = deadzone_deg
         self.reset()
 
     def reset(self):
@@ -124,8 +155,12 @@ class _OneEuroAxisFilter:
         )
         value_alpha = _low_pass_alpha(cutoff, delta_time)
         filtered_value = (
-            value_alpha * unwrapped_value
-            + (1.0 - value_alpha) * self._filtered_value
+            self._filtered_value
+            + value_alpha
+            * _soft_deadzone_error(
+                unwrapped_value - self._filtered_value,
+                self.deadzone_deg,
+            )
         )
 
         self._last_time = timestamp
@@ -140,6 +175,10 @@ class OneEuroPoseFilter:
 
     def __init__(self, settings):
         self.settings = dict(settings)
+        self.settings.setdefault(
+            "deadzone_deg",
+            ACCELA_STYLE_DEADZONE_DEG_DEFAULT,
+        )
         self.reset()
 
     def reset(self):
@@ -149,16 +188,19 @@ class OneEuroPoseFilter:
                 self.settings["beta"],
                 self.settings["derivative_cutoff_hz"],
                 wrap_degrees=True,
+                deadzone_deg=self.settings["deadzone_deg"],
             ),
             _OneEuroAxisFilter(
                 self.settings["min_cutoff_hz"],
                 self.settings["beta"],
                 self.settings["derivative_cutoff_hz"],
+                deadzone_deg=self.settings["deadzone_deg"],
             ),
             _OneEuroAxisFilter(
                 self.settings["min_cutoff_hz"],
                 self.settings["beta"],
                 self.settings["derivative_cutoff_hz"],
+                deadzone_deg=self.settings["deadzone_deg"],
             ),
         )
 
@@ -177,7 +219,7 @@ ONE_EURO_FILTER = FilterDefinition(
     parameters=ONE_EURO_FILTER_PARAMETERS,
     factory=OneEuroPoseFilter,
     description=(
-        "Smooths small movements, then automatically responds faster as you "
-        "turn. A flexible general-purpose filter."
+        "Suppresses tiny jitter with a soft deadzone, then automatically "
+        "responds faster as you turn. A flexible general-purpose filter."
     ),
 )

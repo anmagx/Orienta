@@ -13,7 +13,11 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QTextCursor
 
 from .base_panel import BasePanelQt
-from src.config.config import MAX_TEXT_BUFFER_LINES
+from src.config.config import (
+    DEFAULT_SPACING,
+    DIALOG_CONTENT_MARGIN,
+    MAX_TEXT_BUFFER_LINES,
+)
 
 
 class MessagePanelQt(QFrame):
@@ -33,7 +37,9 @@ class MessagePanelQt(QFrame):
             padding: Padding for frames (default: 6)
         """
         super().__init__(parent)
-        
+        self.setObjectName("messagePanel")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
         self.serial_height = serial_height
         self.message_height = message_height
         self.max_serial_lines = max_serial_lines
@@ -50,16 +56,25 @@ class MessagePanelQt(QFrame):
         """Build the message panel UI with two sections (mirrors tkinter layout exactly)."""
         # Main layout
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(
+            DIALOG_CONTENT_MARGIN,
+            DIALOG_CONTENT_MARGIN,
+            DIALOG_CONTENT_MARGIN,
+            DIALOG_CONTENT_MARGIN,
+        )
+        main_layout.setSpacing(DEFAULT_SPACING)
         
         # Serial Monitor section (top) - same as tkinter serial_lf
         serial_group = QGroupBox("Serial Monitor")
         serial_layout = QVBoxLayout(serial_group)
-        serial_layout.setContentsMargins(self.padding, self.padding, self.padding, self.padding)
+        serial_layout.setContentsMargins(
+            self.padding, self.padding, self.padding, self.padding
+        )
+        serial_layout.setSpacing(DEFAULT_SPACING)
         
         # Serial text widget (same functionality as tkinter)
         self.serial_text = QTextEdit()
+        self.serial_text.setObjectName("messageSerialText")
         self.serial_text.setReadOnly(True)  # Same as tkinter state="disabled"
         self.serial_text.setLineWrapMode(QTextEdit.NoWrap)  # Same as tkinter wrap="none"
         self.serial_text.setMinimumHeight(80)  # Reduced minimum height
@@ -77,10 +92,14 @@ class MessagePanelQt(QFrame):
         # Messages section (bottom) - same as tkinter messages_lf
         messages_group = QGroupBox("Messages")
         messages_layout = QVBoxLayout(messages_group)
-        messages_layout.setContentsMargins(self.padding, self.padding, self.padding, self.padding)
+        messages_layout.setContentsMargins(
+            self.padding, self.padding, self.padding, self.padding
+        )
+        messages_layout.setSpacing(DEFAULT_SPACING)
         
         # Message text widget (same functionality as tkinter)
         self.message_text = QTextEdit()
+        self.message_text.setObjectName("messageLogText")
         self.message_text.setReadOnly(True)  # Same as tkinter state="disabled"
         self.message_text.setLineWrapMode(QTextEdit.NoWrap)  # Same as tkinter wrap="none"
         self.message_text.setMinimumHeight(80)  # Reduced minimum height

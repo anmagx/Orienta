@@ -12,8 +12,10 @@ from PyQt5.QtWidgets import (
 )
 
 from src.managers.preferences_manager import PreferencesManager
+from src.managers.theme_manager import THEMES, THEME_OPTIONS
 from src.config.config import DEFAULT_THEME, THEMES_ENABLED, ACCEL_TAU_PITCH, ACCEL_TAU_ROLL, ACCEL_TAU_RANGE, ACCEL_TAU_STEP, THRESH_DEBOUNCE_MS, STATIONARY_GYRO_THRESHOLD, STATIONARY_DEBOUNCE_S, DRIFT_SMOOTHING_TIME, DRIFT_TRANSITION_CURVE, GYRO_BIAS_CAL_SAMPLES, QUEUE_PUT_TIMEOUT
-from src.workers.gui_qt.panels.base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS, DIALOG_CONTENT_MARGIN
+from src.workers.gui_qt.panels.base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS
+from src.workers.gui_qt.panels.dialog_utils import configure_section_layout
 
 from src.util.error_utils import (
     safe_queue_put
@@ -42,6 +44,9 @@ class PreferencesPanel(QWidget):
             output_control_queue: Queue for output backend controls
         """
         super().__init__(parent)
+        self.setObjectName("preferencesPanel")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
         self.prefs_manager = preferences_manager or PreferencesManager()
         # Shortcuts are owned by OrientationPanelQt; this panel owns button
         # behavior preferences.
@@ -133,6 +138,7 @@ class PreferencesPanel(QWidget):
 
         # Create scroll area to contain all content (below top buttons)
         scroll_area = QScrollArea()
+        scroll_area.setObjectName("preferencesScroll")
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
         scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -144,18 +150,22 @@ class PreferencesPanel(QWidget):
         # Container widget for scroll area content
         container = QWidget()
         container.setObjectName("preferencesContainer")
+        container.setAttribute(Qt.WA_StyledBackground, True)
         container.setAutoFillBackground(True)  # Use theme background
         layout = QVBoxLayout(container)
+        configure_section_layout(layout)
         
         # Theme selection group
         if THEMES_ENABLED:
             theme_group = QGroupBox("Appearance")
             theme_layout = QHBoxLayout()
+            configure_section_layout(theme_layout)
             
             theme_label = QLabel("Theme:")
             self.theme_combo = QComboBox()
-            self.theme_combo.addItems(["light", "dark"])
-            self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
+            for theme_name, label in THEME_OPTIONS:
+                self.theme_combo.addItem(label, theme_name)
+            self.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
             
             theme_layout.addWidget(theme_label)
             theme_layout.addWidget(self.theme_combo)
@@ -166,6 +176,7 @@ class PreferencesPanel(QWidget):
 
         send_rate_group = QGroupBox("Limit Send Rate")
         send_rate_layout = QHBoxLayout()
+        configure_section_layout(send_rate_layout)
         send_rate_label = QLabel("Maximum UDP send rate (Hz):")
         self.send_rate_combo = QComboBox()
         self.send_rate_combo.addItem("0 (Unlimited)", 0)
@@ -187,6 +198,7 @@ class PreferencesPanel(QWidget):
         from PyQt5.QtWidgets import QCheckBox
         button_behavior_group = QGroupBox("Button Behavior")
         button_behavior_layout = QVBoxLayout()
+        configure_section_layout(button_behavior_layout)
 
         self.disengage_toggle_checkbox = QCheckBox(
             "Disengage Drift Correction: toggle mode "
@@ -229,7 +241,7 @@ class PreferencesPanel(QWidget):
         # Sensor configuration group
         sensor_group = QGroupBox("Sensor Configuration")
         sensor_layout = QVBoxLayout()
-        sensor_layout.setSpacing(DEFAULT_SPACING)
+        configure_section_layout(sensor_layout)
         
         # Axis inversion checkboxes
         inversion_header = QLabel("Axis Inversions (adjust for sensor mounting)")
@@ -255,7 +267,8 @@ class PreferencesPanel(QWidget):
         
         # Add info label for sensor configuration
         sensor_info_label = QLabel("Enable inversions if your sensor orientation differs from the expected arrangement")
-        sensor_info_label.setStyleSheet("color: #666666; font-size: 10px;")
+        sensor_info_label.setProperty("mutedText", True)
+        sensor_info_label.setStyleSheet("font-size: 10px;")
         sensor_info_label.setWordWrap(True)
         sensor_layout.addWidget(sensor_info_label)
         
@@ -265,7 +278,7 @@ class PreferencesPanel(QWidget):
         # Drift correction group
         drift_group = QGroupBox("Drift Correction")
         drift_layout = QVBoxLayout()
-        drift_layout.setSpacing(DEFAULT_SPACING)
+        configure_section_layout(drift_layout)
         
         # Accelerometer tilt-correction time-constant sliders
         pitch_header = QLabel("Pitch & Roll stability")
@@ -311,7 +324,8 @@ class PreferencesPanel(QWidget):
             "jitter from head movement and vibration; shorter = faster "
             "recovery from gyro drift."
         )
-        accel_tau_info_label.setStyleSheet("color: #666666; font-size: 10px;")
+        accel_tau_info_label.setProperty("mutedText", True)
+        accel_tau_info_label.setStyleSheet("font-size: 10px;")
         accel_tau_info_label.setWordWrap(True)
         accel_tau_info_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         drift_layout.addWidget(accel_tau_info_label)
@@ -371,7 +385,8 @@ class PreferencesPanel(QWidget):
         
         # Add info label describing smoothing, strength and curve options (bottom of calibration frame)
         drift_info_label = QLabel("Center assist gently attracts the pose toward center while stationary and near center; it is not an absolute heading measurement. Smoothing time controls engagement time and the sustained correction rate. Strength scales that rate (higher may fight small held glances). Curves control engagement: exponential (fast), cosine (smooth), linear, quadratic (slow start). Correction continues after engagement.")
-        drift_info_label.setStyleSheet("color: #666666; font-size: 10px;")
+        drift_info_label.setProperty("mutedText", True)
+        drift_info_label.setStyleSheet("font-size: 10px;")
         drift_info_label.setWordWrap(True)
         drift_info_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         drift_layout.addWidget(drift_info_label)
@@ -382,6 +397,7 @@ class PreferencesPanel(QWidget):
         # Stationary detection group
         stationary_group = QGroupBox("Stationary Detection")
         stationary_layout = QVBoxLayout()
+        configure_section_layout(stationary_layout)
         stationary_layout.setSpacing(DEFAULT_SPACING)
         
         # Gyro threshold slider (1.0 to 20.0 deg/s)
@@ -420,7 +436,8 @@ class PreferencesPanel(QWidget):
         
         # Add info label for stationary detection
         stationary_info_label = QLabel("Controls when the device is considered stationary for drift correction")
-        stationary_info_label.setStyleSheet("color: #666666; font-size: 10px;")
+        stationary_info_label.setProperty("mutedText", True)
+        stationary_info_label.setStyleSheet("font-size: 10px;")
         stationary_layout.addWidget(stationary_info_label)
         
         stationary_group.setLayout(stationary_layout)
@@ -429,6 +446,7 @@ class PreferencesPanel(QWidget):
         # Gyro calibration group
         gyro_group = QGroupBox("Gyro Calibration")
         gyro_layout = QVBoxLayout()
+        configure_section_layout(gyro_layout)
         gyro_layout.setSpacing(DEFAULT_SPACING)
         
         # Calibration samples slider (500 to 5000)
@@ -465,7 +483,8 @@ class PreferencesPanel(QWidget):
         
         # Add info label for gyro calibration
         gyro_info_label = QLabel("Number of stationary samples collected to estimate all three gyro biases (X/Y/Z). More samples = better accuracy but slower calibration.")
-        gyro_info_label.setStyleSheet("color: #666666; font-size: 10px;")
+        gyro_info_label.setProperty("mutedText", True)
+        gyro_info_label.setStyleSheet("font-size: 10px;")
         gyro_layout.addWidget(gyro_info_label)
         
         gyro_group.setLayout(gyro_layout)
@@ -476,6 +495,8 @@ class PreferencesPanel(QWidget):
         main_layout.addWidget(scroll_area, 1)
         # Bottom fixed row with Reset and Close buttons
         bottom_btn_layout = QHBoxLayout()
+        bottom_btn_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_btn_layout.setSpacing(DEFAULT_SPACING)
         bottom_btn_layout.addStretch()
         self.reset_btn = QPushButton("Reset to Defaults")
         self.reset_btn.clicked.connect(self._reset_to_defaults)
@@ -498,7 +519,9 @@ class PreferencesPanel(QWidget):
         # Load theme preferences
         if THEMES_ENABLED and hasattr(self, 'theme_combo'):
             current_theme = self.prefs_manager.get_theme()
-            index = self.theme_combo.findText(current_theme)
+            index = self.theme_combo.findData(current_theme)
+            if index < 0:
+                index = self.theme_combo.findData(DEFAULT_THEME)
             if index >= 0:
                 self.theme_combo.setCurrentIndex(index)
 
@@ -582,7 +605,7 @@ class PreferencesPanel(QWidget):
         except Exception:
             pass
 
-    def _on_theme_changed(self, theme_name):
+    def _on_theme_changed(self, index):
         """Handle theme selection change.
 
         The theme is persisted by the GUI worker's aggregated save (it reads the
@@ -590,6 +613,9 @@ class PreferencesPanel(QWidget):
         requests a save rather than writing the config file itself.
         """
         if THEMES_ENABLED:
+            theme_name = self.theme_combo.itemData(index)
+            if theme_name not in THEMES:
+                return
             self.theme_changed.emit(theme_name)
             # Only emit preferences changed if not loading to prevent duplicate saves
             if not getattr(self, '_loading', False):
@@ -891,7 +917,7 @@ class PreferencesPanel(QWidget):
         """Reset preferences to default values."""
         if THEMES_ENABLED and hasattr(self, 'theme_combo'):
             # Reset theme to default
-            index = self.theme_combo.findText(DEFAULT_THEME)
+            index = self.theme_combo.findData(DEFAULT_THEME)
             if index >= 0:
                 self.theme_combo.setCurrentIndex(index)
             

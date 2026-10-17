@@ -2,16 +2,19 @@
 
 from PyQt5.QtWidgets import QGroupBox, QFrame, QWidget
 from PyQt5.QtCore import pyqtSignal, QObject
+from src.config.config import (
+    BUTTON_EXTRA_HEIGHT,
+    BUTTON_MIN_HEIGHT,
+    CONTENT_MARGINS,
+    DEFAULT_SPACING,
+    DIALOG_CONTENT_MARGIN,
+    INACTIVE_OPACITY,
+    LINE_THICKNESS,
+)
 
 # Shared GUI layout/style constants used by panels for consistent visuals
-# Horizontal padding / vertical padding order: (left, top, right, bottom)
-CONTENT_MARGINS = (4, 6, 4, 6)
-DEFAULT_SPACING = 6
-DIALOG_CONTENT_MARGIN = 6
-BUTTON_EXTRA_HEIGHT = 6
-BUTTON_MIN_HEIGHT = 40
-LINE_THICKNESS = 1
-INACTIVE_OPACITY = 0.45
+# Constants are defined centrally in src.config.config and re-exported here
+# for compatibility with existing panel imports.
 
 from abc import ABC, abstractmethod
 

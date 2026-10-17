@@ -58,7 +58,7 @@ class _BorderlessPopup(QWidget):
     def __init__(self):
         flags = Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
         super().__init__(None, flags)
-        self.setObjectName("visualizationPopup")
+        self.setObjectName("visualizationPopupWindow")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -74,7 +74,7 @@ class _BorderlessPopup(QWidget):
         self.container.setObjectName("visualizationPopup")
         self.container.setAttribute(Qt.WA_StyledBackground, True)
         self.container.setStyleSheet(
-            "border-radius: 10px; border: 1px solid palette(mid);"
+            "border-radius: 10px; border: none;"
         )
         outer.addWidget(self.container)
         self.content_layout = QVBoxLayout(self.container)

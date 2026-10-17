@@ -5,14 +5,24 @@ Provides a compact, responsive layout: logo on the left, concise
 app info and credits on the right, and a minimal third-party list.
 """
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSizePolicy
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QGroupBox,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QPixmap, QPalette
 
 import os
 
-from src.config.config import APP_NAME, APP_VERSION
+from src.config.config import (
+    APP_NAME,
+    APP_VERSION,
+    DEFAULT_SPACING,
+)
+from .dialog_utils import configure_section_layout
 
 
 class AboutPanel(QWidget):
@@ -20,16 +30,18 @@ class AboutPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("aboutPanel")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAutoFillBackground(True)
         self.setup_ui()
 
     def setup_ui(self):
         main = QVBoxLayout(self)
-        main.setContentsMargins(12, 12, 12, 12)
-        main.setSpacing(8)
+        configure_section_layout(main)
 
-        # Top row: logo (left) + info (right)
-        top_row = QHBoxLayout()
-        top_row.setSpacing(10)
+        about_group = QGroupBox("About Orienta", self)
+        about_layout = QHBoxLayout(about_group)
+        configure_section_layout(about_layout)
 
         # Logo (larger for better readability)
         logo_label = QLabel()
@@ -49,11 +61,11 @@ class AboutPanel(QWidget):
         else:
             logo_label.setText(APP_NAME[:2].upper())
 
-        top_row.addWidget(logo_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        about_layout.addWidget(logo_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
         # Info column
         info_col = QVBoxLayout()
-        info_col.setSpacing(4)
+        info_col.setSpacing(DEFAULT_SPACING)
 
         # Title row with version at the right
         title_row = QHBoxLayout()
@@ -99,23 +111,12 @@ class AboutPanel(QWidget):
         author_row.addWidget(github_lbl)
         info_col.addLayout(author_row)
 
-        top_row.addLayout(info_col)
-        main.addLayout(top_row)
+        about_layout.addLayout(info_col, 1)
+        main.addWidget(about_group)
 
-        # Separator
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        main.addWidget(sep)
-
-        # Third-party packages (compact)
-        pkg_title = QLabel("Third‑Party")
-        pkg_font = QFont()
-        pkg_font.setPointSize(10)
-        pkg_font.setBold(True)
-        pkg_title.setFont(pkg_font)
-        main.addWidget(pkg_title)
-
+        packages_group = QGroupBox("Third-party software", self)
+        packages_layout = QVBoxLayout(packages_group)
+        configure_section_layout(packages_layout)
         packages_label = QLabel()
         packages_label.setTextFormat(Qt.RichText)
         packages_label.setText(
@@ -130,9 +131,5 @@ class AboutPanel(QWidget):
             """
         )
         packages_label.setWordWrap(True)
-        main.addWidget(packages_label)
-
-        main.addStretch()
-
-        # Keep system/theme colors (no hard-coded colors) so panel
-        # remains readable in dark and light themes.
+        packages_layout.addWidget(packages_label)
+        main.addWidget(packages_group)

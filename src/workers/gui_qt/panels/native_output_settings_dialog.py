@@ -32,6 +32,12 @@ from src.config.config import (
     INPUT_LIMIT_CALIBRATION_POSE_STALE_S,
     QUEUE_PUT_TIMEOUT,
 )
+
+from .dialog_utils import (
+    configure_dialog,
+    configure_section_layout,
+    create_close_button,
+)
 from src.filters import available_filters, default_filter_settings, get_filter_definition
 from src.filters.one_euro import ONE_EURO_FILTER_ID
 from src.util.error_utils import safe_queue_put
@@ -616,10 +622,9 @@ class NativeOutputSettingsDialog(QDialog):
 
     def __init__(self, output_control_queue=None, log_message=None, parent=None):
         super().__init__(parent, Qt.Window)
-        self.setObjectName("nativeOutputSettingsDialog")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setAutoFillBackground(True)
-        self.setWindowTitle("Native Output Settings")
+        self._root_layout = configure_dialog(
+            self, "nativeOutputSettingsDialog", "Native Output Settings"
+        )
         self.setMinimumSize(720, 830)
         self.resize(720, 830)
         self.output_control_queue = output_control_queue
@@ -637,11 +642,15 @@ class NativeOutputSettingsDialog(QDialog):
         self._loading = False
 
     def setup_ui(self):
-        root_layout = QVBoxLayout(self)
+        root_layout = self._root_layout
         scroll_area = QScrollArea()
+        scroll_area.setObjectName("nativeOutputSettingsScroll")
         scroll_area.setWidgetResizable(True)
         content_widget = QWidget()
+        content_widget.setObjectName("nativeOutputSettingsContent")
+        content_widget.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(content_widget)
+        configure_section_layout(layout)
         description_label = QLabel(
             "These settings apply only to direct FreeTrack and NPClient "
             "output. Rotation values follow Orienta's yaw/pitch/roll axes; "
@@ -649,10 +658,11 @@ class NativeOutputSettingsDialog(QDialog):
             "also has an independent input-magnitude limit."
         )
         description_label.setWordWrap(True)
-        layout.addWidget(description_label)
 
         curves_group = QGroupBox("Axis response curves")
         curves_layout = QVBoxLayout(curves_group)
+        configure_section_layout(curves_layout)
+        curves_layout.addWidget(description_label)
         self.curve_tabs = QTabWidget()
         self.curve_widgets = {}
         self.input_limit_controls = {}
@@ -733,6 +743,7 @@ class NativeOutputSettingsDialog(QDialog):
 
         filter_group = QGroupBox("Pose filter")
         filter_layout = QVBoxLayout(filter_group)
+        configure_section_layout(filter_layout)
         self.filter_enabled_checkbox = QCheckBox("Enable pose filtering")
         self.filter_enabled_checkbox.setToolTip(
             "Turn temporal pose filtering on or off. Response curves and "
@@ -757,9 +768,8 @@ class NativeOutputSettingsDialog(QDialog):
         filter_layout.addLayout(filter_type_row)
 
         self.filter_description_label = QLabel()
-        self.filter_description_label.setStyleSheet(
-            "color: #666666; font-size: 10px;"
-        )
+        self.filter_description_label.setProperty("mutedText", True)
+        self.filter_description_label.setStyleSheet("font-size: 10px;")
         self.filter_description_label.setWordWrap(True)
         filter_layout.addWidget(self.filter_description_label)
 
@@ -800,6 +810,7 @@ class NativeOutputSettingsDialog(QDialog):
 
         offsets_group = QGroupBox("Static output offsets")
         offsets_layout = QGridLayout(offsets_group)
+        configure_section_layout(offsets_layout)
         self.offset_controls = {}
         offset_specs = (
             ("yaw_deg", "Yaw (degrees)", ROTATION_OFFSET_LIMIT_DEG),
@@ -827,8 +838,10 @@ class NativeOutputSettingsDialog(QDialog):
         self.status_label = QLabel()
         self.reset_all_button = QPushButton("Reset Native Output Settings")
         self.reset_all_button.clicked.connect(self.reset_defaults)
+        self.close_button = create_close_button(self)
         footer.addWidget(self.status_label, 1)
         footer.addWidget(self.reset_all_button)
+        footer.addWidget(self.close_button)
         root_layout.addLayout(footer)
 
     def _build_filter_settings_page(self, definition):
@@ -871,7 +884,8 @@ class NativeOutputSettingsDialog(QDialog):
                 )
             )
             annotation = QLabel(parameter.tooltip)
-            annotation.setStyleSheet("color: #666666; font-size: 10px;")
+            annotation.setProperty("mutedText", True)
+            annotation.setStyleSheet("font-size: 10px;")
             annotation.setWordWrap(True)
             annotations[parameter.key] = annotation
             layout.addWidget(label, control_row, 0)

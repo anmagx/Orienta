@@ -44,6 +44,8 @@ datas = [
     (str(ROOT / "src" / "img" / "orienta_logo.png"), "src/img"),
     (str(ROOT / "src" / "themes" / "dark.qss"), "src/themes"),
     (str(ROOT / "src" / "themes" / "light.qss"), "src/themes"),
+    (str(ROOT / "src" / "themes" / "solarized_dark.qss"), "src/themes"),
+    (str(ROOT / "src" / "themes" / "solarized_light.qss"), "src/themes"),
     (
         str(ROOT / "data" / "facetracknoir_supported_games.csv"),
         "freetrack_catalog",

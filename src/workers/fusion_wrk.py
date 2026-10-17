@@ -16,9 +16,12 @@ from src.config.config import (
      ACCEL_TRUST_SIGMA_G,
      ACCEL_TRUST_GYRO_RATE_DPS,
     ACCEL_TRUST_HOLD_S,
+    ACCEL_INNOVATION_SLEW_SIGMA,
+    ACCEL_CORRECTION_MAX_DPS,
      GYRO_BIAS_TRACKING_GAIN,
      GYRO_BIAS_TRACKING_LIMIT_DPS,
     GYRO_BIAS_TRACKING_MAX_ERROR_DEG,
+    GYRO_BIAS_TRACKING_SETTLE_S,
      ALPHA_DRIFT_CORRECTION,
         GYRO_BIAS_CAL_SAMPLES,
     LEVEL_CAL_SAMPLES,
@@ -41,6 +44,7 @@ from src.util.error_utils import (
     parse_imu_line,
     normalize_angle
 )
+from src.util.tracking_sample import TrackingSample
 
 
 def _publish_output_pose(output_queue, pose):
@@ -260,9 +264,7 @@ class QuaternionComplementaryFilter:
 
         if self.orientation_held:
             self.orientation_held = False
-            self._orientation_resume_started_at = (
-                time.perf_counter() if now is None else now
-            )
+            self._orientation_resume_started_at = now
 
     def apply_orientation_hold(self, yaw, pitch, roll, now=None):
         """Apply hold/resume smoothing to an already filtered Euler orientation."""
@@ -389,6 +391,9 @@ class QuaternionComplementaryFilter:
         self._tilt_err_lp1 = [0.0, 0.0, 0.0]
         self._tilt_rate_envelope = 0.0
         self._tilt_err_lp2 = [0.0, 0.0, 0.0]
+        self._tilt_previous_error = None
+        self._tilt_slew_envelope = 0.0
+        self._tilt_bias_settle_s = 0.0
         if reset_bias or not hasattr(self, '_tilt_bias'):
             self._tilt_bias = [0.0, 0.0, 0.0]
 
@@ -407,9 +412,9 @@ class QuaternionComplementaryFilter:
         """Return body-rate corrections (rad/s) that pull pitch/roll toward accel.
 
         The error between measured gravity and the gyro-predicted gravity
-        direction is low-passed, weighted by how trustworthy the accel sample
-        is, and fed back proportionally with a time constant per axis plus an
-        integral term that tracks residual gyro bias.
+        direction is trust-gated before and after low-pass filtering. Bounded
+        proportional feedback corrects tilt; a settled, small-error integral
+        term tracks residual gyro bias.
         """
         if self.accel_trust_hold_s > 0:
             decay = math.exp(-dt / self.accel_trust_hold_s)
@@ -420,9 +425,13 @@ class QuaternionComplementaryFilter:
         gain_roll = 0.0 if self.accel_tau_roll <= 0 else 1.0 / self.accel_tau_roll
         gain_pitch = 0.0 if self.accel_tau_pitch <= 0 else 1.0 / self.accel_tau_pitch
         if gain_roll == 0.0 and gain_pitch == 0.0:
-            self._tilt_bias = [0.0, 0.0, 0.0]
+            self._reset_tilt_state()
             return 0.0, 0.0, 0.0
         if accel_mag < 0.1:
+            self._tilt_err_lp1 = [0.0, 0.0, 0.0]
+            self._tilt_err_lp2 = [0.0, 0.0, 0.0]
+            self._tilt_previous_error = None
+            self._tilt_bias_settle_s = 0.0
             return 0.0, 0.0, 0.0
 
         w, x, y, z = self.q
@@ -432,22 +441,47 @@ class QuaternionComplementaryFilter:
         vz = w*w - x*x - y*y + z*z
         ax, ay, az = (component / accel_mag for component in accel)
         error = (ay*vz - az*vy, az*vx - ax*vz, ax*vy - ay*vx)
+        raw_error = error
+        previous_error = self._tilt_previous_error
+        self._tilt_previous_error = raw_error
+        slew = 0.0 if previous_error is None else math.sqrt(sum(
+            ((current - previous) / dt) ** 2
+            for current, previous in zip(raw_error, previous_error)
+        ))
+        decay = math.exp(-dt / self.accel_trust_hold_s) if self.accel_trust_hold_s > 0 else 0.0
+        self._tilt_slew_envelope = max(slew, self._tilt_slew_envelope * decay)
+
+        deviation = (accel_mag - 1.0) / self.accel_trust_sigma_g
+        rate = self._tilt_rate_envelope / self.accel_trust_gyro_rate_dps
+        innovation_slew = self._tilt_slew_envelope / ACCEL_INNOVATION_SLEW_SIGMA
+        weight = math.exp(-0.5 * (
+            deviation * deviation + rate * rate + innovation_slew * innovation_slew
+        ))
 
         if self.accel_innovation_cutoff_hz > 0:
             k = -math.expm1(-2.0 * math.pi * self.accel_innovation_cutoff_hz * dt)
             lp1, lp2 = self._tilt_err_lp1, self._tilt_err_lp2
             for i in range(3):
-                lp1[i] += k * (error[i] - lp1[i])
+                # Never retain a correction pointing against the current
+                # observation, or a larger error after a disturbance ends.
+                for state in (lp1, lp2):
+                    state[i] = math.copysign(
+                        min(abs(state[i]), abs(raw_error[i])), raw_error[i]
+                    ) if state[i] * raw_error[i] > 0.0 else 0.0
+                lp1[i] += k * (weight * raw_error[i] - lp1[i])
                 lp2[i] += k * (lp1[i] - lp2[i])
             error = lp2
 
-        deviation = (accel_mag - 1.0) / self.accel_trust_sigma_g
-        rate = self._tilt_rate_envelope / self.accel_trust_gyro_rate_dps
-        weight = math.exp(-0.5 * (deviation * deviation + rate * rate))
-
         gains = (gain_roll, gain_pitch, 0.5 * (gain_roll + gain_pitch))
-        error_mag = math.sqrt(sum(component * component for component in error))
-        learn_bias = learn_bias and error_mag < self.gyro_bias_tracking_max_error
+        error_mag = math.sqrt(sum(component * component for component in raw_error))
+        learn_bias = (
+            learn_bias
+            and weight > 0.95
+            and gyro_mag_dps < self._gyro_stationary_threshold
+            and error_mag < self.gyro_bias_tracking_max_error
+        )
+        self._tilt_bias_settle_s = self._tilt_bias_settle_s + dt if learn_bias else 0.0
+        learn_bias = learn_bias and self._tilt_bias_settle_s >= GYRO_BIAS_TRACKING_SETTLE_S
         ki = self.gyro_bias_tracking_gain * weight * dt if learn_bias else 0.0
         limit = self.gyro_bias_tracking_limit
         bias = self._tilt_bias
@@ -456,9 +490,10 @@ class QuaternionComplementaryFilter:
                 bias[i] = max(-limit, min(limit, bias[i] + ki * error[i]))
             else:
                 bias[i] = 0.0
-        return tuple(
-            weight * gains[i] * error[i] + bias[i] for i in range(3)
-        )
+        proportional = [weight * gains[i] * error[i] for i in range(3)]
+        magnitude = math.sqrt(sum(component * component for component in proportional))
+        scale = min(1.0, math.radians(ACCEL_CORRECTION_MAX_DPS) / magnitude) if magnitude > 0 else 1.0
+        return tuple(scale * proportional[i] + bias[i] for i in range(3))
 
     def update(self, gyro, accel, timestamp):
         # Gyro-derived Euler rates for output filters; zero unless integrated.
@@ -482,6 +517,15 @@ class QuaternionComplementaryFilter:
             return 0.0, 0.0, 0.0, False, False
 
         dt = timestamp - self.last_time
+        if dt < 0:
+            from src.util.log_utils import log_warning
+            log_warning(self.logQueue, "Fusion", "Sensor clock moved backwards; restarting timing state")
+            self.last_time = timestamp
+            self._reset_tilt_state(reset_bias=False)
+            if self._orientation_resume_started_at is not None:
+                self._orientation_resume_started_at = timestamp
+            self._stationary_start = None
+            self._drift_correction_start = None
         if dt <= 0 or dt < DT_MIN:
             y, p, r = self._euler_from_quat(self.q)
             return y, p, r, False, False
@@ -492,6 +536,9 @@ class QuaternionComplementaryFilter:
             except Exception:
                 pass
             self.last_time = timestamp
+            self._reset_tilt_state(reset_bias=False)
+            self._stationary_start = None
+            self._drift_correction_start = None
             y, p, r = self._euler_from_quat(self.q)
             return y, p, r, False, False
 
@@ -510,12 +557,13 @@ class QuaternionComplementaryFilter:
 
         # Center assist deliberately pulls the pose away from the gyro/accel
         # solution; that disagreement must not be learned as gyro bias.
+        self.q = self._integrate_body_rates(self.q, wx, wy, wz, dt)
         cx, cy, cz = self._tilt_correction_rates(
             accel, accel_mag, gyro_mag, dt,
             learn_bias=self._drift_correction_start is None,
         )
         q = self._integrate_body_rates(
-            self.q, wx + cx, wy + cy, wz + cz, dt
+            self.q, cx, cy, cz, dt
         )
 
         accel_ok = False
@@ -699,6 +747,7 @@ def run_worker(
     # Rate-limited counters for malformed/non-finite inputs to avoid log spam
     malformed_counter = 0
     nonfinite_euler_counter = 0
+    output_timing_reset = False
 
     # Loop counter used to throttle low-frequency IPC work (control polling,
     # display-queue publishing) so it doesn't add per-frame overhead at 250Hz.
@@ -732,7 +781,7 @@ def run_worker(
                 # Accept both bare string commands and tuple/list variants
                 if isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'set_orientation_hold':
                     if len(cmd) >= 2 and isinstance(cmd[1], bool):
-                        filter.set_orientation_hold(cmd[1])
+                        filter.set_orientation_hold(cmd[1], now=filter.last_time)
                         log_info(
                             logQueue,
                             "Fusion Worker",
@@ -1236,6 +1285,7 @@ def run_worker(
             try:
                 # Parse, validate and integrate every queued IMU sample.
                 result = None
+                output_samples = []
                 for sample_line in lines:
                     _diag_t2 = time.perf_counter()
                     try:
@@ -1247,10 +1297,39 @@ def run_worker(
                         continue
                     _diag_t3 = time.perf_counter()
                     diag_parse_s += (_diag_t3 - _diag_t2)
+                    previous_time = filter.last_time
                     result = filter.update(gyro, accel, timestamp)
                     diag_update_s += (time.perf_counter() - _diag_t3)
                     diag_imu_samples += 1
-                if result is None:
+                    if previous_time is not None and not (
+                        DT_MIN <= timestamp - previous_time <= DT_MAX
+                    ):
+                        if timestamp < previous_time or timestamp - previous_time > DT_MAX:
+                            output_timing_reset = True
+                        continue
+                    yaw, pitch, roll = result[:3]
+                    live_euler_data = (
+                        -yaw if filter.invert_yaw else yaw,
+                        -pitch if filter.invert_pitch else pitch,
+                        -roll if filter.invert_roll else roll,
+                    )
+                    if not all(math.isfinite(value) for value in live_euler_data):
+                        log_error(logQueue, "Fusion Worker", "Dropping non-finite Euler sample")
+                        continue
+                    output_angles = filter.apply_orientation_hold(
+                        *live_euler_data, now=timestamp
+                    )
+                    yaw_rate, pitch_rate, roll_rate = filter.euler_rates
+                    output_rates = (0.0, 0.0, 0.0) if filter.orientation_held else (
+                        -yaw_rate if filter.invert_yaw else yaw_rate,
+                        -pitch_rate if filter.invert_pitch else pitch_rate,
+                        -roll_rate if filter.invert_roll else roll_rate,
+                    )
+                    output_samples.append(TrackingSample(
+                        timestamp, output_angles, output_rates, output_timing_reset
+                    ))
+                    output_timing_reset = False
+                if result is None or not output_samples:
                     continue
 
                 # Update data timestamp
@@ -1355,30 +1434,7 @@ def run_worker(
                         pass
                 
 
-                # Apply axis inversions if configured
-                output_yaw = -yaw if filter.invert_yaw else yaw
-                output_pitch = -pitch if filter.invert_pitch else pitch
-                output_roll = -roll if filter.invert_roll else roll
-                live_euler_data = [output_yaw, output_pitch, output_roll]
-
-                if all(math.isfinite(value) for value in live_euler_data):
-                    output_yaw, output_pitch, output_roll = filter.apply_orientation_hold(
-                        output_yaw, output_pitch, output_roll
-                    )
-                
-                # Put Euler angles into output queues
-                # Format: [Yaw, Pitch, Roll, YawRate, PitchRate, RollRate];
-                # rates are gyro-derived deg/s for motion-aware output filters.
-                euler_data = [output_yaw, output_pitch, output_roll]
-                if filter.orientation_held:
-                    euler_data.extend((0.0, 0.0, 0.0))
-                else:
-                    yaw_rate, pitch_rate, roll_rate = filter.euler_rates
-                    euler_data.extend((
-                        -yaw_rate if filter.invert_yaw else yaw_rate,
-                        -pitch_rate if filter.invert_pitch else pitch_rate,
-                        -roll_rate if filter.invert_roll else roll_rate,
-                    ))
+                output_yaw, output_pitch, output_roll = output_samples[-1].angles
 
                 # Validate output is finite before publishing to either output.
                 _diag_t5 = time.perf_counter()
@@ -1395,7 +1451,12 @@ def run_worker(
                 else:
                     # Publish only to the selected output queue; multiprocessing
                     # queues distribute samples instead of broadcasting them.
-                    _publish_output_pose(outputQueue, euler_data)
+                    if not _publish_output_pose(outputQueue, tuple(output_samples)):
+                        output_timing_reset = True
+                        log_warning(
+                            logQueue, "Fusion Worker",
+                            f"Output queue full; dropped {len(output_samples)} sensor-time samples",
+                        )
 
                     # Send to display queue with queue health monitoring, throttled
                     # since the GUI only redraws at ~60Hz - no need to pay the IPC

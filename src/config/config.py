@@ -19,6 +19,19 @@ APP_VERSION = "0.12"
 GUI_UPDATE_INTERVAL_MS = 16          # How often GUI updates displays (milliseconds) - ~60 FPS for real-time
 WORKER_QUEUE_CHECK_INTERVAL_MS = 25   # How often GUI checks queues (milliseconds) - balanced for responsiveness
 
+# ============================================================================
+# GUI layout
+# ============================================================================
+# Shared layout defaults for panels and openable dialogs. Dialog section
+# layouts use the same margin on all sides; compact internal rows may override.
+CONTENT_MARGINS = (4, 6, 4, 6)
+DEFAULT_SPACING = 6
+DIALOG_CONTENT_MARGIN = 6
+BUTTON_EXTRA_HEIGHT = 6
+BUTTON_MIN_HEIGHT = 40
+LINE_THICKNESS = 1
+INACTIVE_OPACITY = 0.45
+
 # Worker timing constants
 FUSION_LOOP_SLEEP_MS = 1    # Minimal sleep in fusion loop (was hardcoded)
 FUSION_DT_MAX_THRESHOLD = 0.1  # Max delta time before reset (was hardcoded)
@@ -91,14 +104,18 @@ ACCEL_INNOVATION_CUTOFF_HZ = 1.5
 ACCEL_TRUST_SIGMA_G = 0.05
 ACCEL_TRUST_GYRO_RATE_DPS = 30.0
 ACCEL_TRUST_HOLD_S = 0.5
+# Gravity-innovation slew width (1/s). Rapid direction changes without matching
+# gyro motion indicate translation; hold distrust through the disturbance.
+ACCEL_INNOVATION_SLEW_SIGMA = 0.2
+ACCEL_CORRECTION_MAX_DPS = 2.0
 # Integral gain (1/s^2) of the online gyro bias estimate driven by the tilt
 # error; tracks residual pitch/roll bias left after manual calibration.
-# Learning pauses while center assist pulls the pose (that error is not gyro
-# bias) and when the tilt error exceeds GYRO_BIAS_TRACKING_MAX_ERROR_DEG
-# (resets, jumps), so the estimate cannot wind up into a drift source.
+# Learning requires settled, trustworthy observations with quiet gyro motion.
+# It pauses during center assistance or large tilt errors (resets, jumps).
 GYRO_BIAS_TRACKING_GAIN = 0.05
 GYRO_BIAS_TRACKING_LIMIT_DPS = 0.5
 GYRO_BIAS_TRACKING_MAX_ERROR_DEG = 1.5
+GYRO_BIAS_TRACKING_SETTLE_S = 0.5
 
 # Time delta validation
 DT_MIN = 0.001  # seconds: reject dt smaller than this (likely duplicate)
@@ -218,7 +235,7 @@ VISUALIZATION_RANGE = 25.0  # degrees: +/- range for pitch/yaw axes
 VISUALIZATION_SIZE = 160  # pixels: width and height of visualization widget
 
 # Theme settings
-DEFAULT_THEME = 'light'  # 'light', 'dark'
+DEFAULT_THEME = 'light'  # light, dark, solarized_light, solarized_dark
 THEMES_ENABLED = True
 
 # ============================================================================

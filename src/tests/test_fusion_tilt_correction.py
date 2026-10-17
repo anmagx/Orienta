@@ -115,6 +115,113 @@ def _snap_yaw(angle_deg, duration_s, hold_s, start_s):
 
 
 class TiltCorrectionTests(unittest.TestCase):
+    def test_translation_pulse_is_rejected_without_delayed_correction_tail(self):
+        for rate_hz in (125, 250, 500):
+            for axis in (0, 1):
+                with self.subTest(rate_hz=rate_hz, axis=axis):
+                    flt = _level_filter()
+                    outputs = []
+                    for index in range(1, rate_hz * 5 + 1):
+                        t = index / rate_hz
+                        accel = [0.0, 0.0, 1.0]
+                        if 1.0 <= t < 1.25:
+                            accel[axis] = 0.05
+                        outputs.append(flt.update((0, 0, 0), accel, t))
+                    peak = max(abs(out[axis + 1]) for out in outputs)
+                    self.assertLess(peak, 0.1)
+                    for component in flt._tilt_bias:
+                        self.assertLess(abs(math.degrees(component)), 0.001)
+
+    def test_filtered_innovation_cannot_push_against_current_gravity_error(self):
+        flt = _level_filter(gyro_bias_tracking_gain=0.0)
+        flt._tilt_err_lp1 = [0.0, 0.05, 0.0]
+        flt._tilt_err_lp2 = [0.0, 0.05, 0.0]
+        flt.q = flt._quat_from_euler(0.0, 0.2, 0.0)
+        correction = flt._tilt_correction_rates((0, 0, 1), 1.0, 0.0, 0.004)
+        self.assertLessEqual(correction[1], 0.0)
+        self.assertLessEqual(flt._tilt_err_lp1[1], 0.0)
+        self.assertLessEqual(flt._tilt_err_lp2[1], 0.0)
+
+    def test_smooth_translation_pulse_has_small_error_and_no_delayed_peak(self):
+        peaks = []
+        for rate_hz in (125, 250, 500):
+            flt = _level_filter()
+            during, after = [], []
+            for index in range(1, rate_hz * 5 + 1):
+                t = index / rate_hz
+                lateral = 0.05 * math.sin(math.pi * (t - 1.0) / 0.5) ** 2 if 1.0 < t < 1.5 else 0.0
+                out = flt.update((0, 0, 0), (-lateral, 0, 1), t)
+                (during if t < 1.5 else after).append(abs(out[1]))
+            peaks.append(max(during + after))
+            self.assertLess(peaks[-1], 0.1)
+            self.assertLessEqual(max(after), max(during) + 0.01)
+        self.assertLess(max(peaks) - min(peaks), 0.02)
+
+    def test_real_pitch_turn_remains_gyro_led(self):
+        flt = _level_filter()
+        errors = []
+        for index in range(1, 1251):
+            t = index / 250
+            pitch = 20.0 * (1.0 - math.cos(2.0 * math.pi * 0.5 * t))
+            midpoint = t - 0.002
+            gyro_pitch = 20.0 * math.pi * math.sin(math.pi * midpoint)
+            angle = math.radians(pitch)
+            out = flt.update(
+                (0, gyro_pitch, 0), (-math.sin(angle), 0, math.cos(angle)), t
+            )
+            errors.append(abs(out[1] - pitch))
+        self.assertLess(max(errors), 0.02)
+
+    def test_untrusted_turn_does_not_charge_innovation_filters(self):
+        flt = _level_filter()
+        for _ in range(250):
+            flt._tilt_correction_rates((-0.05, 0, 1), math.sqrt(1.0025), 300.0, 0.004)
+        self.assertLess(abs(flt._tilt_err_lp2[1]), 1e-10)
+        self.assertEqual(flt._tilt_bias, [0.0, 0.0, 0.0])
+
+    def test_invalid_acceleration_interrupts_bias_settling_and_clears_error(self):
+        flt = _level_filter()
+        for _ in range(100):
+            flt._tilt_correction_rates((-0.005, 0, 1), math.sqrt(1.000025), 0.0, 0.004)
+        self.assertGreater(flt._tilt_bias_settle_s, 0.3)
+        flt._tilt_correction_rates((0, 0, 0), 0.0, 0.0, 0.004)
+        self.assertEqual(flt._tilt_bias_settle_s, 0.0)
+        self.assertEqual(flt._tilt_err_lp2, [0.0, 0.0, 0.0])
+        self.assertIsNone(flt._tilt_previous_error)
+
+    def test_learned_bias_is_still_applied_during_distrusted_motion(self):
+        flt = _level_filter()
+        bias = [math.radians(0.1), math.radians(-0.2), 0.0]
+        flt._tilt_bias = bias.copy()
+        correction = flt._tilt_correction_rates((-0.05, 0, 1), math.sqrt(1.0025), 300.0, 0.004)
+        for actual, expected in zip(correction, bias):
+            self.assertAlmostEqual(actual, expected, places=10)
+        self.assertEqual(flt._tilt_bias, bias)
+
+    def test_proportional_correction_has_a_vector_rate_limit(self):
+        flt = _level_filter(
+            gyro_bias_tracking_gain=0.0,
+            accel_tau_pitch=0.2,
+            accel_tau_roll=0.2,
+        )
+        tilt = math.radians(20.0)
+        accel = (-math.sin(tilt), 0, math.cos(tilt))
+        for _ in range(500):
+            correction = flt._tilt_correction_rates(accel, 1.0, 0.0, 0.004)
+            self.assertLessEqual(
+                math.degrees(math.sqrt(sum(c * c for c in correction))), 2.0 + 1e-9
+            )
+
+    def test_sensor_clock_restart_resumes_integration_and_clears_transients(self):
+        flt = _level_filter(accel_tau_pitch=math.inf, accel_tau_roll=math.inf)
+        flt.update((0, 0, 10), (0, 0, 1), 0.004)
+        before = flt._euler_from_quat(flt.q)[0]
+        flt._tilt_err_lp2 = [0.1, 0.1, 0.1]
+        flt.update((0, 0, 10), (0, 0, 1), 0.0)
+        self.assertEqual(flt._tilt_err_lp2, [0.0, 0.0, 0.0])
+        after = flt.update((0, 0, 10), (0, 0, 1), 0.004)[0]
+        self.assertAlmostEqual(after - before, -0.04)
+
     def test_lateral_vibration_does_not_leak_into_pitch_and_roll(self):
         filter_instance = _level_filter()
 
@@ -235,6 +342,56 @@ class YawCrossCouplingTests(unittest.TestCase):
 
 
 class WorkerBatchTests(unittest.TestCase):
+    def test_fusion_publishes_identical_sample_history_across_batches(self):
+        lines = []
+        for index in range(100):
+            if index < 40:
+                timestamp = index / 250
+            elif index < 70:
+                timestamp = (index - 40) / 250
+            else:
+                timestamp = 1.0 + (index - 70) / 250
+            lines.append(f"{timestamp},0,0,1,0,0,{20 * math.sin(index / 30)}")
+        lines.insert(26, lines[25])
+        histories = []
+        for batch_size in (1, 7, 100):
+            serial_queue = Queue()
+            output_queue = Queue()
+            stop_event = threading.Event()
+            pending = []
+            for index in range(0, len(lines), batch_size):
+                pending.extend(lines[index:index + batch_size])
+                pending.append(None)
+
+            def get_sample(queue, timeout=0.0, default=None):
+                if queue is serial_queue:
+                    if pending:
+                        return pending.pop(0)
+                    stop_event.set()
+                return default
+
+            flt = QuaternionComplementaryFilter(center_threshold=0.0)
+            with patch('src.workers.fusion_wrk.QuaternionComplementaryFilter', return_value=flt), \
+                    patch('src.workers.fusion_wrk.safe_queue_get', side_effect=get_sample), \
+                    patch('src.workers.fusion_wrk.time.sleep'), \
+                    patch('src.util.timing_utils.enable_high_res_timer'), \
+                    patch('src.util.timing_utils.disable_high_res_timer'), \
+                    patch('src.util.timing_utils.raise_process_priority'):
+                run_worker(
+                    serial_queue, output_queue, Queue(), Queue(), Queue(),
+                    stop_event, Queue(),
+                )
+            histories.append([
+                sample for batch in output_queue.queue for sample in batch
+            ])
+        self.assertEqual(len(histories[0]), 98)
+        self.assertEqual(
+            [s.timestamp for s in histories[0] if s.reset_filter],
+            [0.004, 1.004],
+        )
+        self.assertEqual(histories[0], histories[1])
+        self.assertEqual(histories[0], histories[2])
+
     def test_worker_integrates_every_queued_sample(self):
         filter_instance = QuaternionComplementaryFilter()
         filter_instance.update = Mock(wraps=filter_instance.update)
@@ -268,13 +425,12 @@ class WorkerBatchTests(unittest.TestCase):
         self.assertEqual(filter_instance.update.call_count, 8)
         published = list(output_queue.queue)
         self.assertEqual(len(published), 1)
+        batch = published[0]
+        self.assertEqual(len(batch), 8)
+        self.assertEqual([sample.timestamp for sample in batch], [i * 0.004 for i in range(1, 9)])
         # 7 integrated steps of 4 ms at 10 deg/s (negated yaw axis).
-        self.assertAlmostEqual(published[0][0], -0.28, places=6)
-        # Gyro-derived Euler rates follow the angles in the published pose.
-        self.assertEqual(len(published[0]), 6)
-        self.assertAlmostEqual(published[0][3], -10.0, places=6)
-        self.assertAlmostEqual(published[0][4], 0.0, places=6)
-        self.assertAlmostEqual(published[0][5], 0.0, places=6)
+        self.assertAlmostEqual(batch[-1].angles[0], -0.28, places=6)
+        self.assertEqual(batch[-1].rates, (-10.0, 0.0, 0.0))
 
 
 class EulerRateTests(unittest.TestCase):

@@ -9,6 +9,16 @@ QMainWindow {
     color: #ffffff;
 }
 
+QWidget#orientationVisualization {
+    background-color: #3c3c3c;
+}
+
+/* Default frame for top-level application windows */
+QWidget:window {
+    border: 1px solid #555555;
+    border-radius: 4px;
+}
+
 /* Group boxes and panels */
 QGroupBox {
     font-weight: bold;
@@ -97,6 +107,10 @@ QPushButton[status="error"]:pressed {
 QLabel {
     color: #ffffff;
     background-color: transparent;
+}
+
+QLabel[mutedText="true"] {
+    color: #666666;
 }
 
 /* Sliders */
@@ -242,9 +256,10 @@ QFrame {
     background-color: transparent;
 }
 
-/* Text areas (for message panel) */
-QTextEdit, QPlainTextEdit {
-    background-color: #2b2b2b;
+/* Message views use the same surface color as their containing panel. */
+QTextEdit#messageSerialText,
+QTextEdit#messageLogText {
+    background-color: #3c3c3c;
     color: #ffffff;
     border: 1px solid #555555;
     border-radius: 3px;
@@ -325,20 +340,41 @@ QFrame#sectionDivider {
     margin-bottom: 6px;
 }
 
-/* Preferences panel container background */
-QWidget#preferencesContainer {
+/* Dialogs share one themed surface; top-level windows share a common border. */
+QDialog {
     background-color: #3c3c3c;
+    color: #ffffff;
+}
+
+QWidget#visualizationPopup {
+    background-color: #3c3c3c;
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+}
+
+QWidget#visualizationPopupWindow {
+    background-color: transparent;
     border: none;
 }
 
-/* Visualization popup and settings dialog */
-QWidget#visualizationPopup,
-QDialog#visualizationSettingsDialog,
-QDialog#nativeOutputSettingsDialog {
+QWidget#aboutPanel,
+QFrame#messagePanel {
     background-color: #3c3c3c;
     color: #ffffff;
-    border: 1px solid #555555;
-    border-radius: 4px;
+    border: none;
+}
+
+QScrollArea#preferencesScroll,
+QWidget#preferencesPanel,
+QWidget#preferencesContainer,
+QScrollArea#nativeOutputSettingsScroll,
+QWidget#nativeOutputSettingsContent,
+QWidget#sensorSettingsContent,
+QWidget#visualizationSettingsContent {
+    background-color: #3c3c3c;
+    color: #ffffff;
+    border: none;
 }
 
 QWidget#nativeOutputCurve {

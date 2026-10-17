@@ -17,7 +17,7 @@ class VisualizationPopupController:
         panel = self.panel
         try:
             popup = QWidget(None, Qt.Window | Qt.FramelessWindowHint | Qt.Tool)
-            popup.setObjectName("visualizationPopup")
+            popup.setObjectName("visualizationPopupWindow")
             popup.setAttribute(Qt.WA_StyledBackground, True)
             popup.setWindowFlags(popup.windowFlags() | Qt.WindowStaysOnTopHint)
             popup.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -34,7 +34,7 @@ class VisualizationPopupController:
             palette = parent_window.palette() if parent_window else (app.palette() if app else QPalette())
             popup.setPalette(palette)
             popup.setAutoFillBackground(True)
-            container.setStyleSheet("border-radius: 10px; border: 1px solid palette(mid);")
+            container.setStyleSheet("border-radius: 10px; border: none;")
 
             outer = QVBoxLayout(popup)
             outer.setContentsMargins(0, 0, 0, 0)
