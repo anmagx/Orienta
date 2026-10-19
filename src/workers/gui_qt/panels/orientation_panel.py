@@ -57,6 +57,7 @@ class OrientationPanelQt(QGroupBox):
 
         # Track whether gyro calibration is currently running
         self._calibrating = False
+        self._gyro_calibrated = False
         self.orientation_held = False
         self.orientation_hold_toggle_mode = False
         self._orientation_hold_sources = set()
@@ -2161,11 +2162,26 @@ class OrientationPanelQt(QGroupBox):
             pass
 
     # --- Calibration status compatibility API ---
+    def _update_recalibration_button_status(self):
+        button = getattr(self, 'recal_button', None)
+        if button is None:
+            return
+        if not self._processing_active:
+            status = 'disabled'
+        elif not self._gyro_calibrated or self._calibrating:
+            status = 'warning'
+        else:
+            status = ''
+        button.setProperty('status', status)
+        button.style().polish(button)
+        button.update()
+
     def update_calibration_status(self, calibrated: bool):
         """
         Compatibility method called by GUI worker when fusion reports gyro calibration status.
         Updates the calibration indicator label.
         """
+        self._gyro_calibrated = bool(calibrated)
         try:
             if hasattr(self, 'calib_status_label') and self.calib_status_label:
                 if calibrated:
@@ -2180,6 +2196,7 @@ class OrientationPanelQt(QGroupBox):
                     pass
         except Exception:
             pass
+        self._update_recalibration_button_status()
 
     def update_calibrating_status(self, calibrating: bool):
         """
@@ -2204,6 +2221,7 @@ class OrientationPanelQt(QGroupBox):
 
         # Calibration blocks live angle output; reflect that in the Euler area
         self._calibrating = bool(calibrating)
+        self._update_recalibration_button_status()
         self._update_euler_view()
 
     def update_serial_connection_status(self, value):
@@ -2327,6 +2345,13 @@ class OrientationPanelQt(QGroupBox):
                                     name == 'reset_button'
                                     and self._reset_orientation_pressed_sources
                                 )
+                                or (
+                                    name == 'recal_button'
+                                    and (
+                                        not self._gyro_calibrated
+                                        or self._calibrating
+                                    )
+                                )
                             )
                             else '',
                         )
@@ -2366,6 +2391,7 @@ class OrientationPanelQt(QGroupBox):
         should only update calibration-related indicators.
         """
         try:
+            self._gyro_calibrated = False
             # Update calibration indicator only; do not change slider values or
             # stored drift thresholds (stored_drift_*). Those are preserved so
             # user tuning is not lost by a calibration/state reset.
@@ -2385,6 +2411,7 @@ class OrientationPanelQt(QGroupBox):
                 self._calibrating = False
             except Exception:
                 pass
+            self._update_recalibration_button_status()
 
             # Do NOT reset drift_angle_* values, sliders, or stored_drift_* here.
             # Those are owned by the user and persisted separately via PreferencesManager.

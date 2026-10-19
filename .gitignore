@@ -86,6 +86,7 @@ dmypy.json
 *.tmp
 *.bak
 test_output/
+todo.md
 
 # Agents
 .github/

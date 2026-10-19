@@ -46,6 +46,18 @@ class OrientationHoldInputModeTests(unittest.TestCase):
             ('set_orientation_hold', False),
         )
 
+    def test_recalibration_button_warns_until_gyro_bias_is_calibrated(self):
+        self.assertEqual(self.panel.recal_button.property("status"), "warning")
+
+        self.panel.update_calibration_status(True)
+        self.assertEqual(self.panel.recal_button.property("status"), "")
+
+        self.panel.update_calibration_status(False)
+        self.assertEqual(self.panel.recal_button.property("status"), "warning")
+
+        self.panel.update_processing_status(False)
+        self.assertEqual(self.panel.recal_button.property("status"), "disabled")
+
     def test_shortcut_holds_until_key_release_by_default(self):
         self.input_response_queue.put(
             ('shortcut_pressed', 'f9', 'hold_orientation')

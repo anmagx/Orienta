@@ -137,7 +137,16 @@ preferences and are not silently assumed to be the hardware's current state.
 You will obviously need to find a way to mount your sensor on your head. In the example I use a 3D-printed case for the sensor itself and the arduino nano that both clip to my headset. Many, if not most IMUs will want to be mounted a specific up-direction to give accurate accelerometer readings - tilted on the side or on it's head will probably not work, but flipped 180° is fine. The app allows for flipping axis in the preferences section. 
 
 1. Flash the supplied Arduino sketch, or connect a compatible IMU source.
-2. Select its serial port and baud rate, then start the serial reader.
+2. Click **Detect sensor** to probe available serial ports for firmware that
+   reports a valid Orienta sensor configuration. Detection selects the port
+   and baud rate but does not start tracking; you can also select them manually.
+   Opening a USB serial port during detection may reset its attached device.
+   Click **Start Serial** when the selected port and baud are correct. If the
+   connection drops, Orienta retries that port with backoff until you stop it;
+   it does not silently switch to another port.
+   A saved sensor-settings profile is applied after the first valid sensor
+   sample on connection and reconnect. Without saved settings, Orienta leaves
+   the device configuration unchanged.
 3. Keep the device still and level while calibrating all three gyro biases (X/Y/Z).
 4. Mount the device and reset orientation as needed.
 5. In the Connection panel's Output section, select UDP (opentrack),

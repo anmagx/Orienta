@@ -46,8 +46,21 @@ FUSION_DT_MAX_THRESHOLD = 0.1  # Max delta time before reset (was hardcoded)
 # ============================================================================
 DEFAULT_SERIAL_PORT = 'COM3'
 DEFAULT_SERIAL_BAUD = 115200
+SERIAL_BAUD_RATES = (
+    9600,
+    19200,
+    38400,
+    57600,
+    115200,
+    230400,
+    250000,
+    500000,
+    1000000,
+)
 SERIAL_RETRY_DELAY = 2.0  # seconds between connection attempts
 SERIAL_TIMEOUT = 1.0  # seconds
+SERIAL_RETRY_MAX_DELAY = 10.0  # seconds between automatic reconnect attempts
+SENSOR_SETTINGS_RESPONSE_TIMEOUT_MS = 3000
 
 # ============================================================================
 # Queue Configuration  

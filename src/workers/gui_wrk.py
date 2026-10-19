@@ -45,12 +45,19 @@ from src.util.game_client_registration import (
 )
 
 from src.config.config import (
-    GUI_UPDATE_INTERVAL_MS, WORKER_QUEUE_CHECK_INTERVAL_MS,
-    APP_NAME, APP_VERSION,
+    GUI_UPDATE_INTERVAL_MS,
+    SENSOR_SETTINGS_RESPONSE_TIMEOUT_MS,
+    WORKER_QUEUE_CHECK_INTERVAL_MS,
+    APP_NAME,
+    APP_VERSION,
 )
 from src.util.log_utils import log_info, log_warning, log_error
 from src.util.error_utils import safe_queue_put
-from src.util.sensor_settings import normalize_sensor_settings
+from src.util.sensor_settings import (
+    normalize_sensor_settings,
+    parse_sensor_settings_response,
+    sensor_settings_command,
+)
 from src.util.windows_titlebar import install_windows_titlebar_theme_sync
 
 
@@ -130,6 +137,16 @@ class TabbedGUIWorker(QMainWindow):
         self.preferences_manager = PreferencesManager()
         self.sensor_settings_preferences = None
         self.sensor_settings_dialog = None
+        self._sensor_settings_apply_waiting_for_samples = False
+        self._sensor_settings_apply_expected = None
+        self._sensor_settings_apply_timer = QTimer(self)
+        self._sensor_settings_apply_timer.setSingleShot(True)
+        self._sensor_settings_apply_timer.setInterval(
+            SENSOR_SETTINGS_RESPONSE_TIMEOUT_MS
+        )
+        self._sensor_settings_apply_timer.timeout.connect(
+            self._on_sensor_settings_apply_timeout
+        )
         self.theme_manager = ThemeManager(QApplication.instance())
         self.native_output_dialog = NativeOutputSettingsDialog(
             self.output_control_queue,
@@ -503,10 +520,11 @@ class TabbedGUIWorker(QMainWindow):
         elif status_type == 'serial_connection':
             self._safe_panel_call('connection_panel', 'update_connection_status', value)
             if ui_status:
+                is_connected = value == "connected"
                 if self.sensor_settings_dialog is not None:
                     self.sensor_settings_dialog.set_connected(
-                        value == "connected",
-                        read_on_connect=value == "connected",
+                        is_connected,
+                        read_on_connect=False,
                     )
                 self._safe_panel_call('orientation_panel', 'update_serial_connection_status', value)
                 # Only clear calibration on unexpected disconnect or error. Preserve
@@ -514,13 +532,28 @@ class TabbedGUIWorker(QMainWindow):
                 # intentionally.
                 if value in ['disconnected', 'error']:
                     self._safe_panel_call('orientation_panel', 'clear_calibration_state')
+                if value in ['disconnected', 'error', 'reconnecting', 'stopped']:
+                    self._sensor_settings_apply_waiting_for_samples = False
+                    self._clear_sensor_settings_apply()
                 # Regardless of stop reason, mark processing inactive and clear UI indicators
                 self._safe_panel_call('orientation_panel', 'update_processing_status', 'inactive')
                 self._clear_orientation_indicators()
                 self._safe_panel_call('connection_panel', 'update_message_rate', 0.0)
+                if is_connected:
+                    if self.sensor_settings_preferences is not None:
+                        self._sensor_settings_apply_waiting_for_samples = True
+                    elif self.sensor_settings_dialog is not None:
+                        self.sensor_settings_dialog.request_settings()
         elif status_type == 'serial_data':
             if value:
                 self._safe_panel_call('connection_panel', 'update_data_activity')
+                if (
+                    ui_status
+                    and self._sensor_settings_apply_waiting_for_samples
+                    and self.connection_panel.is_connected
+                ):
+                    self._sensor_settings_apply_waiting_for_samples = False
+                    self._apply_sensor_settings_on_connect()
         elif status_type == 'gyro_calibrated':
             self._safe_panel_call('orientation_panel', 'update_calibration_status', bool(value))
         elif status_type == 'gyro_calibrating':
@@ -545,15 +578,25 @@ class TabbedGUIWorker(QMainWindow):
         elif status_type == 'stationary':
             self._safe_panel_call('orientation_panel', 'update_device_status', bool(value))
         elif status_type == 'sensor_settings_response':
-            self._safe_panel_call(
-                'sensor_settings_dialog',
-                'handle_device_response',
-                value,
-            )
+            if self.sensor_settings_dialog is not None:
+                self.sensor_settings_dialog.handle_device_response(value)
+            self._handle_sensor_settings_apply_response(value)
         elif status_type == 'sensor_settings_error':
+            if self.sensor_settings_dialog is not None:
+                self.sensor_settings_dialog.handle_transport_error(value)
+            if self._sensor_settings_apply_expected is not None:
+                self._clear_sensor_settings_apply()
+                log_warning(
+                    self.log_queue,
+                    'GUI',
+                    f"Could not apply saved sensor settings: {value}",
+                )
+            elif self.sensor_settings_dialog is None:
+                self._log_message(f"Sensor settings error: {value}")
+        elif status_type == 'serial_detection':
             self._safe_panel_call(
-                'sensor_settings_dialog',
-                'handle_transport_error',
+                'connection_panel',
+                'handle_detection_result',
                 value,
             )
 
@@ -588,6 +631,73 @@ class TabbedGUIWorker(QMainWindow):
     def _on_sensor_preferences_changed(self, preferences):
         self.sensor_settings_preferences = dict(preferences)
         self.save_preferences()
+
+    def _apply_sensor_settings_on_connect(self):
+        if self.sensor_settings_preferences is None:
+            return False
+
+        settings = dict(self.sensor_settings_preferences)
+        try:
+            sensor_settings_command("SET", settings)
+        except ValueError as error:
+            message = f"Saved sensor settings are invalid and were not applied: {error}"
+            log_warning(self.log_queue, "GUI", message)
+            self._log_message(message)
+            return False
+
+        if self.sensor_settings_dialog is not None:
+            sent = self.sensor_settings_dialog.apply_settings(settings)
+        else:
+            sent = self._send_sensor_settings_command(("SET", settings))
+        if not sent:
+            message = "Could not queue saved sensor settings for the connected device"
+            log_warning(self.log_queue, "GUI", message)
+            self._log_message(message)
+            return False
+
+        self._sensor_settings_apply_expected = settings
+        self._sensor_settings_apply_timer.start()
+        log_info(self.log_queue, "GUI", "Applying saved sensor settings to connected device")
+        return True
+
+    def _handle_sensor_settings_apply_response(self, response):
+        expected = self._sensor_settings_apply_expected
+        if expected is None:
+            return
+        try:
+            actual = parse_sensor_settings_response(response)
+        except ValueError as error:
+            self._clear_sensor_settings_apply()
+            message = f"Device rejected saved sensor settings: {error}"
+            log_warning(self.log_queue, "GUI", message)
+            if self.sensor_settings_dialog is None:
+                self._log_message(message)
+            return
+
+        if actual != expected:
+            return
+        self._clear_sensor_settings_apply()
+        log_info(self.log_queue, "GUI", "Saved sensor settings confirmed by device")
+        if self.sensor_settings_dialog is None:
+            self._log_message("Saved sensor settings applied and confirmed")
+
+    def _on_sensor_settings_apply_timeout(self):
+        if self._sensor_settings_apply_expected is None:
+            return
+        self._sensor_settings_apply_expected = None
+        log_warning(
+            self.log_queue,
+            "GUI",
+            "Timed out waiting for the device to confirm saved sensor settings",
+        )
+        if self.sensor_settings_dialog is None:
+            self._log_message(
+                "Timed out waiting for the device to confirm saved sensor settings"
+            )
+
+    def _clear_sensor_settings_apply(self):
+        self._sensor_settings_apply_expected = None
+        self._sensor_settings_apply_timer.stop()
 
     def _handle_status_update(self, status_type: str, value):
         """Handle worker status updates."""

@@ -135,6 +135,9 @@ class SensorSettingsDialogTests(unittest.TestCase):
             "output_rate": 250,
         }
         send_command.assert_called_once_with(("SET", requested))
+        dialog.request_settings()
+        send_command.assert_called_once()
+        self.assertTrue(dialog._pending_apply)
 
         dialog.handle_device_response(
             "!SENSOR,SETTINGS,gyro_range=500,accel_range=4,sensor_rate=500,"
@@ -142,6 +145,108 @@ class SensorSettingsDialogTests(unittest.TestCase):
         )
         self.assertIn("confirmed", dialog.status_label.text())
         self.assertIn("sensor 500 Hz", dialog.actual_settings_label.text())
+
+    def test_apply_button_uses_selected_values_not_qt_checked_argument(self):
+        send_command = Mock(return_value=True)
+        dialog = SensorSettingsDialog(send_command, connected=True)
+        self.addCleanup(dialog.close)
+        requested = {
+            "gyro_range": 500,
+            "accel_range": 4,
+            "sensor_rate": 500,
+            "gyro_lpf": 98,
+            "accel_lpf": 92,
+            "output_rate": 250,
+        }
+        for key, value in requested.items():
+            dialog.combos[key].setCurrentIndex(
+                dialog.combos[key].findData(value)
+            )
+
+        dialog.apply_button.click()
+
+        send_command.assert_called_once_with(("SET", requested))
+        self.assertEqual(dialog._requested_settings, requested)
+
+    def test_apply_settings_rejects_non_mapping_instead_of_defaulting(self):
+        send_command = Mock(return_value=True)
+        dialog = SensorSettingsDialog(send_command, connected=True)
+        self.addCleanup(dialog.close)
+
+        self.assertFalse(dialog.apply_settings(False))
+        send_command.assert_not_called()
+        self.assertIn("Invalid sensor settings", dialog.status_label.text())
+
+    def test_saved_settings_apply_waits_past_unmatched_boot_report(self):
+        send_command = Mock(return_value=True)
+        dialog = SensorSettingsDialog(send_command, connected=True)
+        self.addCleanup(dialog.close)
+        requested = {
+            "gyro_range": 500,
+            "accel_range": 4,
+            "sensor_rate": 500,
+            "gyro_lpf": 98,
+            "accel_lpf": 92,
+            "output_rate": 250,
+        }
+
+        self.assertTrue(dialog.apply_settings(requested))
+        send_command.assert_called_once_with(("SET", requested))
+        self.assertEqual(
+            dialog.combos["gyro_range"].currentData(),
+            requested["gyro_range"],
+        )
+
+        dialog.handle_device_response(
+            "!SENSOR,SETTINGS,gyro_range=1000,accel_range=2,sensor_rate=1000,"
+            "gyro_lpf=42,accel_lpf=41,output_rate=250"
+        )
+        self.assertTrue(dialog._pending_apply)
+        self.assertTrue(dialog._response_timer.isActive())
+
+        dialog.handle_device_response(
+            "!SENSOR,SETTINGS,gyro_range=500,accel_range=4,sensor_rate=500,"
+            "gyro_lpf=98,accel_lpf=92,output_rate=250"
+        )
+        self.assertFalse(dialog._pending_apply)
+        self.assertIn("confirmed", dialog.status_label.text())
+
+    def test_confirmation_of_previous_apply_preserves_newer_selections(self):
+        send_command = Mock(return_value=True)
+        dialog = SensorSettingsDialog(send_command, connected=True)
+        self.addCleanup(dialog.close)
+        saved_preferences = []
+        dialog.preferences_changed.connect(saved_preferences.append)
+        previous_settings = dict(DEFAULT_SENSOR_SETTINGS)
+        dialog.apply_settings(previous_settings)
+
+        dialog.combos["gyro_range"].setCurrentIndex(
+            dialog.combos["gyro_range"].findData(500)
+        )
+        newer_settings = dialog.selected_settings()
+        self.assertEqual(saved_preferences[-1], newer_settings)
+        self.assertTrue(dialog.apply_button.isEnabled())
+        self.assertTrue(dialog.apply_settings())
+        self.assertEqual(
+            send_command.call_args_list[-1].args[0],
+            ("SET", newer_settings),
+        )
+
+        dialog.handle_device_response(
+            "!SENSOR,SETTINGS,gyro_range=1000,accel_range=2,sensor_rate=1000,"
+            "gyro_lpf=42,accel_lpf=41,output_rate=250"
+        )
+
+        self.assertEqual(dialog.selected_settings(), newer_settings)
+        self.assertEqual(saved_preferences[-1], newer_settings)
+        self.assertTrue(dialog._pending_apply)
+        dialog.handle_device_response(
+            "!SENSOR,SETTINGS,gyro_range=500,accel_range=2,sensor_rate=1000,"
+            "gyro_lpf=42,accel_lpf=41,output_rate=250"
+        )
+        self.assertEqual(dialog.selected_settings(), newer_settings)
+        self.assertFalse(dialog._pending_apply)
+        self.assertIn("confirmed", dialog.status_label.text())
 
     def test_dialog_keeps_device_state_separate_from_saved_selection(self):
         send_command = Mock(return_value=True)
@@ -158,6 +263,18 @@ class SensorSettingsDialogTests(unittest.TestCase):
         )
         self.assertEqual(dialog.combos["gyro_range"].currentData(), 500)
         self.assertIn("Gyro ±1000", dialog.actual_settings_label.text())
+
+    def test_connection_transition_can_suppress_automatic_read(self):
+        send_command = Mock(return_value=True)
+        dialog = SensorSettingsDialog(send_command, connected=False)
+        self.addCleanup(dialog.close)
+
+        dialog.set_connected(True, read_on_connect=False)
+        send_command.assert_not_called()
+
+        dialog.set_connected(False)
+        dialog.set_connected(True)
+        send_command.assert_called_once_with(("GET",))
 
     def test_dialog_background_follows_light_and_dark_themes(self):
         app = QApplication.instance()

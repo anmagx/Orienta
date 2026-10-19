@@ -12,7 +12,11 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from src.config.config import DEFAULT_SPACING, DIALOG_CONTENT_MARGIN
+from src.config.config import (
+    DEFAULT_SPACING,
+    DIALOG_CONTENT_MARGIN,
+    SENSOR_SETTINGS_RESPONSE_TIMEOUT_MS,
+)
 from .dialog_utils import (
     configure_dialog,
     configure_section_layout,
@@ -24,6 +28,7 @@ from src.util.sensor_settings import (
     SENSOR_SETTING_PRESETS,
     normalize_sensor_settings,
     parse_sensor_settings_response,
+    sensor_settings_command,
 )
 
 
@@ -95,7 +100,7 @@ class SensorSettingsDialog(QDialog):
         buttons.addWidget(self.read_button)
         buttons.addStretch()
         self.apply_button = QPushButton("Apply to sensor")
-        self.apply_button.clicked.connect(self.apply_settings)
+        self.apply_button.clicked.connect(lambda: self.apply_settings())
         buttons.addWidget(self.apply_button)
         self.close_button = create_close_button(self)
         buttons.addWidget(self.close_button)
@@ -103,7 +108,7 @@ class SensorSettingsDialog(QDialog):
 
         self._response_timer = QTimer(self)
         self._response_timer.setSingleShot(True)
-        self._response_timer.setInterval(3000)
+        self._response_timer.setInterval(SENSOR_SETTINGS_RESPONSE_TIMEOUT_MS)
         self._response_timer.timeout.connect(self._on_response_timeout)
         self._loading = False
         self._update_controls()
@@ -126,29 +131,39 @@ class SensorSettingsDialog(QDialog):
             self.combos["output_rate"].currentData()
             <= self.combos["sensor_rate"].currentData()
         )
-        self.read_button.setEnabled(self.connected and not self._response_timer.isActive())
+        request_pending = self._response_timer.isActive()
+        self.read_button.setEnabled(self.connected and not request_pending)
         self.apply_button.setEnabled(
-            self.connected and valid_rate_pair and not self._response_timer.isActive()
+            self.connected
+            and valid_rate_pair
+            and (not request_pending or self._pending_apply)
         )
         if not valid_rate_pair:
             self.status_label.setText(
                 "Output rate cannot exceed the sensor update rate."
             )
 
-    def set_connected(self, connected, read_on_connect=False):
+    def set_connected(self, connected, read_on_connect=None):
         was_connected = self.connected
         self.connected = bool(connected)
         if not self.connected:
             self._response_timer.stop()
             self._pending_apply = False
             self.status_label.setText("Sensor disconnected.")
-        elif read_on_connect or not was_connected:
+        elif read_on_connect is True or (
+            read_on_connect is None and not was_connected
+        ):
             self.request_settings()
         self._update_controls()
 
     def request_settings(self):
         if not self.connected:
             self.status_label.setText("Connect the sensor before reading settings.")
+            return
+        if self._response_timer.isActive():
+            self.status_label.setText(
+                "Wait for the current sensor settings request to finish."
+            )
             return
         if not self.send_command(("GET",)):
             self.status_label.setText("Could not send the settings request.")
@@ -158,29 +173,45 @@ class SensorSettingsDialog(QDialog):
         self.status_label.setText("Waiting for the device to report its settings…")
         self._update_controls()
 
-    def apply_settings(self):
+    def apply_settings(self, settings=None):
         if not self.connected:
             self.status_label.setText("Connect the sensor before applying settings.")
-            return
-        self._requested_settings = self.selected_settings()
+            return False
+        if settings is None:
+            self._requested_settings = self.selected_settings()
+        else:
+            try:
+                sensor_settings_command("SET", settings)
+            except (TypeError, ValueError) as error:
+                self.status_label.setText(f"Invalid sensor settings: {error}")
+                return False
+            self._requested_settings = normalize_sensor_settings(settings)
+            self._loading = True
+            for key, value in self._requested_settings.items():
+                self.combos[key].setCurrentIndex(
+                    self.combos[key].findData(value)
+                )
+            self._loading = False
+            self.settings = dict(self._requested_settings)
         if self._requested_settings["output_rate"] > self._requested_settings["sensor_rate"]:
             self.status_label.setText(
                 "Output rate cannot exceed the sensor update rate."
             )
-            return
+            return False
         if not self.send_command(("SET", self._requested_settings)):
             self.status_label.setText("Could not send sensor settings.")
-            return
+            return False
         self._pending_apply = True
         self._response_timer.start()
         self.status_label.setText("Applying settings; waiting for device confirmation…")
         self._update_controls()
+        return True
 
     def handle_device_response(self, line):
-        self._response_timer.stop()
         try:
             actual = parse_sensor_settings_response(line)
         except ValueError as error:
+            self._response_timer.stop()
             self._pending_apply = False
             self.status_label.setText(f"Device response: {error}")
             self._update_controls()
@@ -192,21 +223,35 @@ class SensorSettingsDialog(QDialog):
             .format(**actual)
         )
         if self._pending_apply:
-            if actual == self._requested_settings:
-                self._loading = True
-                for key, value in actual.items():
-                    self.combos[key].setCurrentIndex(
-                        self.combos[key].findData(value)
-                    )
-                self._loading = False
-                self.settings = dict(actual)
-                self.preferences_changed.emit(dict(actual))
-                self.status_label.setText("Settings applied and confirmed by the device.")
-            else:
+            if actual != self._requested_settings:
                 self.status_label.setText(
-                    "Device reported settings different from the requested values."
+                    "Device reported existing settings; waiting for the requested "
+                    "settings to be confirmed."
                 )
+                self._update_controls()
+                return
+            self._response_timer.stop()
+            current_selection = self.selected_settings()
+            if current_selection != self._requested_settings:
+                self._pending_apply = False
+                self.settings = current_selection
+                self.status_label.setText(
+                    "The previous settings were confirmed. Your newer selections "
+                    "are not yet applied."
+                )
+                self._update_controls()
+                return
+            self._loading = True
+            for key, value in actual.items():
+                self.combos[key].setCurrentIndex(
+                    self.combos[key].findData(value)
+                )
+            self._loading = False
+            self.settings = dict(actual)
+            self.preferences_changed.emit(dict(actual))
+            self.status_label.setText("Settings applied and confirmed by the device.")
         else:
+            self._response_timer.stop()
             self.status_label.setText("Device settings read successfully.")
         self._pending_apply = False
         self._update_controls()
@@ -222,4 +267,5 @@ class SensorSettingsDialog(QDialog):
         self.status_label.setText(
             "No response. Check the firmware supports the Orienta sensor settings protocol."
         )
+        self._update_controls()
         self._update_controls()

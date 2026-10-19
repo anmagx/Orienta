@@ -27,6 +27,16 @@ The test files can also be run directly with the repository's selected Python
 environment, provided the runtime requirements are installed. No third-party
 test runner is required.
 
+## Feature-to-test map
+
+| Feature | Automated coverage | Coverage boundary |
+|---|---|---|
+| IMU sample parsing and serial recovery | `test_serial_connection.py`; `test_fusion_tilt_correction.py` | Validated lines, reconnect behavior, startup-text filtering, and sample-history integration use tests/fakes; no physical IMU is opened. |
+| Calibration and orientation reset | `test_fusion_center_assist_and_bias.py`; `test_fusion_orientation_hold.py`; `test_reset_orientation_toggle_follow.py` | Bias math, worker calibration, pose hold/recenter, and command timing are covered; stationary behavior on a mounted device is not. |
+| Worker restart | No dedicated process-monitor/restart test module currently exists. | Restart limits and recovery behavior are documented in `ARCHITECTURE.md`; automated coverage does not verify a child-process crash and restart end to end. |
+| Output routing | `test_output_protocol_selection.py`; `test_native_output_processing.py` | Queue routing, backend selection, packet/shared-memory conversion, filters, and settings are exercised with test backends and fixtures. |
+| Client registration | `test_output_protocol_selection.py` | Registration staging/restoration and ownership cases are tested; this does not prove that a third-party game discovers or accepts the client. |
+
 ## Test module guide
 
 | Module | Main coverage |
@@ -39,6 +49,8 @@ test runner is required.
 | `test_native_output_processing.py` | Filter registry and default, filter/setting descriptions, One Euro, EMA, hysteresis, critically damped, and Accela-inspired behavior; response curves and limits; native processing and offsets; settings migration/round-trip; calibration prompts; output panel layout, themes, and controls. |
 | `test_gyro_adaptive_filter.py` | Gyro-assisted filter: rest tremor suppression, fast-turn and slow-pan tracking, cross-axis following of diagonal turns without opening idle axes, rate fallback, catch-up, yaw wrap, tremor-learning reset, and rate forwarding through native processing. |
 | `test_output_protocol_selection.py` | UDP, FreeTrack, and NPClient routing; live native-filter switching; gyro-rate forwarding; UDP packet layout; FreeTrack shared-memory structure and game-response tables; client registration and restoration. |
+| `test_sensor_settings.py` | Sensor-settings command/response validation, dialog behavior, handling of an unmatched startup report, and preserving selections changed while an earlier apply is pending. |
+| `test_serial_connection.py` | Verified COM/baud detection, detection cancellation, reconnect after a read failure, filtering startup text before fusion, and applying saved settings after the first valid sample. |
 | `test_user_data_paths.py` | Preferences and logs in per-user AppData, atomic preference writes, failed-save behavior, and packaged-path behavior. |
 
 The output and native-processing tests use queues, temporary directories,
@@ -66,7 +78,9 @@ registration tests remain runnable there.
 
 ## What still needs manual integration testing
 
-The automated suites do not verify the complete hardware-to-game path. Before
+Python tests and native ABI smoke tests are distinct from manual hardware/game
+integration. The automated suites do not verify the complete hardware-to-game
+path. Before
 releasing or changing low-level output behavior, manually check the relevant
 setup:
 

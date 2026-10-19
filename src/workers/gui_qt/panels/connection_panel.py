@@ -26,6 +26,7 @@ from src.config.config import (
     DEFAULT_SERIAL_BAUD,
     DEFAULT_SERIAL_PORT,
     QUEUE_PUT_TIMEOUT,
+    SERIAL_BAUD_RATES,
 )
 from src.util.error_utils import safe_queue_put
 
@@ -52,6 +53,7 @@ class ConnectionPanelQt(BasePanelQt):
         self._connection_status = "stopped"
         self._fusion_processing = False
         self._serial_rate_text = "0.0 msg/s"
+        self._detection_active = False
         self._data_activity_timer = QTimer()
         self._data_activity_timer.timeout.connect(self._on_data_timeout)
         self._data_activity_timer.setSingleShot(True)
@@ -81,23 +83,21 @@ class ConnectionPanelQt(BasePanelQt):
         self.port_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.port_combo.currentTextChanged.connect(self._on_port_changed)
         serial_row.addWidget(self.port_combo)
+        self.detect_button = QPushButton("Detect sensor")
+        self.detect_button.setToolTip(
+            "Probe serial ports for compatible Orienta sensor firmware. "
+            "The probe sends a read-only settings request. Opening a USB "
+            "serial port may reset its device."
+        )
+        self.detect_button.clicked.connect(self.detect_sensor)
+        serial_row.addWidget(self.detect_button)
         layout.addLayout(serial_row)
 
         baud_row = QHBoxLayout()
         baud_row.addWidget(QLabel("Baud:"))
         baud_row.addStretch()
         self.baud_combo = QComboBox()
-        self.baud_combo.addItems([
-            "9600",
-            "19200",
-            "38400",
-            "57600",
-            "115200",
-            "230400",
-            "250000",
-            "500000",
-            "1000000",
-        ])
+        self.baud_combo.addItems([str(rate) for rate in SERIAL_BAUD_RATES])
         self.baud_combo.setCurrentText(self._baud_value)
         self.baud_combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.baud_combo.currentTextChanged.connect(self._on_baud_changed)
@@ -140,10 +140,90 @@ class ConnectionPanelQt(BasePanelQt):
         self._baud_value = baud
 
     def toggle_serial(self):
+        if self._detection_active:
+            return
         if self._is_running:
             self._stop_serial()
         else:
             self._start_serial()
+
+    def detect_sensor(self):
+        if self._is_running:
+            self.log_message("Stop serial before detecting a sensor")
+            return
+        if self._detection_active:
+            if safe_queue_put(
+                self.serial_control_queue,
+                ("cancel_detection",),
+                timeout=QUEUE_PUT_TIMEOUT,
+            ):
+                self.detect_button.setText("Cancelling…")
+                self.detect_button.setEnabled(False)
+            else:
+                self.log_message("Failed to cancel sensor detection")
+            return
+
+        try:
+            preferred_baud = int(self.baud_combo.currentText())
+        except ValueError:
+            preferred_baud = DEFAULT_SERIAL_BAUD
+        if not safe_queue_put(
+            self.serial_control_queue,
+            ("detect", preferred_baud),
+            timeout=QUEUE_PUT_TIMEOUT,
+        ):
+            self.log_message("Failed to request sensor detection")
+            return
+
+        self._detection_active = True
+        self.detect_button.setText("Cancel detection")
+        self.port_combo.setEnabled(False)
+        self.baud_combo.setEnabled(False)
+        self.toggle_button.setEnabled(False)
+        self.log_message("Scanning serial ports for a compatible Orienta sensor...")
+
+    def handle_detection_result(self, result):
+        self._detection_active = False
+        self.detect_button.setText("Detect sensor")
+        self.detect_button.setEnabled(not self._is_running)
+        self.port_combo.setEnabled(not self._is_running)
+        self.baud_combo.setEnabled(not self._is_running)
+        self.toggle_button.setEnabled(True)
+
+        if not isinstance(result, (tuple, list)) or not result:
+            self.log_message("Received an invalid sensor detection result")
+            return
+
+        state = result[0]
+        if state == "found" and len(result) >= 2:
+            try:
+                port, baud, settings = result[1]
+                port = str(port)
+                baud = str(int(baud))
+            except (TypeError, ValueError, OverflowError):
+                self.log_message("Received malformed sensor detection details")
+                return
+            if self.port_combo.findText(port) < 0:
+                self.port_combo.addItem(port)
+            if self.baud_combo.findText(baud) < 0:
+                self.baud_combo.addItem(baud)
+            self.port_combo.setCurrentText(port)
+            self.baud_combo.setCurrentText(baud)
+            self.log_message(
+                f"Detected compatible sensor on {port} at {baud} baud "
+                f"(gyro ±{settings['gyro_range']}°/s, "
+                f"accel ±{settings['accel_range']} g)"
+            )
+        elif state == "not_found":
+            self.log_message(
+                "No compatible sensor configuration was found on the available ports"
+            )
+        elif state == "cancelled":
+            self.log_message("Sensor detection cancelled")
+        elif state == "error" and len(result) >= 2:
+            self.log_message(f"Sensor detection failed: {result[1]}")
+        else:
+            self.log_message(f"Unexpected sensor detection result: {state}")
 
     def _start_serial(self):
         port = self.port_combo.currentText()
@@ -196,14 +276,19 @@ class ConnectionPanelQt(BasePanelQt):
 
     def update_connection_status(self, status):
         self._connection_status = status
-        if status == "connected":
+        if status in ("starting", "reconnecting", "connected"):
             self._is_running = True
-            self.toggle_button.setProperty("status", "warning")
-            self.toggle_button.style().polish(self.toggle_button)
+            self._set_serial_button("Stop Serial", "warning")
+            self.port_combo.setEnabled(False)
+            self.baud_combo.setEnabled(False)
+            self.detect_button.setEnabled(False)
+            self.toggle_button.setEnabled(not self._detection_active)
         elif status in ("error", "stopped"):
             self._is_running = False
             self.port_combo.setEnabled(True)
             self.baud_combo.setEnabled(True)
+            self.detect_button.setEnabled(not self._detection_active)
+            self.toggle_button.setEnabled(not self._detection_active)
             self._data_activity_timer.stop()
             self._set_serial_button(
                 "Start Serial",

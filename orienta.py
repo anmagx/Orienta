@@ -1,3 +1,10 @@
+"""Application entry point.
+
+Set the multiprocessing start method before importing worker wiring; the
+``__main__`` guard also calls freeze_support() for frozen worker dispatch.
+See docs/ARCHITECTURE.md for process lifecycle details.
+"""
+
 import multiprocessing
 import sys
 

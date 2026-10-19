@@ -3,8 +3,8 @@
 #include <string.h>
 
 const uint8_t IMU_ADDRESS = 0x68;
-const uint8_t I2C_SDA_PIN = 6;
-const uint8_t I2C_SCL_PIN = 7;
+const uint8_t I2C_SDA_PIN = 6; // <-- Change this to your SDA pin
+const uint8_t I2C_SCL_PIN = 7; // <-- Change this to your SCL pin
 const uint32_t SENSOR_TIMEOUT_US = 100000;
 const uint8_t MPU_SMPLRT_DIV = 0x19;
 const uint8_t MPU_CONFIG = 0x1A;

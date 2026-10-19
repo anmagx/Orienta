@@ -55,15 +55,32 @@ to a process must be picklable.
 `ProcessHandler` monitors its `workers` list roughly once per second. A dead
 worker is restarted from its stored target/args up to
 `MAX_WORKER_RESTART_ATTEMPTS` (three). Native access-violation exit codes are
-not restarted to avoid a crash loop. A restarted worker gets the existing queues and event; the process manager
-does not reconstruct its internal state. When OutputWorker reports `ready`,
-the GUI resends the selected protocol, UDP rate cap, and native processing
-settings; other workers do not have a generic state-restore mechanism.
+not restarted to avoid a crash loop. A restarted worker receives the existing
+queues and event, but its in-memory state is not snapshotted:
+
+* When [`output_wrk.py`](../src/workers/output_wrk.py) reports `ready`, the
+  GUI resends the selected protocol, enabled state, UDP rate cap, and
+  native-processing settings.
+* A restarted [`serial_wrk.py`](../src/workers/serial_wrk.py) has lost its
+  active port and start request and begins idle. The user must start serial
+  input again from the [`Connection panel`](../src/workers/gui_qt/panels/connection_panel.py).
+* A restarted [`fusion_wrk.py`](../src/workers/fusion_wrk.py) constructs a
+  fresh filter from configuration defaults. Its live pose, timing baseline,
+  gyro-bias and level/recenter calibration, hold state, and runtime tuning are
+  lost. GUI preferences remain in the still-running GUI process, but are not
+  automatically replayed to a FusionWorker that restarts by itself.
+* A restarted [`gui_wrk.py`](../src/workers/gui_wrk.py) reloads saved
+  preferences; unsaved dialog and transient UI state is not restored.
+
+There is no general worker-state snapshot or replay mechanism beyond the
+OutputWorker resynchronization above; no broader restart-recovery improvement
+is currently documented. See [`ProcessHandler`](../src/workers/process_man.py)
+and the worker modules for the responsible lifecycle and process-local state.
 
 ## Data-flow diagram
 
 ```text
-IMU firmware --serialQueue--> SerialWorker --serialQueue--> FusionWorker
+IMU firmware --serial cable--> SerialWorker --serialQueue--> FusionWorker
                                   |                           |
                                   +--serialDisplayQueue       +--outputQueue--> OutputWorker
                                   |                           |                     |
@@ -104,15 +121,15 @@ in [`src/config/config.py`](../src/config/config.py).
 
 | Queue | Writer(s) | Reader(s) | Payload / meaning |
 |---|---|---|---|
-| `serialQueue` | Serial worker | Fusion worker | Raw IMU CSV string |
-| `outputQueue` | Fusion worker | Output worker | `[yaw, pitch, roll]` degrees; one selected protocol at a time |
-| `serialDisplayQueue` | Serial worker | GUI worker | Raw IMU CSV string; display only |
+| `serialQueue` | Serial worker | Fusion worker | Validated seven-field IMU CSV string; status and malformed lines are excluded |
+| `outputQueue` | Fusion worker | Output worker | Batches of `TrackingSample(timestamp, angles, rates, reset_filter)`; angles and rates are in application yaw/pitch/roll order |
+| `serialDisplayQueue` | Serial worker | GUI worker | All non-empty decoded serial lines; display only |
 | `eulerDisplayQueue` | Fusion worker | GUI worker | `[yaw, pitch, roll]`; display only |
 | `controlQueue` | GUI/Orientation/Preferences | Fusion worker | Fusion commands described below |
-| `serialControlQueue` | Connection panel | Serial worker | `('start', port, baud)` or `('stop',)` |
+| `serialControlQueue` | Connection panel | Serial worker | `('start', port, baud)`, `('stop',)`, `('detect', baud)`, `('cancel_detection',)`, or `('sensor_command', operation, ...)` |
 | `outputControlQueue` | GUI panels | Output worker | `('set_protocol', protocol)`, `('set_udp', host, port)`, `('set_enabled', bool)`, `('set_rate', hz)`, `('set_native_processing', settings)` |
 | `statusQueue` | Serial, fusion, output workers | GUI worker | `(status_name, value)` worker state/rates |
-| `uiStatusQueue` | Serial and fusion workers | GUI worker | UI-specific `('serial_connection', state)` or `('processing', state)` |
+| `uiStatusQueue` | Serial and fusion workers | GUI worker | UI-specific `('serial_connection', state)`, `('serial_detection', result)`, or `('processing', state)` |
 | `messageQueue` | Serial worker | GUI worker | Human-readable connection/reconnection text |
 | `inputCommandQueue` | GUI panels | Input worker | Input commands described below |
 | `inputResponseQueue` | Input worker | Orientation panel | Captured keys and shortcut state transitions |
@@ -123,16 +140,56 @@ non-blocking write first and then a very short timed write. Failure means the
 payload was dropped; control senders should treat `False` as an observable
 failure, rather than assuming a command was applied.
 
+Each `outputQueue` item is a tuple of `TrackingSample` values. `timestamp` is
+the sensor timestamp in seconds; `angles` is the output yaw/pitch/roll pose in
+degrees; `rates` is the corresponding gyro-derived Euler rate in degrees per
+second (zero while orientation hold is active); and `reset_filter` marks a
+timing discontinuity or a previously dropped output batch. Fusion integrates
+every valid serial sample and batches the resulting tracking samples.
+OutputWorker drains queued batches, processes every sample to keep its native
+filter on sensor time when native processing is selected, then sends only the
+newest pose for that output cycle.
+If the bounded queue is full, Fusion drops that batch, logs the drop, and marks
+the next accepted sample to reset native-filter state. UDP bypasses native
+processing; direct protocols apply the reset marker to their native processor.
+
 ## Serial input contract
 
-[`serial_wrk.py`](../src/workers/serial_wrk.py) owns pyserial. It is idle until it
-receives `('start', port, baud)`. Opening retries every
-`SERIAL_RETRY_DELAY` seconds and can be cancelled by a stop command or the
-shared event. Once open, each non-empty UTF-8 line is:
+[`serial_wrk.py`](../src/workers/serial_wrk.py) owns pyserial. It does not
+acquire tracking data until it receives `('start', port, baud)`; while idle it
+can service an explicit detection request. Failed opens and read disconnects
+retry the selected port with exponential backoff, capped by
+`SERIAL_RETRY_MAX_DELAY`.
+The loop continues processing controls while waiting, so `('stop',)` cancels
+retries promptly. A reconnect does not silently select a different port.
+After a read failure, users can wait for retry on the selected port. If it
+does not reconnect, stop serial input, check the device/cable and selected
+port/baud, then start it again. Automatic alternate-port discovery is not
+performed; use **Detect sensor** explicitly to find another port. No separate
+automatic port-switching improvement is currently documented.
 
-1. forwarded to `serialQueue`,
-2. copied to `serialDisplayQueue`,
-3. used to report throttled data activity and per-second message rate.
+The Connection panel's explicit **Detect sensor** action sends
+`('detect', preferred_baud)`. A separate serial-worker thread enumerates
+available ports, tries the preferred baud followed by the supported baud
+rates, and sends `@SENSOR,GET`. A port is reported only when its
+`!SENSOR,SETTINGS,...` response passes the existing settings validator.
+Detection selects the port and baud but does not start serial input or game
+output. Opening a USB serial port may reset its attached device; detection is
+therefore user-triggered rather than background polling. The scan can be
+cancelled with `('cancel_detection',)`.
+
+Once connected, every non-empty UTF-8 line is copied to `serialDisplayQueue`.
+`!SENSOR,...` responses are routed to the sensor-settings UI. Other lines are
+validated with `parse_imu_line`; only valid IMU CSV is forwarded to
+`serialQueue` and counted as sensor activity. This keeps firmware startup,
+initialization, and diagnostic text out of the fusion input queue.
+
+When a saved sensor-settings profile exists, the GUI waits for the first valid
+IMU sample after connection, then sends a validated `SET`; this keeps an
+unsolicited firmware startup report from being mistaken for the setting
+confirmation. The device response must match that profile before the GUI logs
+confirmation. The same flow runs after reconnect. Without saved settings,
+Orienta leaves the device's configuration unchanged.
 
 Its expected format is:
 
@@ -142,8 +199,9 @@ timestamp,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
 
 The timestamp is in seconds; acceleration is in g; gyro values are degrees per
 second. `parse_imu_line` rejects negative timestamps, non-finite values (NaN/Infinity),
-acceleration over 10 g, and gyro values outside +/-2000 deg/s. Keep coordinate-system conversions
-centralized in fusion; the serial worker deliberately transports raw payloads.
+acceleration over 10 g, and gyro values outside +/-2000 deg/s. The serial
+worker and fusion worker both validate samples; keep coordinate-system
+conversions centralized in fusion.
 
 ## Fusion contract
 
@@ -244,6 +302,30 @@ That is intended, but means normal orientation output pauses during calibration.
 Gyro calibration averages raw readings, not previously bias-corrected readings,
 so repeated calibration replaces rather than compounds the estimate. Recenter
 preserves all three gyro biases; full reset clears them.
+
+The default manual gyro-bias request collects 400 qualifying stationary samples;
+level calibration collects 20. A sample qualifies only when acceleration is
+near 1 g and the raw gyro magnitude is below the stationary threshold. These
+loops end when the requested sample count is reached or the shared shutdown
+event is set. There is no calibration cancel command or wall-clock timeout, so
+missing data or a sensor that never becomes still can leave a request active
+indefinitely. Keep the device still and ensure it is streaming; closing Orienta
+is the only current way to interrupt a calibration in progress. No separate
+timeout/cancellation improvement is currently documented.
+
+### Orientation and calibration glossary
+
+| Term | Operation and state changed |
+|---|---|
+| **Reset Orientation** (current UI) | Sends `recenter_orientation_to_current`: makes the current full yaw/pitch/roll pose the output origin. It preserves level-calibration offsets and gyro bias. By default the command is sent on release; **Instantaneous recenter** sends it on press. |
+| **Legacy `reset_orientation` command** | Seeds the fusion quaternion from the latest acceleration sample and schedules a short level calibration; it preserves gyro-bias calibration. This is distinct from the current UI action. |
+| **Recenter to current pose** | Changes the full three-axis output origin using the recenter offsets; it does not change level-calibration offsets or gyro bias. |
+| **Level calibration** | Averages qualifying stationary accelerometer samples to set pitch/roll center offsets. It does not estimate gyro bias or establish an absolute yaw reference. |
+| **Gyro-bias calibration** | Averages qualifying stationary raw gyro samples and replaces the X/Y/Z gyro-bias estimates used before integration. It does not recenter the output pose. |
+
+The command implementations and sample-collection behavior are in
+[`fusion_wrk.py`](../src/workers/fusion_wrk.py); the current UI controls are in
+[`orientation_panel.py`](../src/workers/gui_qt/panels/orientation_panel.py).
 
 ## Output, UI, and input contracts
 
@@ -446,10 +528,11 @@ helpers, and queue-health reports. The process monitor checks queue health
 every ten seconds and emits warnings only for warning/critical queues.
 
 Status names currently handled by the GUI include serial connection/data
-activity, message/send rate, `output_status`, `processing`, `drift_correction`,
-`stationary`, and gyro/centre calibration states. When adding a status name,
-update the producer and `TabbedGUIWorker._route_status_update`; a
-producer-only status silently has no UI effect.
+activity and detection results, message/send rate, `output_status`,
+`processing`, `drift_correction`, `stationary`, and gyro/centre calibration
+states. When adding a status name, update the producer and
+`TabbedGUIWorker._route_status_update`; a producer-only status silently has no
+UI effect.
 
 ## Persistence and assets
 
@@ -470,14 +553,21 @@ Before changing this design:
 
 1. Trace the queue's single writer and all readers; do not assume queues
    broadcast.
-2. Preserve `[yaw, pitch, roll]` through `outputQueue`, `<6d` UDP
+2. When changing a worker signature, update process wiring and its stored
+   restart configuration in `ProcessHandler`; cover both in tests.
+3. When changing a queue payload, update both its producer and consumer and
+   their tests; document the payload and backlog behavior here.
+4. Check coordinate signs, units, and timestamp semantics across fusion,
+   filters, UDP, shared memory, and native clients when changing tracking
+   conventions.
+5. Preserve `[yaw, pitch, roll]` through `outputQueue`, `<6d` UDP
    serialization, and protocol-specific shared-memory conversion.
-3. Keep one consumer of `outputQueue`; OutputWorker dispatches each pose only
+6. Keep one consumer of `outputQueue`; OutputWorker dispatches each pose only
    to its selected backend.
-4. Keep the GUI as the sole Qt-widget owner process.
-5. Make every blocking loop observe `stop_event`, use bounded queue waits, and
+7. Keep the GUI as the sole Qt-widget owner process.
+8. Make every blocking loop observe `stop_event`, use bounded queue waits, and
    close external resources in `finally`.
-6. Update preferences load, save, and fusion command application together for
+9. Update preferences load, save, and fusion command application together for
    new persisted controls.
-7. Update this document and `CODEBASE_REFERENCE.md` when a queue, command,
+10. Update this document and `CODEBASE_REFERENCE.md` when a queue, command,
    process, or persistent preference changes.
