@@ -554,10 +554,28 @@ class TabbedGUIWorker(QMainWindow):
                 ):
                     self._sensor_settings_apply_waiting_for_samples = False
                     self._apply_sensor_settings_on_connect()
-        elif status_type == 'gyro_calibrated':
+        elif status_type in ('sensor_calibrated', 'gyro_calibrated'):
             self._safe_panel_call('orientation_panel', 'update_calibration_status', bool(value))
-        elif status_type == 'gyro_calibrating':
+        elif status_type == 'sensor_calibration_source':
+            self._safe_panel_call(
+                'orientation_panel',
+                'update_calibration_source',
+                value,
+            )
+        elif status_type in ('sensor_calibrating', 'gyro_calibrating'):
             self._safe_panel_call('orientation_panel', 'update_calibrating_status', bool(value))
+        elif status_type in ('sensor_calibration_failed', 'gyro_calibration_failed'):
+            self._safe_panel_call(
+                'message_panel',
+                'append_message',
+                f"Sensor bias calibration failed: {value}",
+            )
+        elif status_type == 'sensor_calibration_data':
+            self._safe_panel_call(
+                'preferences_panel',
+                'update_sensor_calibration',
+                value,
+            )
         elif status_type == 'drift_correction':
             self._safe_panel_call('orientation_panel', 'update_drift_status', bool(value))
         elif status_type == 'msg_rate':
@@ -932,6 +950,16 @@ class TabbedGUIWorker(QMainWindow):
             if hasattr(self.preferences_panel, 'get_send_rate_preferences'):
                 send_rate_prefs = self.preferences_panel.get_send_rate_preferences()
                 prefs.setdefault('network', {}).update(send_rate_prefs)
+
+            if hasattr(
+                self.preferences_panel,
+                'get_sensor_calibration_preferences',
+            ):
+                sensor_calibration = (
+                    self.preferences_panel.get_sensor_calibration_preferences()
+                )
+                if sensor_calibration is not None:
+                    prefs['sensor_calibration'] = sensor_calibration
             
             # Save GUI state
             prefs['gui'] = {

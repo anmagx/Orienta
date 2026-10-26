@@ -7,6 +7,7 @@ Uses atomic writes to prevent corruption if process is killed during save.
 
 import configparser
 import logging
+import math
 import os
 from typing import Any, Dict, Optional
 
@@ -16,6 +17,15 @@ from src.util.paths import get_app_data_dir
 
 class PreferencesManager:
     """Manages loading and saving preferences to config file."""
+
+    SENSOR_CALIBRATION_KEYS = (
+        ("gyro_x_dps", "gyro", 0),
+        ("gyro_y_dps", "gyro", 1),
+        ("gyro_z_dps", "gyro", 2),
+        ("accel_x_g", "accel", 0),
+        ("accel_y_g", "accel", 1),
+        ("accel_z_g", "accel", 2),
+    )
 
     def __init__(self, config_dir: Optional[str] = None):
         """
@@ -166,3 +176,70 @@ class PreferencesManager:
     def set_theme(self, theme_name: str) -> bool:
         """Set theme preference."""
         return self.set("theme", theme_name)
+
+    def get_sensor_calibration(self) -> Optional[Dict[str, tuple[float, float, float]]]:
+        """Load and validate persisted gyro and accelerometer offsets."""
+        section = self.load().get("sensor_calibration")
+        if section is None:
+            return None
+
+        try:
+            return self.sensor_calibration_from_preferences(section)
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            logging.warning(
+                "Ignoring invalid sensor calibration in %s: %s",
+                self.config_path,
+                error,
+            )
+            return None
+
+    @classmethod
+    def sensor_calibration_from_preferences(
+        cls, section: Dict[str, Any]
+    ) -> Dict[str, tuple[float, float, float]]:
+        """Parse a sensor-calibration preferences section."""
+        if not isinstance(section, dict):
+            raise ValueError("Sensor calibration preferences must be a mapping")
+        values = {"gyro": [None, None, None], "accel": [None, None, None]}
+        for key, sensor, axis in cls.SENSOR_CALIBRATION_KEYS:
+            value = float(section[key])
+            if not math.isfinite(value):
+                raise ValueError(f"{key} must be finite")
+            limit = 5.0 if sensor == "gyro" else 1.0
+            if abs(value) > limit:
+                raise ValueError(f"{key} exceeds the supported calibration range")
+            values[sensor][axis] = value
+        return {sensor: tuple(axes) for sensor, axes in values.items()}
+
+    @classmethod
+    def sensor_calibration_preferences(
+        cls, calibration: Dict[str, Any]
+    ) -> Dict[str, str]:
+        """Format a validated calibration for the preferences file section."""
+        if not isinstance(calibration, dict):
+            raise ValueError("Sensor calibration must be a mapping")
+
+        normalized = {}
+        for sensor in ("gyro", "accel"):
+            values = calibration.get(sensor)
+            if not isinstance(values, (list, tuple)) or len(values) != 3:
+                raise ValueError(
+                    f"Sensor calibration {sensor} offsets must contain three values"
+                )
+            converted = []
+            for value in values:
+                number = float(value)
+                if not math.isfinite(number):
+                    raise ValueError("Sensor calibration offsets must be finite")
+                limit = 5.0 if sensor == "gyro" else 1.0
+                if abs(number) > limit:
+                    raise ValueError(
+                        f"Sensor calibration {sensor} offset exceeds its supported range"
+                    )
+                converted.append(number)
+            normalized[sensor] = converted
+
+        return {
+            key: format(normalized[sensor][axis], ".9g")
+            for key, sensor, axis in cls.SENSOR_CALIBRATION_KEYS
+        }

@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from src.workers.fusion_wrk import QuaternionComplementaryFilter, run_worker
 from src.workers.gui_qt.panels.orientation_panel import OrientationPanelQt
@@ -170,7 +170,7 @@ class ResetOrientationToggleFollowTests(unittest.TestCase):
             preferences.orientation_hold_toggle_checkbox.text(),
         )
         self.assertIn(
-            "Disengage Drift Correction",
+            "Center Assist Disengage",
             preferences.disengage_toggle_checkbox.text(),
         )
         preferences.reset_orientation_instantaneous_checkbox.setChecked(True)
@@ -242,9 +242,108 @@ class ResetOrientationToggleFollowTests(unittest.TestCase):
                 Queue(),
             )
 
-        self.assertAlmostEqual(filter_instance.recenter_offset_yaw, 37.0)
-        self.assertAlmostEqual(filter_instance.recenter_offset_pitch, 14.0)
-        self.assertAlmostEqual(filter_instance.recenter_offset_roll, -12.0)
+        for actual, expected in zip(
+            filter_instance.output_origin, (37.0, 14.0, -12.0)
+        ):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_recenter_resets_native_output_filter_history(self):
+        filter_instance = QuaternionComplementaryFilter()
+        control_queue = Queue()
+        control_queue.put(('recenter_orientation_to_current',))
+        output_queue = Queue()
+
+        class StopAfterOneSample:
+            def __init__(self):
+                self.checks = 0
+
+            def is_set(self):
+                self.checks += 1
+                return self.checks > 4
+
+        def get_sample(queue, timeout=0.0, default=None):
+            if queue is control_queue:
+                try:
+                    command = queue.get_nowait()
+                except Exception:
+                    return default
+                if command[0] == 'recenter_orientation_to_current':
+                    recentered[0] = True
+                return command
+            if timeout == 0.05 and recentered[0] and not sample_sent[0]:
+                sample_sent[0] = True
+                return '0.004,0,0,1,0,0,0'
+            return default
+
+        recentered = [False]
+        sample_sent = [False]
+        with patch(
+            'src.workers.fusion_wrk.QuaternionComplementaryFilter',
+            return_value=filter_instance,
+        ), patch(
+            'src.workers.fusion_wrk.safe_queue_get',
+            side_effect=get_sample,
+        ), patch(
+            'src.workers.fusion_wrk.time.sleep'
+        ), patch(
+            'src.util.timing_utils.enable_high_res_timer'
+        ), patch(
+            'src.util.timing_utils.disable_high_res_timer'
+        ), patch(
+            'src.util.timing_utils.raise_process_priority'
+        ):
+            run_worker(
+                Queue(),
+                output_queue,
+                Queue(),
+                control_queue,
+                Queue(),
+                StopAfterOneSample(),
+                Queue(),
+            )
+
+        batch = output_queue.get_nowait()
+        self.assertTrue(batch[0].reset_filter)
+
+    def test_calibration_control_requests_sensor_biases(self):
+        with patch(
+            'src.workers.gui_qt.panels.orientation_panel.QMessageBox.question',
+            return_value=QMessageBox.Yes,
+        ):
+            self.panel._on_recalibrate()
+
+        self.assertEqual(
+            self.control_queue.get_nowait(),
+            ('recalibrate_sensor_bias',),
+        )
+        self.assertEqual(self.panel.recal_button.text(), "Calibrate Sensor Biases")
+        self.assertIn("+Z axis facing up", self.panel.recal_button.toolTip())
+
+    def test_sensor_calibration_confirmation_can_be_cancelled(self):
+        with patch(
+            'src.workers.gui_qt.panels.orientation_panel.QMessageBox.question',
+            return_value=QMessageBox.No,
+        ):
+            self.panel._on_recalibrate()
+
+        self.assertTrue(self.control_queue.empty())
+
+    def test_center_assist_disengage_keeps_shortcut_visible_and_uses_hold_style(self):
+        self.panel._set_disengage_shortcut("f9", "F9")
+        self.panel._disengage_on()
+
+        button = self.panel.disengage_btn
+        self.assertEqual(button.text(), "Center Assist Disengaged")
+        self.assertEqual(button._sub, "F9")
+        self.assertEqual(button.property("status"), "warning")
+        self.assertIn("Release this button", button.toolTip())
+        self.assertFalse(button.text().startswith("🔴"))
+
+        self.panel._disengage_off()
+
+        self.assertEqual(button.text(), "Center Assist Disengage")
+        self.assertEqual(button._sub, "F9")
+        self.assertEqual(button.property("status"), "")
 
 
 if __name__ == "__main__":

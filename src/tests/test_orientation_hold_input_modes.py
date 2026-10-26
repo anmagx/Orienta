@@ -51,12 +51,69 @@ class OrientationHoldInputModeTests(unittest.TestCase):
 
         self.panel.update_calibration_status(True)
         self.assertEqual(self.panel.recal_button.property("status"), "")
+        self.assertEqual(self.panel.calib_status_label.text(), "Sensor: Calibrated")
+
+        self.panel.update_calibration_source("stored")
+        self.assertEqual(
+            self.panel.calib_status_label.text(),
+            "Sensor: calibrated (stored)",
+        )
+
+        self.panel.update_calibration_source("fresh")
+        self.assertEqual(self.panel.calib_status_label.text(), "Sensor: Calibrated")
 
         self.panel.update_calibration_status(False)
         self.assertEqual(self.panel.recal_button.property("status"), "warning")
+        self.assertEqual(
+            self.panel.calib_status_label.text(),
+            "Sensor: Not calibrated",
+        )
 
         self.panel.update_processing_status(False)
         self.assertEqual(self.panel.recal_button.property("status"), "disabled")
+
+    def test_top_indicators_stay_grey_until_valid_sensor_data_flows(self):
+        self.panel.update_serial_connection_status("connected")
+        self.panel.update_processing_status("inactive")
+        self.panel.update_calibration_status(True)
+        self.panel.update_drift_status(True)
+        self.panel.update_device_status(True)
+
+        indicators = (
+            self.panel.device_status_label,
+            self.panel.calib_status_label,
+            self.panel.drift_status_label,
+        )
+        for indicator in indicators:
+            self.assertEqual(indicator.property("status"), "disabled")
+
+        self.panel.update_processing_status("active")
+
+        self.assertEqual(
+            self.panel.device_status_label.property("status"),
+            "enabled",
+        )
+        self.assertEqual(
+            self.panel.calib_status_label.property("status"),
+            "enabled",
+        )
+        self.assertEqual(
+            self.panel.drift_status_label.property("status"),
+            "enabled",
+        )
+
+    def test_top_indicators_grey_again_when_valid_sensor_data_stops(self):
+        self.panel.update_calibration_status(True)
+        self.panel.update_drift_status(True)
+        self.panel.update_device_status(True)
+        self.panel.update_processing_status("inactive")
+
+        for indicator in (
+            self.panel.device_status_label,
+            self.panel.calib_status_label,
+            self.panel.drift_status_label,
+        ):
+            self.assertEqual(indicator.property("status"), "disabled")
 
     def test_shortcut_holds_until_key_release_by_default(self):
         self.input_response_queue.put(

@@ -90,7 +90,6 @@ class ConnectionPanelQt(BasePanelQt):
             "serial port may reset its device."
         )
         self.detect_button.clicked.connect(self.detect_sensor)
-        serial_row.addWidget(self.detect_button)
         layout.addLayout(serial_row)
 
         baud_row = QHBoxLayout()
@@ -120,8 +119,17 @@ class ConnectionPanelQt(BasePanelQt):
             QSizePolicy.Fixed,
         )
         self.sensor_settings_button.clicked.connect(self._open_sensor_settings)
+        self.detect_button.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Fixed,
+        )
+        sensor_actions_row = QHBoxLayout()
+        sensor_actions_row.setSpacing(DEFAULT_SPACING)
+        sensor_actions_row.setContentsMargins(0, 0, 0, 0)
+        sensor_actions_row.addWidget(self.detect_button)
+        sensor_actions_row.addWidget(self.sensor_settings_button)
         layout.addStretch()
-        layout.addWidget(self.sensor_settings_button)
+        layout.addLayout(sensor_actions_row)
         layout.addWidget(self.toggle_button)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 

@@ -6,6 +6,7 @@ import time
 from queue import Empty, Full
 import threading
 import math
+from statistics import median
 
 from src.config.config import (
      ACCEL_THRESHOLD,
@@ -16,7 +17,8 @@ from src.config.config import (
      ACCEL_TRUST_SIGMA_G,
      ACCEL_TRUST_GYRO_RATE_DPS,
     ACCEL_TRUST_HOLD_S,
-    ACCEL_INNOVATION_SLEW_SIGMA,
+     ACCEL_INNOVATION_SLEW_CUTOFF_HZ,
+     ACCEL_INNOVATION_SLEW_SIGMA,
     ACCEL_CORRECTION_MAX_DPS,
      GYRO_BIAS_TRACKING_GAIN,
      GYRO_BIAS_TRACKING_LIMIT_DPS,
@@ -24,7 +26,21 @@ from src.config.config import (
     GYRO_BIAS_TRACKING_SETTLE_S,
      ALPHA_DRIFT_CORRECTION,
         GYRO_BIAS_CAL_SAMPLES,
-    LEVEL_CAL_SAMPLES,
+    GYRO_BIAS_CAL_MAX_ROBUST_STDDEV_DPS,
+    ACCEL_BIAS_CAL_MAX_ROBUST_STDDEV_G,
+    ACCEL_BIAS_CAL_MAX_LEVEL_ANGLE_DEG,
+    ACCEL_BIAS_CAL_OUTLIER_SIGMAS,
+    ACCEL_BIAS_CAL_OUTLIER_FLOOR_G,
+    GYRO_BIAS_CAL_OUTLIER_SIGMAS,
+    GYRO_BIAS_CAL_OUTLIER_FLOOR_DPS,
+    GYRO_BIAS_CAL_TIMEOUT_S,
+    DEFAULT_YAW_BIAS_TRACKING_ENABLED,
+    YAW_BIAS_TRACKING_DWELL_S,
+    YAW_BIAS_TRACKING_TIME_CONSTANT_S,
+    YAW_BIAS_TRACKING_MAX_OFFSET_DPS,
+    YAW_BIAS_TRACKING_MEAN_RATE_DPS,
+    YAW_BIAS_TRACKING_MEAN_SPEED_DPS,
+    YAW_BIAS_TRACKING_MIN_SAMPLES,
     STATIONARY_GYRO_THRESHOLD,
     STATIONARY_DEBOUNCE_S,
      DT_MIN,
@@ -45,6 +61,235 @@ from src.util.error_utils import (
     normalize_angle
 )
 from src.util.tracking_sample import TrackingSample
+
+
+def _estimate_gyro_bias(samples):
+    """Estimate raw gyro bias while rejecting unstable axes and isolated outliers."""
+    if not samples:
+        raise ValueError("Gyro bias calibration requires stationary samples")
+
+    estimates = []
+    for axis, name in enumerate(("X", "Y", "Z")):
+        values = [sample[axis] for sample in samples]
+        axis_median = median(values)
+        deviations = [abs(value - axis_median) for value in values]
+        robust_stddev = 1.4826 * median(deviations)
+        if robust_stddev > GYRO_BIAS_CAL_MAX_ROBUST_STDDEV_DPS:
+            raise ValueError(
+                f"{name}-axis gyro readings were unstable "
+                f"(robust deviation {robust_stddev:.3f} deg/s)"
+            )
+
+        outlier_limit = max(
+            GYRO_BIAS_CAL_OUTLIER_SIGMAS * robust_stddev,
+            GYRO_BIAS_CAL_OUTLIER_FLOOR_DPS,
+        )
+        inliers = [
+            value for value in values
+            if abs(value - axis_median) <= outlier_limit
+        ]
+        if not inliers:
+            raise ValueError(f"No reliable {name}-axis gyro samples")
+        estimates.append(math.fsum(inliers) / len(inliers))
+
+    return tuple(estimates)
+
+
+def _estimate_accel_bias(samples):
+    """Estimate accel offsets for a sensor held level with +Z upward."""
+    if not samples:
+        raise ValueError("Sensor bias calibration requires stationary samples")
+
+    estimates = []
+    for axis, name in enumerate(("X", "Y", "Z")):
+        values = [sample[axis] for sample in samples]
+        axis_median = median(values)
+        deviations = [abs(value - axis_median) for value in values]
+        robust_stddev = 1.4826 * median(deviations)
+        if robust_stddev > ACCEL_BIAS_CAL_MAX_ROBUST_STDDEV_G:
+            raise ValueError(
+                f"{name}-axis accelerometer readings were unstable "
+                f"(robust deviation {robust_stddev:.4f} g)"
+            )
+
+        outlier_limit = max(
+            ACCEL_BIAS_CAL_OUTLIER_SIGMAS * robust_stddev,
+            ACCEL_BIAS_CAL_OUTLIER_FLOOR_G,
+        )
+        inliers = [
+            value for value in values
+            if abs(value - axis_median) <= outlier_limit
+        ]
+        if not inliers:
+            raise ValueError(f"No reliable {name}-axis accelerometer samples")
+        estimates.append(math.fsum(inliers) / len(inliers))
+
+    level_angle = math.degrees(math.atan2(
+        math.hypot(estimates[0], estimates[1]),
+        estimates[2],
+    ))
+    if estimates[2] <= 0.0 or level_angle > ACCEL_BIAS_CAL_MAX_LEVEL_ANGLE_DEG:
+        raise ValueError(
+            "Accelerometer reference is not level with +Z upward "
+            f"(measured gravity angle {level_angle:.1f} degrees)"
+        )
+
+    return estimates[0], estimates[1], estimates[2] - 1.0
+
+
+class SensorBiasCalibration:
+    """Collect stable gyro and known-level accelerometer samples."""
+
+    def __init__(self, sample_count, started_at):
+        if sample_count <= 0:
+            raise ValueError("Sensor bias calibration sample count must be positive")
+        self.sample_count = sample_count
+        self.started_at = started_at
+        self.samples = []
+        self.last_timestamp = None
+        self.rejection_reason = None
+        self.accepted_sample_count = 0
+        self.rejected_accel_count = 0
+        self.rejected_gyro_count = 0
+        self.rejected_timestamp_count = 0
+        self.malformed_sample_count = 0
+        self.timestamp_gap_count = 0
+        self.unstable_window_count = 0
+
+    def add_sample(self, timestamp, accel, gyro):
+        """Return the complete raw sample window when it passes stability checks."""
+        if self.last_timestamp is not None:
+            dt = timestamp - self.last_timestamp
+            if dt < DT_MIN:
+                self.rejected_timestamp_count += 1
+                self.last_timestamp = timestamp
+                return None
+            if dt > DT_MAX:
+                self.timestamp_gap_count += 1
+        self.last_timestamp = timestamp
+
+        accel_mag = math.sqrt(sum(component * component for component in accel))
+        gyro_mag = math.sqrt(sum(component * component for component in gyro))
+        if accel_mag < 0.01 or abs(accel_mag - 1.0) >= ACCEL_THRESHOLD:
+            self.rejected_accel_count += 1
+            return None
+        if gyro_mag >= STATIONARY_GYRO_THRESHOLD:
+            self.rejected_gyro_count += 1
+            return None
+
+        self.samples.append((accel, gyro))
+        self.accepted_sample_count += 1
+        if len(self.samples) < self.sample_count:
+            return None
+
+        try:
+            _estimate_gyro_bias([sample[1] for sample in self.samples])
+            _estimate_accel_bias([sample[0] for sample in self.samples])
+        except ValueError as error:
+            self.rejection_reason = str(error)
+            self.unstable_window_count += 1
+            self.samples.clear()
+            return None
+        return tuple(self.samples)
+
+    def has_timed_out(self, now):
+        return now - self.started_at >= GYRO_BIAS_CAL_TIMEOUT_S
+
+    def timeout_message(self):
+        message = (
+            f"Collected {self.accepted_sample_count} qualifying samples "
+            f"(need {self.sample_count}); rejected {self.rejected_accel_count} "
+            f"acceleration, {self.rejected_gyro_count} gyro, "
+            f"{self.rejected_timestamp_count} timestamp, and "
+            f"{self.malformed_sample_count} malformed samples; observed "
+            f"{self.timestamp_gap_count} timestamp gaps and "
+            f"{self.unstable_window_count} unstable windows"
+        )
+        if self.rejection_reason:
+            message += f"; last stability rejection: {self.rejection_reason}"
+        return message
+
+    def note_malformed_sample(self):
+        self.malformed_sample_count += 1
+
+
+def _finish_sensor_bias_calibration(
+    filter_instance, status_queue, log_queue, samples=None, failure_reason=None
+):
+    from src.util.log_utils import log_info, log_warning
+
+    if samples is not None:
+        filter_instance.calibrate_sensor_bias(samples)
+        calibration = {
+            "gyro": (
+                filter_instance.gyro_bias_roll,
+                filter_instance.gyro_bias_pitch,
+                filter_instance.gyro_bias_yaw,
+            ),
+            "accel": (
+                filter_instance.accel_bias_x,
+                filter_instance.accel_bias_y,
+                filter_instance.accel_bias_z,
+            ),
+        }
+        if not safe_queue_put(
+            status_queue,
+            ("sensor_calibration_data", calibration),
+            timeout=QUEUE_PUT_TIMEOUT,
+        ):
+            log_warning(
+                log_queue,
+                "Fusion Worker",
+                "Could not publish sensor calibration values to the GUI",
+            )
+        if not safe_queue_put(
+            status_queue,
+            ("sensor_calibration_source", "fresh"),
+            timeout=QUEUE_PUT_TIMEOUT,
+        ):
+            log_warning(
+                log_queue,
+                "Fusion Worker",
+                "Could not publish sensor calibration source to the GUI",
+            )
+        log_info(
+            log_queue,
+            "Fusion Worker",
+            f"Runtime sensor biases recalibrated from {len(samples)} stable samples: "
+            f"X={filter_instance.gyro_bias_roll:.6f}, "
+            f"Y={filter_instance.gyro_bias_pitch:.6f}, "
+            f"Z={filter_instance.gyro_bias_yaw:.6f} deg/s; "
+            f"accel X={filter_instance.accel_bias_x:.5f}, "
+            f"Y={filter_instance.accel_bias_y:.5f}, "
+            f"Z={filter_instance.accel_bias_z:.5f} g",
+        )
+    else:
+        log_warning(
+            log_queue,
+            "Fusion Worker",
+            f"Sensor bias calibration failed; previous biases were retained: {failure_reason}",
+        )
+        if not safe_queue_put(
+            status_queue,
+            ("sensor_calibration_failed", failure_reason),
+            timeout=QUEUE_PUT_TIMEOUT,
+        ):
+            log_warning(
+                log_queue,
+                "Fusion Worker",
+                "Could not notify the GUI that sensor bias calibration failed",
+            )
+
+    if not safe_queue_put(
+        status_queue, ("sensor_calibrating", False), timeout=QUEUE_PUT_TIMEOUT
+    ):
+        log_warning(log_queue, "Fusion Worker", "Could not publish sensor calibration completion")
+    if not safe_queue_put(
+        status_queue,
+        ("sensor_calibrated", bool(filter_instance.sensor_calibrated)),
+        timeout=QUEUE_PUT_TIMEOUT,
+    ):
+        log_warning(log_queue, "Fusion Worker", "Could not publish sensor calibration state")
 
 
 def _publish_output_pose(output_queue, pose):
@@ -98,17 +343,15 @@ class QuaternionComplementaryFilter:
         self.gyro_bias_roll = 0.0
         self.gyro_bias_pitch = 0.0
         self.gyro_bias_yaw = 0.0
-        # Center offsets (degrees) applied to pitch/roll to correct non-level rest position
-        self.center_offset_pitch = 0.0
-        self.center_offset_roll = 0.0
-        # Allow yaw offset placeholder for completeness
-        self.center_offset_yaw = 0.0
-        self.recenter_offset_yaw = 0.0
-        self.recenter_offset_pitch = 0.0
-        self.recenter_offset_roll = 0.0
-        # mark if a center offset has been set
-        self.center_calibrated = False
-        self.gyro_calibrated = False
+        self.yaw_bias_tracking_enabled = DEFAULT_YAW_BIAS_TRACKING_ENABLED
+        self._yaw_bias_tracking_reference = 0.0
+        self._yaw_bias_tracking_stationary_start = None
+        self._yaw_bias_tracking_samples = []
+        self.accel_bias_x = 0.0
+        self.accel_bias_y = 0.0
+        self.accel_bias_z = 0.0
+        self.output_origin = (0.0, 0.0, 0.0)
+        self.sensor_calibrated = False
         self._stationary_start = None
         self._last_stationary = False
         self._drift_correction_start = None
@@ -207,24 +450,13 @@ class QuaternionComplementaryFilter:
 
     def recenter_to_current(self):
         """Set the output origin to the filter's current full orientation."""
-        yaw, pitch, roll = self._euler_from_quat(self.q)
-        self.recenter_offset_yaw = normalize_angle(
-            yaw - self.center_offset_yaw
-        )
-        self.recenter_offset_pitch = normalize_angle(
-            pitch - self.center_offset_pitch
-        )
-        self.recenter_offset_roll = normalize_angle(
-            roll - self.center_offset_roll
-        )
+        self.output_origin = self._euler_from_quat(self.q)
         self._drift_correction_start = None
-        return yaw, pitch, roll
+        return self.output_origin
 
-    def clear_recenter_offsets(self):
-        """Restore the calibrated center offsets as the output origin."""
-        self.recenter_offset_yaw = 0.0
-        self.recenter_offset_pitch = 0.0
-        self.recenter_offset_roll = 0.0
+    def clear_output_origin(self):
+        """Restore the zero-angle output origin."""
+        self.output_origin = (0.0, 0.0, 0.0)
 
     def _slerp(self, a, b, t):
         """Spherical linear interpolation between quaternions for smoother drift correction.
@@ -363,21 +595,158 @@ class QuaternionComplementaryFilter:
         )
 
     def calibrate_gyro_bias(self, samples):
-        """Estimate raw sensor X/Y/Z biases from accepted stationary samples."""
+        """Compatibility helper to replace gyro biases from raw gyro samples."""
         if not samples:
             raise ValueError("Gyro bias calibration requires stationary samples")
-        biases = tuple(
-            math.fsum(sample[axis] for sample in samples) / len(samples)
+        biases = _estimate_gyro_bias(samples)
+        self.gyro_bias_roll, self.gyro_bias_pitch, self.gyro_bias_yaw = biases
+        self._yaw_bias_tracking_reference = self.gyro_bias_yaw
+        self._reset_yaw_bias_tracking_window()
+        self._reset_tilt_state()
+
+    def calibrate_sensor_bias(self, samples):
+        """Atomically replace gyro and level-reference accelerometer offsets."""
+        if not samples:
+            raise ValueError("Sensor bias calibration requires stationary samples")
+        gyro_bias = _estimate_gyro_bias([sample[1] for sample in samples])
+        accel_bias = _estimate_accel_bias([sample[0] for sample in samples])
+        (
+            self.gyro_bias_roll,
+            self.gyro_bias_pitch,
+            self.gyro_bias_yaw,
+        ) = gyro_bias
+        self.accel_bias_x, self.accel_bias_y, self.accel_bias_z = accel_bias
+        self._yaw_bias_tracking_reference = self.gyro_bias_yaw
+        self._reset_yaw_bias_tracking_window()
+        self._reset_tilt_state()
+        self.sensor_calibrated = True
+
+    def reset_sensor_biases(self):
+        """Clear all manually estimated gyro and accelerometer offsets."""
+        self.gyro_bias_roll = 0.0
+        self.gyro_bias_pitch = 0.0
+        self.gyro_bias_yaw = 0.0
+        self.accel_bias_x = 0.0
+        self.accel_bias_y = 0.0
+        self.accel_bias_z = 0.0
+        self._yaw_bias_tracking_reference = 0.0
+        self._reset_yaw_bias_tracking_window()
+        self._reset_tilt_state(reset_bias=True)
+        self.sensor_calibrated = False
+
+    def restore_sensor_biases(self, gyro_bias, accel_bias):
+        """Restore validated offsets from persisted calibration preferences."""
+        if (
+            not isinstance(gyro_bias, (list, tuple))
+            or len(gyro_bias) != 3
+            or not isinstance(accel_bias, (list, tuple))
+            or len(accel_bias) != 3
+        ):
+            raise ValueError("Sensor biases must contain three gyro and accel values")
+
+        gyro_values = tuple(float(value) for value in gyro_bias)
+        accel_values = tuple(float(value) for value in accel_bias)
+        if not all(math.isfinite(value) for value in gyro_values + accel_values):
+            raise ValueError("Sensor biases must be finite")
+        if any(abs(value) > 5.0 for value in gyro_values):
+            raise ValueError("Persisted gyro bias exceeds calibration limits")
+        if any(abs(value) > 1.0 for value in accel_values):
+            raise ValueError("Persisted accelerometer bias exceeds calibration limits")
+
+        (
+            self.gyro_bias_roll,
+            self.gyro_bias_pitch,
+            self.gyro_bias_yaw,
+        ) = gyro_values
+        self.accel_bias_x, self.accel_bias_y, self.accel_bias_z = accel_values
+        self._yaw_bias_tracking_reference = self.gyro_bias_yaw
+        self._reset_yaw_bias_tracking_window()
+        self._reset_tilt_state()
+        self.sensor_calibrated = True
+
+    def _reset_yaw_bias_tracking_window(self):
+        self._yaw_bias_tracking_stationary_start = None
+        self._yaw_bias_tracking_samples = []
+
+    def set_yaw_bias_tracking(self, enabled):
+        """Enable stationary-only, rate-limited adaptation of the yaw gyro bias."""
+        self.yaw_bias_tracking_enabled = bool(enabled)
+        self._reset_yaw_bias_tracking_window()
+
+    def _update_yaw_bias_tracking(
+        self, raw_gyro, corrected_gyro, accel_ok, is_stationary, timestamp
+    ):
+        if (
+            not self.yaw_bias_tracking_enabled
+            or not is_stationary
+            or not accel_ok
+        ):
+            self._reset_yaw_bias_tracking_window()
+            return
+
+        if self._yaw_bias_tracking_stationary_start is None:
+            self._yaw_bias_tracking_stationary_start = timestamp
+            self._yaw_bias_tracking_samples = []
+
+        self._yaw_bias_tracking_samples.append((corrected_gyro, raw_gyro))
+        window_duration = (
+            timestamp - self._yaw_bias_tracking_stationary_start
+        )
+        if window_duration < YAW_BIAS_TRACKING_DWELL_S:
+            return
+
+        samples = self._yaw_bias_tracking_samples
+        self._reset_yaw_bias_tracking_window()
+        if len(samples) < YAW_BIAS_TRACKING_MIN_SAMPLES:
+            return
+
+        mean_rate = tuple(
+            math.fsum(sample[0][axis] for sample in samples) / len(samples)
             for axis in range(3)
         )
-        self.gyro_bias_roll, self.gyro_bias_pitch, self.gyro_bias_yaw = biases
-        self._reset_tilt_state()
+        mean_rate_magnitude = math.sqrt(sum(rate * rate for rate in mean_rate))
+        mean_speed = math.fsum(
+            math.sqrt(sum(rate * rate for rate in sample[0]))
+            for sample in samples
+        ) / len(samples)
+        if (
+            mean_rate_magnitude > YAW_BIAS_TRACKING_MEAN_RATE_DPS
+            or mean_speed > YAW_BIAS_TRACKING_MEAN_SPEED_DPS
+        ):
+            return
+
+        try:
+            target_bias = _estimate_gyro_bias(
+                [sample[1] for sample in samples]
+            )[2]
+        except ValueError:
+            return
+
+        max_offset = YAW_BIAS_TRACKING_MAX_OFFSET_DPS
+        target_bias = max(
+            self._yaw_bias_tracking_reference - max_offset,
+            min(
+                self._yaw_bias_tracking_reference + max_offset,
+                target_bias,
+            ),
+        )
+        alpha = -math.expm1(
+            -window_duration / YAW_BIAS_TRACKING_TIME_CONSTANT_S
+        )
+        self.gyro_bias_yaw += alpha * (target_bias - self.gyro_bias_yaw)
 
     def _correct_gyro(self, gyro):
         return (
             gyro[0] - self.gyro_bias_roll,
             gyro[1] - self.gyro_bias_pitch,
             gyro[2] - self.gyro_bias_yaw,
+        )
+
+    def _correct_accel(self, accel):
+        return (
+            accel[0] - self.accel_bias_x,
+            accel[1] - self.accel_bias_y,
+            accel[2] - self.accel_bias_z,
         )
 
     def _accel_to_rp(self, accel):
@@ -392,6 +761,8 @@ class QuaternionComplementaryFilter:
         self._tilt_rate_envelope = 0.0
         self._tilt_err_lp2 = [0.0, 0.0, 0.0]
         self._tilt_previous_error = None
+        self._tilt_slew_error_lp = [0.0, 0.0, 0.0]
+        self._tilt_slew_previous_error = None
         self._tilt_slew_envelope = 0.0
         self._tilt_bias_settle_s = 0.0
         if reset_bias or not hasattr(self, '_tilt_bias'):
@@ -408,7 +779,7 @@ class QuaternionComplementaryFilter:
             dq = (1.0, 0.5 * rx, 0.5 * ry, 0.5 * rz)
         return self._quat_normalize(self._quat_mul(q, dq))
 
-    def _tilt_correction_rates(self, accel, accel_mag, gyro_mag_dps, dt, learn_bias=True):
+    def _tilt_correction_rates(self, accel, accel_mag, gyro_mag_dps, dt):
         """Return body-rate corrections (rad/s) that pull pitch/roll toward accel.
 
         The error between measured gravity and the gyro-predicted gravity
@@ -431,6 +802,8 @@ class QuaternionComplementaryFilter:
             self._tilt_err_lp1 = [0.0, 0.0, 0.0]
             self._tilt_err_lp2 = [0.0, 0.0, 0.0]
             self._tilt_previous_error = None
+            self._tilt_slew_error_lp = [0.0, 0.0, 0.0]
+            self._tilt_slew_previous_error = None
             self._tilt_bias_settle_s = 0.0
             return 0.0, 0.0, 0.0
 
@@ -442,11 +815,27 @@ class QuaternionComplementaryFilter:
         ax, ay, az = (component / accel_mag for component in accel)
         error = (ay*vz - az*vy, az*vx - ax*vz, ax*vy - ay*vx)
         raw_error = error
-        previous_error = self._tilt_previous_error
         self._tilt_previous_error = raw_error
-        slew = 0.0 if previous_error is None else math.sqrt(sum(
+        # Differentiate a low-passed innovation so sensor noise is not
+        # amplified into a false-motion signal at the IMU sample rate.
+        previous_slew_error = self._tilt_slew_previous_error
+        if previous_slew_error is None:
+            self._tilt_slew_error_lp = list(raw_error)
+        else:
+            slew_k = -math.expm1(
+                -2.0 * math.pi * ACCEL_INNOVATION_SLEW_CUTOFF_HZ * dt
+            )
+            for i in range(3):
+                self._tilt_slew_error_lp[i] += slew_k * (
+                    raw_error[i] - self._tilt_slew_error_lp[i]
+                )
+        filtered_slew_error = tuple(self._tilt_slew_error_lp)
+        self._tilt_slew_previous_error = filtered_slew_error
+        slew = 0.0 if previous_slew_error is None else math.sqrt(sum(
             ((current - previous) / dt) ** 2
-            for current, previous in zip(raw_error, previous_error)
+            for current, previous in zip(
+                filtered_slew_error, previous_slew_error
+            )
         ))
         decay = math.exp(-dt / self.accel_trust_hold_s) if self.accel_trust_hold_s > 0 else 0.0
         self._tilt_slew_envelope = max(slew, self._tilt_slew_envelope * decay)
@@ -475,8 +864,7 @@ class QuaternionComplementaryFilter:
         gains = (gain_roll, gain_pitch, 0.5 * (gain_roll + gain_pitch))
         error_mag = math.sqrt(sum(component * component for component in raw_error))
         learn_bias = (
-            learn_bias
-            and weight > 0.95
+            weight > 0.95
             and gyro_mag_dps < self._gyro_stationary_threshold
             and error_mag < self.gyro_bias_tracking_max_error
         )
@@ -498,6 +886,7 @@ class QuaternionComplementaryFilter:
     def update(self, gyro, accel, timestamp):
         # Gyro-derived Euler rates for output filters; zero unless integrated.
         self.euler_rates = (0.0, 0.0, 0.0)
+        accel = self._correct_accel(accel)
         # Maintain same semantics as ComplementaryFilter.update
         if self.last_time is None:
             try:
@@ -525,6 +914,7 @@ class QuaternionComplementaryFilter:
             if self._orientation_resume_started_at is not None:
                 self._orientation_resume_started_at = timestamp
             self._stationary_start = None
+            self._reset_yaw_bias_tracking_window()
             self._drift_correction_start = None
         if dt <= 0 or dt < DT_MIN:
             y, p, r = self._euler_from_quat(self.q)
@@ -538,6 +928,7 @@ class QuaternionComplementaryFilter:
             self.last_time = timestamp
             self._reset_tilt_state(reset_bias=False)
             self._stationary_start = None
+            self._reset_yaw_bias_tracking_window()
             self._drift_correction_start = None
             y, p, r = self._euler_from_quat(self.q)
             return y, p, r, False, False
@@ -559,8 +950,7 @@ class QuaternionComplementaryFilter:
         # solution; that disagreement must not be learned as gyro bias.
         self.q = self._integrate_body_rates(self.q, wx, wy, wz, dt)
         cx, cy, cz = self._tilt_correction_rates(
-            accel, accel_mag, gyro_mag, dt,
-            learn_bias=self._drift_correction_start is None,
+            accel, accel_mag, gyro_mag, dt
         )
         q = self._integrate_body_rates(
             self.q, cx, cy, cz, dt
@@ -579,6 +969,10 @@ class QuaternionComplementaryFilter:
             self._stationary_start = None
             is_stationary = False
 
+        self._update_yaw_bias_tracking(
+            gyro, (gx, gy, gz), accel_ok, is_stationary, timestamp
+        )
+
         # Helper function for angle differences
         def _angle_diff_fast(a, b):
             """Optimized smallest angle difference using modulo (O(1) vs O(n))."""
@@ -587,17 +981,8 @@ class QuaternionComplementaryFilter:
 
         yaw_est, pitch_est, roll_est = self._euler_from_quat(q)
 
-        # Drift assistance follows the current output origin, including any
-        # user recentering, without changing the stored level-calibration offsets.
-        target_yaw = normalize_angle(
-            self.center_offset_yaw + self.recenter_offset_yaw
-        )
-        target_pitch = normalize_angle(
-            self.center_offset_pitch + self.recenter_offset_pitch
-        )
-        target_roll = normalize_angle(
-            self.center_offset_roll + self.recenter_offset_roll
-        )
+        # Center assistance follows the same output origin used by recentering.
+        target_yaw, target_pitch, target_roll = self.output_origin
         is_near_center = (
             _angle_diff_fast(yaw_est, target_yaw) < self.center_threshold_yaw
             and _angle_diff_fast(pitch_est, target_pitch) < self.center_threshold_pitch
@@ -619,24 +1004,15 @@ class QuaternionComplementaryFilter:
             # either just built from these or decomposed once already).
             current_yaw, current_pitch, current_roll = yaw_est, pitch_est, roll_est
 
-            # Correct relative to the output origin while leaving the
-            # calibrated center offsets unchanged.
+            # Correct yaw only; accelerometer feedback owns pitch and roll.
             rel_yaw = normalize_angle(current_yaw - target_yaw)
-            rel_pitch = normalize_angle(current_pitch - target_pitch)
-            rel_roll = normalize_angle(current_roll - target_roll)
-
-            # Apply gentle per-frame correction toward zero in relative frame
             corrected_rel_yaw = rel_yaw * (1.0 - correction_strength)
-            corrected_rel_pitch = rel_pitch * (1.0 - correction_strength)
-            corrected_rel_roll = rel_roll * (1.0 - correction_strength)
-
-            # Convert back to absolute angles by re-applying the output origin.
             corrected_yaw = normalize_angle(corrected_rel_yaw + target_yaw)
-            corrected_pitch = normalize_angle(corrected_rel_pitch + target_pitch)
-            corrected_roll = normalize_angle(corrected_rel_roll + target_roll)
-
-            # Convert corrected Euler angles back to quaternion
-            q = self._quat_from_euler(corrected_yaw, corrected_pitch, corrected_roll)
+            corrected_pitch = pitch_est
+            corrected_roll = roll_est
+            q = self._quat_from_euler(
+                corrected_yaw, corrected_pitch, corrected_roll
+            )
             drift_active = True
         else:
             # Reset drift correction timer when not correcting
@@ -661,28 +1037,18 @@ class QuaternionComplementaryFilter:
         pitch = normalize_angle(pitch)
         roll = normalize_angle(roll)
 
-        # Apply user/mount center offsets (subtract stored rest offsets)
-        try:
-            yaw = normalize_angle(
-                yaw - self.center_offset_yaw - self.recenter_offset_yaw
-            )
-            pitch = normalize_angle(
-                pitch - self.center_offset_pitch - self.recenter_offset_pitch
-            )
-            roll = normalize_angle(
-                roll - self.center_offset_roll - self.recenter_offset_roll
-            )
-        except Exception:
-            # In case offsets are not numeric for some reason, ignore
-            pass
+        yaw = normalize_angle(yaw - self.output_origin[0])
+        pitch = normalize_angle(pitch - self.output_origin[1])
+        roll = normalize_angle(roll - self.output_origin[2])
 
         return yaw, pitch, roll, drift_active, is_stationary
 
     def reset(self):
         """Reset quaternion orientation to identity (zero rotation)."""
         self.q = (1.0, 0.0, 0.0, 0.0)
-        self.clear_recenter_offsets()
+        self.clear_output_origin()
         self._drift_correction_start = None
+        self._reset_yaw_bias_tracking_window()
         self._reset_tilt_state(reset_bias=False)
     
     
@@ -722,12 +1088,10 @@ def run_worker(
                                             logQueue=logQueue)
 
     filter = _create_filter()
-    # Startup calibration disabled: calibration must be triggered manually
-    # by the GUI (recalibrate_gyro_bias). Inform GUI of current calibration
-    # state (not calibrated) so the UI can reflect it.
+    # Calibration is triggered manually after the sensor is held level and still.
     try:
-        filter.gyro_calibrated = False
-        safe_queue_put(statusQueue, ('gyro_calibrated', False), timeout=QUEUE_PUT_TIMEOUT)
+        filter.sensor_calibrated = False
+        safe_queue_put(statusQueue, ('sensor_calibrated', False), timeout=QUEUE_PUT_TIMEOUT)
         safe_queue_put(statusQueue, ('processing', 'inactive'), timeout=QUEUE_PUT_TIMEOUT)
     except Exception:
         # Best-effort: don't block startup if statusQueue is unavailable
@@ -743,6 +1107,7 @@ def run_worker(
     # Track status values to only send updates when they change
     last_drift_active = None
     last_stationary = None
+    sensor_calibration = None
 
     # Rate-limited counters for malformed/non-finite inputs to avoid log spam
     malformed_counter = 0
@@ -776,6 +1141,18 @@ def run_worker(
             cmd = None
             if loop_iteration % CONTROL_POLL_EVERY_N == 0:
                 cmd = safe_queue_get(controlQueue, timeout=0.0, default=None)
+            if sensor_calibration is not None and sensor_calibration.has_timed_out(
+                time.perf_counter()
+            ):
+                failure_reason = (
+                    f"No stable sensor bias estimate was collected within "
+                    f"{GYRO_BIAS_CAL_TIMEOUT_S:.0f} seconds. "
+                    f"{sensor_calibration.timeout_message()}"
+                )
+                _finish_sensor_bias_calibration(
+                    filter, statusQueue, logQueue, failure_reason=failure_reason
+                )
+                sensor_calibration = None
             if cmd is not None:
                 # Support control commands: 'reset' and ('set_center_threshold', value)
                 # Accept both bare string commands and tuple/list variants
@@ -793,10 +1170,10 @@ def run_worker(
                             "Fusion Worker",
                             f"Invalid orientation hold command: {cmd}",
                         )
-                elif cmd == 'recenter_orientation_to_current' or (
+                elif cmd in ('recenter_orientation_to_current', 'reset_orientation') or (
                     isinstance(cmd, (list, tuple))
                     and len(cmd) >= 1
-                    and cmd[0] == 'recenter_orientation_to_current'
+                    and cmd[0] in ('recenter_orientation_to_current', 'reset_orientation')
                 ):
                     try:
                         drained_samples = 0
@@ -811,15 +1188,12 @@ def run_worker(
                                 continue
                             filter.update(gyro, accel, timestamp)
 
-                        # A pending level calibration belongs to the old
-                        # center; keep this explicit full-pose origin instead.
-                        if hasattr(filter, '_pending_center_cal'):
-                            del filter._pending_center_cal
                         current_pose = filter.recenter_to_current()
+                        output_timing_reset = True
                         log_info(
                             logQueue,
                             "Fusion Worker",
-                            "Output recentered to current pose "
+                            "Output level set to current look-forward pose "
                             f"(yaw={current_pose[0]:.3f}, "
                             f"pitch={current_pose[1]:.3f}, "
                             f"roll={current_pose[2]:.3f})",
@@ -830,74 +1204,36 @@ def run_worker(
                             "Fusion Worker",
                             f"Error recentering output to current pose: {e}",
                         )
-                elif cmd == 'reset_orientation' or (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'reset_orientation'):
-                    # Reset orientation state but preserve calibration/bias.
-                    # Minimal fix: seed filter quaternion from latest accel sample so
-                    # we don't emit a forced one-frame zero that causes a visible pitch jump.
-                    filter.clear_recenter_offsets()
-                    try:
-                        seeded = False
-                        latest_line = None
-                        # Drain a few IMU lines non-blocking to find the freshest sample
-                        try:
-                            sc = 0
-                            while sc < 50:
-                                l = safe_queue_get(serialQueue, timeout=0.0, default=None)
-                                if l is None:
-                                    break
-                                latest_line = l
-                                sc += 1
-                        except Exception:
-                            latest_line = None
-
-                        if latest_line is not None:
-                            try:
-                                ts, accel, gyro = parse_imu_line(latest_line)
-                                ax, ay, az = accel
-                                # Compute accel-derived roll/pitch
-                                accel_roll, accel_pitch = filter._accel_to_rp((ax, ay, az))
-                                # Use current center_offset_yaw as yaw baseline (keeps yaw behavior consistent)
-                                yaw0 = getattr(filter, 'center_offset_yaw', 0.0)
-                                q = filter._quat_from_euler(yaw0, accel_pitch, accel_roll)
-                                filter.q = filter._quat_normalize(q)
-                                filter._reset_tilt_state(reset_bias=False)
-                                filter.last_time = ts
-                                seeded = True
-                                try:
-                                    log_info(logQueue, "Fusion Worker", f"Orientation reset seeded from accel sample at {ts}: pitch={accel_pitch:.3f} roll={accel_roll:.3f}")
-                                except Exception:
-                                    pass
-                            except Exception:
-                                seeded = False
-
-                        if not seeded:
-                            # Fallback to original behavior if no IMU sample available
-                            try:
-                                filter.reset()
-                                # Clear timing baseline so the next update returns a zeroed orientation
-                                filter.last_time = None
-                            except Exception:
-                                try:
-                                    filter.reset()
-                                except Exception:
-                                    pass
-
-                    except Exception:
-                        try:
-                            filter.reset()
-                        except Exception:
-                            pass
-                    log_info(logQueue, "Fusion Worker", "Orientation reset to seeded accel baseline (preserving calibration)")
-                    # Schedule a center-level recalibration to run after reset when the sensor is stationary
-                    try:
-                        filter._pending_center_cal = LEVEL_CAL_SAMPLES
-                        log_info(logQueue, "Fusion Worker", f"Scheduled center recalibration for {LEVEL_CAL_SAMPLES} samples (after recenter)")
-                    except Exception as e:
-                        log_warning(logQueue, "Fusion Worker", f"Failed to schedule center recalibration: {e}")
+                elif cmd == 'calibrate_level' or (
+                    isinstance(cmd, (list, tuple))
+                    and cmd
+                    and cmd[0] == 'calibrate_level'
+                ):
+                    log_warning(
+                        logQueue,
+                        "Fusion Worker",
+                        "Ignoring obsolete calibrate_level command; recenter now sets the output level",
+                    )
                 elif cmd == 'reset' or (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'reset'):
                     # Full reset: reset orientation and clear runtime calibration
+                    if sensor_calibration is not None:
+                        log_info(
+                            logQueue,
+                            "Fusion Worker",
+                            "Cancelling active sensor bias calibration for full reset",
+                        )
+                        if not safe_queue_put(
+                            statusQueue,
+                            ('sensor_calibrating', False),
+                            timeout=QUEUE_PUT_TIMEOUT,
+                        ):
+                            log_warning(
+                                logQueue,
+                                "Fusion Worker",
+                                "Could not publish sensor calibration cancellation",
+                            )
+                        sensor_calibration = None
                     filter.reset()
-                    filter._reset_tilt_state(reset_bias=True)
                     # Clear timing and stationary debounce state so the filter
                     # reinitializes cleanly when new data arrives after a stop/start.
                     try:
@@ -913,14 +1249,20 @@ def run_worker(
                         # Cleared timing baseline logged above; skip console print to reduce noise
                     except Exception:
                         pass
-                    try:
-                        filter.gyro_bias_roll = 0.0
-                        filter.gyro_bias_pitch = 0.0
-                        filter.gyro_bias_yaw = 0.0
-                        filter.gyro_calibrated = False
-                        safe_queue_put(statusQueue, ('gyro_calibrated', False), timeout=QUEUE_PUT_TIMEOUT)
-                    except Exception:
-                        pass
+                    filter.reset_sensor_biases()
+                    for status in (
+                        ('sensor_calibration_source', None),
+                        ('sensor_calibrated', False),
+                        ('sensor_calibration_data', None),
+                    ):
+                        if not safe_queue_put(
+                            statusQueue, status, timeout=QUEUE_PUT_TIMEOUT
+                        ):
+                            log_warning(
+                                logQueue,
+                                "Fusion Worker",
+                                f"Could not publish sensor reset status: {status[0]}",
+                            )
 
                     # Also explicitly clear drift and stationary UI indicators so the
                     # front-end does not continue to show stale 'active' state after stop.
@@ -1057,6 +1399,21 @@ def run_worker(
                             # Logged above; skip console print
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error setting roll inversion: {e}")
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_yaw_bias_tracking':
+                    if isinstance(cmd[1], bool):
+                        filter.set_yaw_bias_tracking(cmd[1])
+                        log_info(
+                            logQueue,
+                            "Fusion Worker",
+                            f"Stationary yaw-bias tracking "
+                            f"{'enabled' if cmd[1] else 'disabled'}",
+                        )
+                    else:
+                        log_warning(
+                            logQueue,
+                            "Fusion Worker",
+                            f"Invalid stationary yaw-bias tracking value: {cmd[1]!r}",
+                        )
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == 'set_stationary_gyro_threshold':
                     try:
                         new_val = float(cmd[1])
@@ -1077,8 +1434,56 @@ def run_worker(
                             log_warning(logQueue, "Fusion Worker", f"Invalid stationary debounce: {new_val}")
                     except Exception as e:
                         log_warning(logQueue, "Fusion Worker", f"Error setting stationary debounce: {e}")
-                elif (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'recalibrate_gyro_bias') or cmd == ('recalibrate_gyro_bias',):
-                    # Runtime recalibration request. Optional second element: number of samples
+                elif (
+                    isinstance(cmd, (list, tuple))
+                    and len(cmd) == 3
+                    and cmd[0] == 'set_sensor_biases'
+                ):
+                    try:
+                        filter.restore_sensor_biases(cmd[1], cmd[2])
+                        calibration = {
+                            "gyro": (
+                                filter.gyro_bias_roll,
+                                filter.gyro_bias_pitch,
+                                filter.gyro_bias_yaw,
+                            ),
+                            "accel": (
+                                filter.accel_bias_x,
+                                filter.accel_bias_y,
+                                filter.accel_bias_z,
+                            ),
+                        }
+                        for status in (
+                            ('sensor_calibration_source', 'stored'),
+                            ('sensor_calibrated', True),
+                            ('sensor_calibration_data', calibration),
+                        ):
+                            if not safe_queue_put(
+                                statusQueue, status, timeout=QUEUE_PUT_TIMEOUT
+                            ):
+                                log_warning(
+                                    logQueue,
+                                    "Fusion Worker",
+                                    "Could not notify the GUI about restored "
+                                    f"sensor calibration: {status[0]}",
+                                )
+                        log_info(
+                            logQueue,
+                            "Fusion Worker",
+                            "Restored persisted gyro and accelerometer calibration",
+                        )
+                    except (TypeError, ValueError, OverflowError) as error:
+                        log_warning(
+                            logQueue,
+                            "Fusion Worker",
+                            f"Ignoring invalid persisted sensor calibration: {error}",
+                        )
+                elif (
+                    (isinstance(cmd, (list, tuple)) and len(cmd) >= 1
+                     and cmd[0] in ('recalibrate_sensor_bias', 'recalibrate_gyro_bias'))
+                    or cmd in (('recalibrate_sensor_bias',), ('recalibrate_gyro_bias',))
+                ):
+                    # The old command name remains accepted for compatibility.
                     try:
                         n_samples = None
                         if isinstance(cmd, (list, tuple)) and len(cmd) >= 2:
@@ -1091,134 +1496,36 @@ def run_worker(
                             n_samples = GYRO_BIAS_CAL_SAMPLES
 
                         if not n_samples or n_samples <= 0:
-                            log_warning(logQueue, "Fusion Worker", f"Recalibration requested with non-positive sample count: {n_samples}")
+                            log_warning(logQueue, "Fusion Worker", f"Sensor calibration requested with non-positive sample count: {n_samples}")
+                        elif sensor_calibration is not None:
+                            log_warning(
+                                logQueue,
+                                "Fusion Worker",
+                                "Ignoring sensor calibration request because calibration is already active",
+                            )
                         else:
-                            log_info(logQueue, "Fusion Worker", f"Recalibrating gyro X/Y/Z biases with {n_samples} samples")
-                            # Runtime recalibration started; skip console print
-                            
-                            # Notify GUI that calibration is starting
-                            try:
-                                safe_queue_put(statusQueue, ('gyro_calibrating', True), timeout=QUEUE_PUT_TIMEOUT)
-                            except Exception:
-                                pass
-                            
-                            samples = []
-                            last_ts = None
-                            while len(samples) < n_samples and not stop_event.is_set():
-                                line = safe_queue_get(serialQueue, timeout=QUEUE_GET_TIMEOUT, default=None)
-                                if line is None:
-                                    continue
-                                try:
-                                    ts, accel, gyro = parse_imu_line(line)
-                                    # Only accept stationary samples: accel near 1g and gyro quiet
-                                    ax, ay, az = accel
-                                    mag = math.sqrt(ax * ax + ay * ay + az * az)
-                                    gyro_mag = math.sqrt(gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2])
-                                    if mag >= 0.01 and abs(mag - 1.0) < ACCEL_THRESHOLD and gyro_mag < STATIONARY_GYRO_THRESHOLD:
-                                        samples.append(gyro)
-                                        last_ts = ts
-                                except ValueError:
-                                    continue
-
-                            if len(samples) > 0:
-                                filter.calibrate_gyro_bias(samples)
-                                if last_ts is not None:
-                                    filter.last_time = last_ts
-                                # Mark filter as calibrated and notify GUI
-                                filter.gyro_calibrated = True
-                                try:
-                                    safe_queue_put(statusQueue, ('gyro_calibrating', False), timeout=QUEUE_PUT_TIMEOUT)
-                                    safe_queue_put(statusQueue, ('gyro_calibrated', True), timeout=QUEUE_PUT_TIMEOUT)
-                                except Exception:
-                                    pass
-                                log_info(
+                            sensor_calibration = SensorBiasCalibration(
+                                n_samples, time.perf_counter()
+                            )
+                            log_info(
+                                logQueue,
+                                "Fusion Worker",
+                                f"Collecting {n_samples} stable stationary samples for "
+                                "gyro and known-level accelerometer bias calibration",
+                            )
+                            if not safe_queue_put(
+                                statusQueue,
+                                ('sensor_calibrating', True),
+                                timeout=QUEUE_PUT_TIMEOUT,
+                            ):
+                                log_warning(
                                     logQueue,
                                     "Fusion Worker",
-                                    f"Runtime gyro X/Y/Z biases recalibrated from {len(samples)} samples: "
-                                    f"X={filter.gyro_bias_roll:.6f}, "
-                                    f"Y={filter.gyro_bias_pitch:.6f}, "
-                                    f"Z={filter.gyro_bias_yaw:.6f} deg/s",
+                                    "Could not publish sensor calibration start status",
                                 )
-                            else:
-                                filter.gyro_calibrated = False
-                                try:
-                                    safe_queue_put(statusQueue, ('gyro_calibrating', False), timeout=QUEUE_PUT_TIMEOUT)
-                                    safe_queue_put(statusQueue, ('gyro_calibrated', False), timeout=QUEUE_PUT_TIMEOUT)
-                                except Exception:
-                                    pass
-                                log_warning(logQueue, "Fusion Worker", "Runtime gyro X/Y/Z bias recalibration collected 0 samples")
+
                     except Exception as e:
-                        log_warning(logQueue, "Fusion Worker", f"Error during runtime gyro bias recalibration: {e}")
-                elif (isinstance(cmd, (list, tuple)) and len(cmd) >= 1 and cmd[0] == 'calibrate_level') or cmd == ('calibrate_level',):
-                    # Runtime center-level recalibration request. Optional second element: number of samples
-                    try:
-                        n_samples = None
-                        if isinstance(cmd, (list, tuple)) and len(cmd) >= 2:
-                            try:
-                                n_samples = int(cmd[1])
-                            except Exception:
-                                n_samples = None
-
-                        if n_samples is None:
-                            n_samples = LEVEL_CAL_SAMPLES
-
-                        if not n_samples or n_samples <= 0:
-                            log_warning(logQueue, "Fusion Worker", f"Level recalibration requested with non-positive sample count: {n_samples}")
-                        else:
-                            log_info(logQueue, "Fusion Worker", f"Recalibrating center level with {n_samples} samples")
-                            # Runtime center recalibration started; skip console print
-                            # Notify GUI that calibration is starting
-                            try:
-                                safe_queue_put(statusQueue, ('center_calibrating', True), timeout=QUEUE_PUT_TIMEOUT)
-                            except Exception:
-                                pass
-
-                            roll_samples = []
-                            pitch_samples = []
-                            last_ts = None
-                            while len(roll_samples) < n_samples and not stop_event.is_set():
-                                line = safe_queue_get(serialQueue, timeout=QUEUE_GET_TIMEOUT, default=None)
-                                if line is None:
-                                    continue
-                                try:
-                                    ts, accel, gyro = parse_imu_line(line)
-                                    # Only accept stationary samples: accel near 1g and gyro quiet
-                                    ax, ay, az = accel
-                                    mag = math.sqrt(ax * ax + ay * ay + az * az)
-                                    gyro_mag = math.sqrt(gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2])
-                                    if mag >= 0.01 and abs(mag - 1.0) < ACCEL_THRESHOLD and gyro_mag < STATIONARY_GYRO_THRESHOLD:
-                                        r, p = filter._accel_to_rp((ax, ay, az))
-                                        roll_samples.append(float(r))
-                                        pitch_samples.append(float(p))
-                                        last_ts = ts
-                                except ValueError:
-                                    continue
-
-                            if len(roll_samples) > 0:
-                                avg_roll = sum(roll_samples) / float(len(roll_samples))
-                                avg_pitch = sum(pitch_samples) / float(len(pitch_samples))
-                                filter.center_offset_roll = avg_roll
-                                filter.center_offset_pitch = avg_pitch
-                                if last_ts is not None:
-                                    filter.last_time = last_ts
-                                # Mark filter as calibrated and notify GUI
-                                filter.center_calibrated = True
-                                try:
-                                    safe_queue_put(statusQueue, ('center_calibrating', False), timeout=QUEUE_PUT_TIMEOUT)
-                                    safe_queue_put(statusQueue, ('center_calibrated', True), timeout=QUEUE_PUT_TIMEOUT)
-                                except Exception:
-                                    pass
-                                log_info(logQueue, "Fusion Worker", f"Runtime center level recalibrated from {len(roll_samples)} samples: roll={avg_roll:.3f} pitch={avg_pitch:.3f}")
-                            else:
-                                filter.center_calibrated = False
-                                try:
-                                    safe_queue_put(statusQueue, ('center_calibrating', False), timeout=QUEUE_PUT_TIMEOUT)
-                                    safe_queue_put(statusQueue, ('center_calibrated', False), timeout=QUEUE_PUT_TIMEOUT)
-                                except Exception:
-                                    pass
-                                log_warning(logQueue, "Fusion Worker", "Runtime center level recalibration collected 0 samples")
-                    except Exception as e:
-                        log_warning(logQueue, "Fusion Worker", f"Error during runtime center level recalibration: {e}")
+                        log_warning(logQueue, "Fusion Worker", f"Error during runtime sensor bias calibration: {e}")
             
             # Get data from serial queue - wait for the next sample rather than
             # busy-polling with non-blocking gets + a separate sleep; this lets
@@ -1291,6 +1598,8 @@ def run_worker(
                     try:
                         timestamp, accel, gyro = parse_imu_line(sample_line)
                     except ValueError as e:
+                        if sensor_calibration is not None:
+                            sensor_calibration.note_malformed_sample()
                         malformed_counter += 1
                         if malformed_counter % 100 == 0:
                             log_warning(logQueue, "Fusion Worker", f"Skipping malformed IMU lines: {malformed_counter} total; last error: {e}")
@@ -1301,6 +1610,18 @@ def run_worker(
                     result = filter.update(gyro, accel, timestamp)
                     diag_update_s += (time.perf_counter() - _diag_t3)
                     diag_imu_samples += 1
+                    if sensor_calibration is not None:
+                        calibration_samples = sensor_calibration.add_sample(
+                            timestamp, accel, gyro
+                        )
+                        if calibration_samples is not None:
+                            _finish_sensor_bias_calibration(
+                                filter,
+                                statusQueue,
+                                logQueue,
+                                samples=calibration_samples,
+                            )
+                            sensor_calibration = None
                     if previous_time is not None and not (
                         DT_MIN <= timestamp - previous_time <= DT_MAX
                     ):
@@ -1337,74 +1658,6 @@ def run_worker(
 
                 yaw, pitch, roll, drift_active, is_stationary = result
 
-                # If a center recalibration was scheduled by a recent recenter, run it now
-                if getattr(filter, '_pending_center_cal', None):
-                    try:
-                        n_samples = int(filter._pending_center_cal)
-                    except Exception:
-                        n_samples = None
-
-                    # Only start calibration when we are stationary to avoid bad samples
-                    if n_samples and is_stationary:
-                        try:
-                            safe_queue_put(statusQueue, ('center_calibrating', True), timeout=QUEUE_PUT_TIMEOUT)
-                        except Exception:
-                            pass
-
-                        roll_samples = []
-                        pitch_samples = []
-                        last_ts = None
-                        while len(roll_samples) < n_samples and not stop_event.is_set():
-                            sline = safe_queue_get(serialQueue, timeout=QUEUE_GET_TIMEOUT, default=None)
-                            if sline is None:
-                                continue
-                            try:
-                                ts, a2, g2 = parse_imu_line(sline)
-                                ax, ay, az = a2
-                                mag = math.sqrt(ax * ax + ay * ay + az * az)
-                                gyro_mag = math.sqrt(g2[0] * g2[0] + g2[1] * g2[1] + g2[2] * g2[2])
-                                if mag >= 0.01 and abs(mag - 1.0) < ACCEL_THRESHOLD and gyro_mag < STATIONARY_GYRO_THRESHOLD:
-                                    r, p = filter._accel_to_rp((ax, ay, az))
-                                    roll_samples.append(float(r))
-                                    pitch_samples.append(float(p))
-                                    last_ts = ts
-                            except ValueError:
-                                continue
-
-                        if len(roll_samples) > 0:
-                            avg_roll = sum(roll_samples) / float(len(roll_samples))
-                            avg_pitch = sum(pitch_samples) / float(len(pitch_samples))
-                            filter.center_offset_roll = avg_roll
-                            filter.center_offset_pitch = avg_pitch
-                            if last_ts is not None:
-                                filter.last_time = last_ts
-                            filter.center_calibrated = True
-                            try:
-                                safe_queue_put(statusQueue, ('center_calibrating', False), timeout=QUEUE_PUT_TIMEOUT)
-                                safe_queue_put(statusQueue, ('center_calibrated', True), timeout=QUEUE_PUT_TIMEOUT)
-                            except Exception:
-                                pass
-                            log_info(logQueue, "Fusion Worker", f"Runtime center level recalibrated from {len(roll_samples)} samples (scheduled): roll={avg_roll:.3f} pitch={avg_pitch:.3f}")
-                        else:
-                            filter.center_calibrated = False
-                            try:
-                                safe_queue_put(statusQueue, ('center_calibrating', False), timeout=QUEUE_PUT_TIMEOUT)
-                                safe_queue_put(statusQueue, ('center_calibrated', False), timeout=QUEUE_PUT_TIMEOUT)
-                            except Exception:
-                                pass
-                            log_warning(logQueue, "Fusion Worker", "Scheduled center level recalibration collected 0 samples")
-
-                        # Clear pending flag regardless of success so we don't retry
-                        try:
-                            delattr = setattr  # local alias to avoid lint
-                            delattr(filter, '_pending_center_cal', None)
-                        except Exception:
-                            try:
-                                if hasattr(filter, '_pending_center_cal'):
-                                    del filter._pending_center_cal
-                            except Exception:
-                                pass
-                
                 # Send processing status to UI only when transitioning from inactive to active
                 if not processing_active:
                     try:

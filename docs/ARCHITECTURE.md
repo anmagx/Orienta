@@ -107,7 +107,7 @@ The duplicate queues are intentional:
   most recent Euler sample for the orientation display; serial monitor data is
   drained in bounded batches so the GUI does not retain an unbounded backlog.
 * **Control/status queues** carry infrequent state changes and are deliberately
-  small (10 or 60 entries).
+  small (12 or 60 entries).
 
 Do not introduce a second consumer for an existing `multiprocessing.Queue`
 when both consumers need every message. A queue distributes messages among
@@ -223,9 +223,14 @@ Euler queues, and reports state changes. Its processing flow is:
 1. First valid timestamp creates a timing baseline and emits zero orientation.
 2. Reject non-positive/too-small `dt`; retain the existing quaternion.
 3. On a `dt` greater than `DT_MAX`, reset only the timing baseline.
-4. Subtract the stationary-estimated raw sensor biases `gyro_bias_roll`,
+4. Subtract the estimated raw gyro biases `gyro_bias_roll`,
    `gyro_bias_pitch`, and `gyro_bias_yaw` from `gx`, `gy`, and `gz`, respectively,
-   then integrate angular velocity into the quaternion. These names identify
+   and the estimated accelerometer offsets from the raw acceleration. These are
+   one-pose offsets: accelerometer calibration assumes the sensor was held
+   level with +Z upward and does not estimate scale or mounting rotation.
+   Integrate corrected angular velocity into the quaternion. Gyro-bias
+   calibration updates X/Y/Z together with accelerometer offsets, committing
+   neither unless both estimates pass stability checks. These gyro names identify
    sensor axes, not independent Euler angular rates. The quaternion lives in
    the IMU's right-handed frame, which the accelerometer and gyro share, so
    all three gyro axes are integrated unmodified. The application's yaw sign
@@ -241,39 +246,41 @@ Euler queues, and reports state changes. Its processing flow is:
    and the centripetal/tangential acceleration of an off-axis sensor during
    turns, including at turn reversals where the rate briefly crosses zero. Gains are `1/tau`, where tau is the per-axis time constant in
    seconds (`ACCEL_TAU_PITCH`/`ACCEL_TAU_ROLL`), so correction strength does not
-   depend on sample rate; `tau = inf` disables it. A clamped integral term
-   (`GYRO_BIAS_TRACKING_*`) tracks residual gyro bias. It stops learning while
-   center assist is engaged or the tilt error is large, because that
-   disagreement is not gyro bias and would otherwise wind up into drift. Yaw remains gyro-only. The first valid sample
-   seeds tilt from the accelerometer.
+   depend on sample rate; `tau = inf` disables it. The gravity-error slew used
+   for trust gating is differentiated after a 3 Hz low-pass
+   (`ACCEL_INNOVATION_SLEW_CUTOFF_HZ`) so normal sample-rate accelerometer
+   noise does not look like rapid head motion. A clamped integral term
+   (`GYRO_BIAS_TRACKING_*`) tracks residual gyro bias when observations are
+   settled, trustworthy, and small-error. Yaw receives no gravity correction.
+   The first valid sample seeds tilt from bias-corrected acceleration.
 6. Call a pose stationary only when valid acceleration and bias-corrected gyro magnitude
    below `STATIONARY_GYRO_THRESHOLD` persist for
    `STATIONARY_DEBOUNCE_S`.
 7. While stationary **and** within all three configured centre thresholds,
-   smoothly pull the orientation toward centre offsets. The selected
-   exponential, linear, cosine, or quadratic curve ramps up engagement.
+   smoothly pull yaw toward the output-origin heading. Pitch and roll are not
+   changed by center assist; accelerometer feedback is their tilt reference.
+   The selected exponential, linear, cosine, or quadratic curve ramps up engagement.
    Correction uses `1 - exp(-integrated_rate)` per sample, integrating the
    ramp over sensor time to avoid sample-rate-dependent gains. After the ramp
    completes, attraction continues at a sustained rate of
    `(strength / 0.3) / smoothing_time`; smoothing time is not a completion
-   deadline. Correction disengages on motion or leaving the centre thresholds.
-   This is centre assistance, not an absolute heading reference, and may pull
-   small intentional held glances inward.
-8. Subtract centre offsets from the final normalized Euler output. Apply axis
-   inversion in the worker's output path.
+   deadline.    Correction disengages on motion or leaving any one of the three thresholds.
+   This is yaw center assistance, not an absolute heading reference, and may
+   pull small intentional held yaw glances inward.
+8. Subtract the full-pose output origin from the final normalized Euler output.
+   Apply axis inversion in the worker's output path.
 
-The legacy `reset_orientation` command preserves gyro-bias calibration. It
-seeds the quaternion from the most recent acceleration sample and schedules a
-short level calibration, falling back to identity when no valid sample is
-available. The Reset Orientation UI instead uses
-`recenter_orientation_to_current` to set the current full yaw/pitch/roll pose
-as the output origin. By default, it sends the command when the button/key is
-released; checking **Instantaneous recenter** sends it on click/key press
-instead. Neither mode changes calibrated center offsets. Stationary center
-assistance uses the effective output origin as its target, so it remains active
-after full-pose recentering. While the input is held, the GUI draws a dotted
-gray guide matching the configured drift-angle region around the live
-orientation marker.
+`recenter_orientation_to_current` records the current fused yaw/pitch/roll as a
+single output origin. The legacy `reset_orientation` command is an alias for
+this behavior; neither command changes the quaternion or sensor calibration.
+By default, the UI sends the command when the button/key is released; checking
+**Instantaneous recenter** sends it on click/key press instead. Recenter marks
+the next native-output sample to reset time-dependent filter history. Center
+assist uses this same origin for yaw attraction and for its three-axis
+engagement gate. The obsolete `calibrate_level` command is ignored; level is
+now the user's output reference captured by recenter, not another accelerometer
+calibration. While the reset input is held, the GUI draws a dotted gray guide
+matching the configured threshold region around the live orientation marker.
 
 ### Fusion control protocol
 
@@ -282,10 +289,11 @@ Existing commands are:
 
 | Command | Effect |
 |---|---|
-| `'reset_orientation'` / `('reset_orientation',)` | Legacy accel-seeded reset; preserve gyro-bias calibration and schedule level calibration |
-| `('recenter_orientation_to_current',)` | Set current full yaw/pitch/roll pose as the output origin, preserving level calibration |
-| `'reset'` / `('reset',)` | Reset filter and calibration/UI status |
+| `'reset_orientation'` / `('reset_orientation',)` | Legacy alias for full-pose recenter; preserve sensor calibration |
+| `('recenter_orientation_to_current',)` | Set current full yaw/pitch/roll pose as the output origin |
+| `'reset'` / `('reset',)` | Reset filter, output origin, and gyro/accelerometer bias calibration |
 | `('set_orientation_hold', bool)` | Freeze published orientation while sensor fusion continues; on release, slerp smoothly back to the live orientation |
+| `('set_yaw_bias_tracking', bool)` | Enable optional stationary-only, rate-limited yaw gyro-bias adaptation |
 | `('set_center_threshold', degrees)` | Set the shared near-centre threshold |
 | `('set_threshold', yaw, pitch, roll)` | Set all independent thresholds |
 | `('set_center_threshold_yaw/pitch/roll', degrees)` | Set one threshold |
@@ -294,34 +302,62 @@ Existing commands are:
 | `('set_drift_curve_type', name)` | `exponential`, `linear`, `cosine`, or `quadratic` |
 | `('set_drift_correction_strength', strength)` | Set strength in `(0, 1]` |
 | `('set_invert_yaw/pitch/roll', bool)` | Set axis inversion |
-| `('recalibrate_gyro_bias', samples?)` | Gather valid stationary raw samples and update all three X/Y/Z gyro biases |
-| `('calibrate_level', samples?)` | Gather valid stationary samples and set pitch/roll centre offsets |
+| `('set_sensor_biases', gyro_xyz, accel_xyz)` | Restore validated persisted offsets and report the loaded calibration state |
+| `('recalibrate_sensor_bias', samples?)` | Gather stationary raw samples with the sensor level (+Z up); atomically update gyro and accelerometer offsets |
+| `('recalibrate_gyro_bias', samples?)` | Legacy alias for `recalibrate_sensor_bias` |
+| `('calibrate_level', samples?)` | Obsolete; ignored because recenter now sets the output level |
 
-Gyro and level calibration consume `serialQueue` while they collect samples.
-That is intended, but means normal orientation output pauses during calibration.
-Gyro calibration averages raw readings, not previously bias-corrected readings,
-so repeated calibration replaces rather than compounds the estimate. Recenter
-preserves all three gyro biases; full reset clears them.
+Sensor-bias calibration runs alongside normal fusion, so orientation output
+continues while samples are collected. The default request gathers 400
+qualifying samples; acceleration magnitude must be near 1 g and raw gyro
+magnitude below the stationary threshold. Non-monotonic/duplicate timestamps,
+acceleration-disturbed rows, and fast gyro motion are skipped. Each completed
+window is checked per axis using median absolute deviation; isolated outliers
+are excluded from the means. The gyro and accelerometer estimates are both
+validated before either is applied. The accelerometer reference must point
+within 15 degrees of +Z; its offsets are the robust X/Y means and robust Z mean
+minus 1 g. This requires the user to place the sensor level and does not
+calibrate scale/cross-axis error. Unstable windows restart collection; after 30
+seconds without a stable estimate, failure retains the entire previous
+calibration and reports sample counts in the log and message panel.
 
-The default manual gyro-bias request collects 400 qualifying stationary samples;
-level calibration collects 20. A sample qualifies only when acceleration is
-near 1 g and the raw gyro magnitude is below the stationary threshold. These
-loops end when the requested sample count is reached or the shared shutdown
-event is set. There is no calibration cancel command or wall-clock timeout, so
-missing data or a sensor that never becomes still can leave a request active
-indefinitely. Keep the device still and ensure it is streaming; closing Orienta
-is the only current way to interrupt a calibration in progress. No separate
-timeout/cancellation improvement is currently documented.
+Calibration uses raw readings, not previously corrected values, so repeated
+calibration replaces rather than compounds the estimates. New offsets take
+effect on the next sample after the completed window; they do not rebase the
+current quaternion or output origin. Recenter preserves sensor biases; full
+reset clears gyro and accelerometer offsets. There is no separate blocking
+level-calibration collector.
+
+By default, calibration remains in FusionWorker memory for the current
+application session. Preferences can opt into persistence: the GUI saves the
+six validated offsets in the `sensor_calibration` section after calibration and
+restores them through `set_sensor_biases` at startup. Disabling persistence
+omits the section on the next preferences save; a full reset clears the saved
+offsets when persistence is enabled. This does not identify a sensor, so users
+with multiple IMUs should disable persistence or recalibrate after switching.
+
+Optional adaptive yaw-bias tracking is disabled by default. When enabled, it
+learns in 2-second windows while the existing stationary detector is active.
+Each window must have at least 50 samples, a mean corrected-rate magnitude
+below 0.2 degrees/second, mean sample speed below 0.35 degrees/second, and pass
+the robust gyro stability check. The robust mean raw sensor Z rate is adapted
+with a 30-second time constant and clamped to within 0.25 degrees/second of the
+latest manual sensor-bias calibration (or zero before calibration). The updated
+bias affects subsequent gyro integration; it never modifies the quaternion or
+output origin directly.
+Because yaw motion has no gravity reference, a sufficiently slow intentional
+turn can still be mistaken for bias. The setting is persisted in Preferences
+and should remain opt-in unless testing confirms its behavior for the user's
+movement patterns.
 
 ### Orientation and calibration glossary
 
 | Term | Operation and state changed |
 |---|---|
-| **Reset Orientation** (current UI) | Sends `recenter_orientation_to_current`: makes the current full yaw/pitch/roll pose the output origin. It preserves level-calibration offsets and gyro bias. By default the command is sent on release; **Instantaneous recenter** sends it on press. |
-| **Legacy `reset_orientation` command** | Seeds the fusion quaternion from the latest acceleration sample and schedules a short level calibration; it preserves gyro-bias calibration. This is distinct from the current UI action. |
-| **Recenter to current pose** | Changes the full three-axis output origin using the recenter offsets; it does not change level-calibration offsets or gyro bias. |
-| **Level calibration** | Averages qualifying stationary accelerometer samples to set pitch/roll center offsets. It does not estimate gyro bias or establish an absolute yaw reference. |
-| **Gyro-bias calibration** | Averages qualifying stationary raw gyro samples and replaces the X/Y/Z gyro-bias estimates used before integration. It does not recenter the output pose. |
+| **Reset Orientation** (current UI) | Sends `recenter_orientation_to_current`: captures the current full yaw/pitch/roll pose as the output origin and marks native output filter history for reset. By default the command is sent on release; **Instantaneous recenter** sends it on press. |
+| **Legacy `reset_orientation` command** | Alias for current full-pose recenter; preserves the quaternion and both sensor calibrations. |
+| **Recenter to current pose** | Sets the unified three-axis output origin used for look-forward pitch/roll, heading zero, and the center-assist engagement gate. It does not alter physical gravity fusion or sensor biases. |
+| **Known-level sensor-bias calibration** | Estimates raw gyro X/Y/Z offsets and accelerometer offsets from a stable sample window with +Z facing up. It does not estimate accelerometer scale, cross-axis error, mounting rotation, or view recentering. |
 
 The command implementations and sample-collection behavior are in
 [`fusion_wrk.py`](../src/workers/fusion_wrk.py); the current UI controls are in
@@ -529,8 +565,8 @@ every ten seconds and emits warnings only for warning/critical queues.
 
 Status names currently handled by the GUI include serial connection/data
 activity and detection results, message/send rate, `output_status`,
-`processing`, `drift_correction`, `stationary`, and gyro/centre calibration
-states. When adding a status name, update the producer and
+`processing`, `drift_correction`, `stationary`, gyro/centre calibration
+states, and gyro-calibration failure notifications. When adding a status name, update the producer and
 `TabbedGUIWorker._route_status_update`; a producer-only status silently has no
 UI effect.
 

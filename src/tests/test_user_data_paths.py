@@ -86,6 +86,87 @@ class UserDataPathsTests(unittest.TestCase):
         self.assertEqual(loaded["native_output"], initial["native_output"])
         self.assertEqual(loaded["network"], initial["network"])
 
+    def test_sensor_calibration_round_trips_through_preferences_manager(self):
+        manager = PreferencesManager(config_dir=str(self.root / "calibration"))
+        calibration = {
+            "gyro": (0.12, -0.23, 0.34),
+            "accel": (0.012, -0.023, 0.034),
+        }
+        preferences = {
+            "gui": {"theme": "dark"},
+            "sensor_calibration": manager.sensor_calibration_preferences(
+                calibration
+            ),
+        }
+
+        self.assertTrue(manager.save(preferences))
+        self.assertEqual(manager.get_sensor_calibration(), calibration)
+
+    def test_sensor_calibration_preferences_reject_non_finite_values(self):
+        with self.assertRaisesRegex(ValueError, "finite"):
+            PreferencesManager.sensor_calibration_preferences({
+                "gyro": (0.0, float("nan"), 0.0),
+                "accel": (0.0, 0.0, 0.0),
+            })
+
+        manager = PreferencesManager(config_dir=str(self.root / "invalid"))
+        self.assertTrue(manager.save({
+            "sensor_calibration": {
+                "gyro_x_dps": "nan",
+                "gyro_y_dps": "0",
+                "gyro_z_dps": "0",
+                "accel_x_g": "0",
+                "accel_y_g": "0",
+                "accel_z_g": "0",
+            },
+        }))
+        with self.assertLogs(level="WARNING"):
+            self.assertIsNone(manager.get_sensor_calibration())
+
+    def test_gui_saves_sensor_calibration_only_when_persistence_is_enabled(self):
+        manager = PreferencesManager(config_dir=str(self.root / "gui-calibration"))
+        gui = SimpleNamespace(
+            connection_panel=SimpleNamespace(get_prefs=lambda: {}),
+            sensor_settings_preferences=None,
+            output_panel=SimpleNamespace(get_prefs=lambda: {}),
+            native_output_dialog=SimpleNamespace(get_preferences=lambda: {}),
+            orientation_panel=SimpleNamespace(get_prefs=lambda: {}),
+            preferences_panel=SimpleNamespace(
+                get_tuning_preferences=lambda: {
+                    "persist_calibration_across_sessions": True,
+                },
+                get_send_rate_preferences=lambda: {},
+                get_sensor_calibration_preferences=lambda: {
+                    "gyro_x_dps": "0.12",
+                    "gyro_y_dps": "-0.23",
+                    "gyro_z_dps": "0.34",
+                    "accel_x_g": "0.012",
+                    "accel_y_g": "-0.023",
+                    "accel_z_g": "0.034",
+                },
+            ),
+            theme_manager=SimpleNamespace(get_current_theme=lambda: "dark"),
+            preferences_manager=manager,
+            log_queue=Queue(),
+        )
+
+        TabbedGUIWorker.save_preferences(gui)
+
+        self.assertEqual(
+            manager.get_sensor_calibration(),
+            {
+                "gyro": (0.12, -0.23, 0.34),
+                "accel": (0.012, -0.023, 0.034),
+            },
+        )
+
+        gui.preferences_panel.get_tuning_preferences = lambda: {
+            "persist_calibration_across_sessions": False,
+        }
+        gui.preferences_panel.get_sensor_calibration_preferences = lambda: None
+        TabbedGUIWorker.save_preferences(gui)
+        self.assertIsNone(manager.get_sensor_calibration())
+
     def test_solarized_theme_identifier_persists(self):
         manager = PreferencesManager(config_dir=str(self.root / "solarized"))
         self.assertTrue(manager.set_theme("solarized_dark"))

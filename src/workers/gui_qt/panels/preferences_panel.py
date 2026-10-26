@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 
 from src.managers.preferences_manager import PreferencesManager
 from src.managers.theme_manager import THEMES, THEME_OPTIONS
-from src.config.config import DEFAULT_THEME, THEMES_ENABLED, ACCEL_TAU_PITCH, ACCEL_TAU_ROLL, ACCEL_TAU_RANGE, ACCEL_TAU_STEP, THRESH_DEBOUNCE_MS, STATIONARY_GYRO_THRESHOLD, STATIONARY_DEBOUNCE_S, DRIFT_SMOOTHING_TIME, DRIFT_TRANSITION_CURVE, GYRO_BIAS_CAL_SAMPLES, QUEUE_PUT_TIMEOUT
+from src.config.config import DEFAULT_THEME, THEMES_ENABLED, ACCEL_TAU_PITCH, ACCEL_TAU_ROLL, ACCEL_TAU_RANGE, ACCEL_TAU_STEP, THRESH_DEBOUNCE_MS, STATIONARY_GYRO_THRESHOLD, STATIONARY_DEBOUNCE_S, DRIFT_SMOOTHING_TIME, DRIFT_TRANSITION_CURVE, GYRO_BIAS_CAL_SAMPLES, DEFAULT_YAW_BIAS_TRACKING_ENABLED, QUEUE_PUT_TIMEOUT
 from src.workers.gui_qt.panels.base_panel import ui_log as _ui_log, DEFAULT_SPACING, LINE_THICKNESS
 from src.workers.gui_qt.panels.dialog_utils import configure_section_layout
 
@@ -78,8 +78,11 @@ class PreferencesPanel(QWidget):
         self.drift_transition_curve = DRIFT_TRANSITION_CURVE
         self.drift_correction_strength = 0.3  # Default max correction strength per frame (0.1 to 1.0)
         
-        # Gyro calibration parameters
+        # Sensor-bias calibration parameters.
         self.gyro_bias_cal_samples = GYRO_BIAS_CAL_SAMPLES
+        self.yaw_bias_tracking_enabled = DEFAULT_YAW_BIAS_TRACKING_ENABLED
+        self.persist_calibration_across_sessions = False
+        self._sensor_calibration = None
         
         # Axis inversion settings for sensor configuration
         self.invert_yaw = False
@@ -192,7 +195,7 @@ class PreferencesPanel(QWidget):
         
         # Button behavior controls
         # Note: The actual "Set Shortcut..." controls for Reset Orientation and
-        # Disengage Drift Correction live next to their respective buttons in
+        # Center Assist Disengage live next to their respective buttons in
         # the Orientation panel, which also owns their state and persistence.
         # Button hold/toggle behavior is configurable here.
         from PyQt5.QtWidgets import QCheckBox
@@ -201,7 +204,7 @@ class PreferencesPanel(QWidget):
         configure_section_layout(button_behavior_layout)
 
         self.disengage_toggle_checkbox = QCheckBox(
-            "Disengage Drift Correction: toggle mode "
+            "Center Assist Disengage: toggle mode "
             "(press once to disengage, again to re-engage)"
         )
         self.disengage_toggle_checkbox.setChecked(self.disengage_toggle_mode)
@@ -331,7 +334,7 @@ class PreferencesPanel(QWidget):
         drift_layout.addWidget(accel_tau_info_label)
 
         # Header for drift correction controls
-        drift_curve_header = QLabel("Drift Correction (when near center)")
+        drift_curve_header = QLabel("Yaw Center Assist (when near center)")
         drift_curve_header.setStyleSheet("font-weight: 600; margin-top: 8px; margin-bottom: 6px;")
         drift_layout.addWidget(drift_curve_header)
 
@@ -384,7 +387,15 @@ class PreferencesPanel(QWidget):
         drift_layout.addLayout(strength_layout)
         
         # Add info label describing smoothing, strength and curve options (bottom of calibration frame)
-        drift_info_label = QLabel("Center assist gently attracts the pose toward center while stationary and near center; it is not an absolute heading measurement. Smoothing time controls engagement time and the sustained correction rate. Strength scales that rate (higher may fight small held glances). Curves control engagement: exponential (fast), cosine (smooth), linear, quadratic (slow start). Correction continues after engagement.")
+        drift_info_label = QLabel(
+            "Yaw center assist gently attracts yaw toward its output center while "
+            "stationary. It engages only when yaw, pitch, and roll are all inside "
+            "their thresholds; it does not alter pitch or roll and is not an "
+            "absolute heading measurement. Smoothing time controls engagement "
+            "and sustained correction rate. Strength scales that rate. Curves "
+            "control engagement: exponential, cosine, linear, or quadratic. "
+            "Correction continues after engagement."
+        )
         drift_info_label.setProperty("mutedText", True)
         drift_info_label.setStyleSheet("font-size: 10px;")
         drift_info_label.setWordWrap(True)
@@ -444,7 +455,7 @@ class PreferencesPanel(QWidget):
         layout.addWidget(stationary_group)
         
         # Gyro calibration group
-        gyro_group = QGroupBox("Gyro Calibration")
+        gyro_group = QGroupBox("Sensor Bias Calibration")
         gyro_layout = QVBoxLayout()
         configure_section_layout(gyro_layout)
         gyro_layout.setSpacing(DEFAULT_SPACING)
@@ -481,11 +492,44 @@ class PreferencesPanel(QWidget):
         samples_layout.addWidget(self.gyro_samples_value)
         gyro_layout.addLayout(samples_layout)
         
-        # Add info label for gyro calibration
-        gyro_info_label = QLabel("Number of stationary samples collected to estimate all three gyro biases (X/Y/Z). More samples = better accuracy but slower calibration.")
+        # Explain the required known-level sensor pose.
+        gyro_info_label = QLabel(
+            "Number of stationary samples used to estimate gyro and "
+            "accelerometer offsets. Place the sensor on a level surface "
+            "with +Z facing up; keep it still. This estimates offsets, not "
+            "accelerometer scale or mounting orientation."
+        )
         gyro_info_label.setProperty("mutedText", True)
         gyro_info_label.setStyleSheet("font-size: 10px;")
         gyro_layout.addWidget(gyro_info_label)
+
+        self.yaw_bias_tracking_checkbox = QCheckBox(
+            "Adapt yaw gyro bias during stationary periods (experimental)"
+        )
+        self.yaw_bias_tracking_checkbox.setChecked(
+            self.yaw_bias_tracking_enabled
+        )
+        self.yaw_bias_tracking_checkbox.setToolTip(
+            "Slowly adjusts the yaw gyro bias after sustained low-motion readings. "
+            "It does not recenter the view. An extremely slow intentional turn "
+            "can be mistaken for gyro bias, so this is off by default."
+        )
+        self.yaw_bias_tracking_checkbox.stateChanged.connect(
+            self._on_yaw_bias_tracking_changed
+        )
+        gyro_layout.addWidget(self.yaw_bias_tracking_checkbox)
+
+        self.persist_calibration_checkbox = QCheckBox(
+            "Persist Calibration across sessions"
+        )
+        self.persist_calibration_checkbox.setToolTip(
+            "Save calibrated gyro and accelerometer offsets and load them "
+            "automatically on the next startup."
+        )
+        self.persist_calibration_checkbox.stateChanged.connect(
+            self._on_persist_calibration_changed
+        )
+        gyro_layout.addWidget(self.persist_calibration_checkbox)
         
         gyro_group.setLayout(gyro_layout)
         layout.addWidget(gyro_group)
@@ -572,6 +616,62 @@ class PreferencesPanel(QWidget):
         if not self._loading:
             self.apply_send_rate_to_worker()
             self._trigger_preference_save()
+
+    def _on_yaw_bias_tracking_changed(self, state):
+        """Toggle optional stationary-only yaw gyro-bias adaptation."""
+        self.yaw_bias_tracking_enabled = state == Qt.Checked
+        if getattr(self, '_loading', False):
+            return
+        self._send_control_command(
+            ('set_yaw_bias_tracking', self.yaw_bias_tracking_enabled),
+            failure_message="[Preferences] Failed to update stationary yaw-bias tracking",
+        )
+        self._trigger_preference_save()
+
+    def _on_persist_calibration_changed(self, state):
+        """Enable or disable persistence of the current sensor offsets."""
+        self.persist_calibration_across_sessions = state == Qt.Checked
+        if getattr(self, '_loading', False):
+            return
+        self._trigger_preference_save()
+
+    def update_sensor_calibration(self, calibration):
+        """Track calibration reported by fusion and save it when opted in."""
+        if calibration is None:
+            self._sensor_calibration = None
+        else:
+            try:
+                serialized = self.prefs_manager.sensor_calibration_preferences(
+                    calibration
+                )
+                self._sensor_calibration = (
+                    self.prefs_manager.sensor_calibration_from_preferences(
+                        serialized
+                    )
+                )
+            except (TypeError, ValueError, OverflowError) as error:
+                _ui_log(
+                    self,
+                    f"[Preferences] Ignoring invalid sensor calibration update: {error}",
+                )
+                return
+
+        if (
+            not getattr(self, '_loading', False)
+            and self.persist_calibration_across_sessions
+        ):
+            self.preferences_changed.emit()
+
+    def get_sensor_calibration_preferences(self):
+        """Return calibration values for persistence when the option is enabled."""
+        if (
+            not self.persist_calibration_across_sessions
+            or self._sensor_calibration is None
+        ):
+            return None
+        return self.prefs_manager.sensor_calibration_preferences(
+            self._sensor_calibration
+        )
 
     def apply_send_rate_to_worker(self):
         """Send the selected UDP rate limit to the output worker."""
@@ -773,7 +873,7 @@ class PreferencesPanel(QWidget):
         self._trigger_preference_save()
     
     def _on_gyro_samples_changed(self, value):
-        """Handle gyro calibration samples slider change."""
+        """Handle sensor-bias calibration sample-count changes."""
         # Snap value to 250-sample increments and clamp to valid range
         try:
             snapped = int(round(float(value) / 250.0) * 250)
@@ -945,8 +1045,12 @@ class PreferencesPanel(QWidget):
         if self.orientation_panel:
             self.orientation_panel.set_reset_orientation_instantaneous(False)
         
-        # Reset gyro calibration parameters to defaults
+        # Reset sensor-bias calibration parameters to defaults
         self.gyro_bias_cal_samples = GYRO_BIAS_CAL_SAMPLES
+        self.yaw_bias_tracking_enabled = DEFAULT_YAW_BIAS_TRACKING_ENABLED
+        self.yaw_bias_tracking_checkbox.setChecked(
+            self.yaw_bias_tracking_enabled
+        )
 
         # Reset the UDP send-rate limit to unlimited
         unlimited_index = self.send_rate_combo.findData(0)
@@ -993,7 +1097,7 @@ class PreferencesPanel(QWidget):
         if index >= 0:
             self.drift_curve_combo.setCurrentIndex(index)
         
-        # Update gyro calibration sliders (round defaults to nearest 250)
+        # Update sensor calibration sample slider (round defaults to nearest 250)
         try:
             def_val = int(round(float(self.gyro_bias_cal_samples) / 250.0) * 250)
         except Exception:
@@ -1090,7 +1194,7 @@ class PreferencesPanel(QWidget):
                 self.drift_curve_combo.setCurrentIndex(index)
     
     def _load_gyro_settings(self, cal_prefs):
-        """Load gyro calibration settings."""
+        """Load sensor-bias calibration settings."""
         if 'gyro_bias_cal_samples' in cal_prefs:
             try:
                 val = int(cal_prefs['gyro_bias_cal_samples'])
@@ -1102,6 +1206,27 @@ class PreferencesPanel(QWidget):
             self.gyro_bias_cal_samples = val
             self.gyro_samples_slider.setValue(val)
             self.gyro_samples_value.setText(str(val))
+        tracking = cal_prefs.get(
+            'yaw_bias_tracking_enabled', DEFAULT_YAW_BIAS_TRACKING_ENABLED
+        )
+        if isinstance(tracking, str):
+            tracking = tracking.lower() in ('true', '1', 'yes')
+        self.yaw_bias_tracking_enabled = bool(tracking)
+        self.yaw_bias_tracking_checkbox.setChecked(
+            self.yaw_bias_tracking_enabled
+        )
+        persist = cal_prefs.get('persist_calibration_across_sessions', False)
+        if isinstance(persist, str):
+            persist = persist.lower() in ('true', '1', 'yes')
+        self.persist_calibration_across_sessions = bool(persist)
+        self.persist_calibration_checkbox.setChecked(
+            self.persist_calibration_across_sessions
+        )
+        self._sensor_calibration = (
+            self.prefs_manager.get_sensor_calibration()
+            if self.persist_calibration_across_sessions
+            else None
+        )
     
     def _load_shortcut_settings(self, cal_prefs):
         """Sync the disengage toggle checkbox from the orientation panel.
@@ -1196,6 +1321,23 @@ class PreferencesPanel(QWidget):
             # Apply accel tilt-correction time constants to fusion worker
             self._send_control_command(('set_accel_tau_pitch', self.accel_tau_pitch))
             self._send_control_command(('set_accel_tau_roll', self.accel_tau_roll))
+            self._send_control_command(
+                ('set_yaw_bias_tracking', self.yaw_bias_tracking_enabled)
+            )
+            if (
+                self.persist_calibration_across_sessions
+                and self._sensor_calibration is not None
+            ):
+                self._send_control_command(
+                    (
+                        'set_sensor_biases',
+                        self._sensor_calibration['gyro'],
+                        self._sensor_calibration['accel'],
+                    ),
+                    failure_message=(
+                        "[Preferences] Failed to restore saved sensor calibration"
+                    ),
+                )
             
             # Apply drift correction strength
             if 'drift_correction_strength' in cal_prefs:
@@ -1251,6 +1393,10 @@ class PreferencesPanel(QWidget):
             'orientation_hold_toggle_mode': self.orientation_hold_toggle_mode,
             'reset_orientation_instantaneous': self.reset_orientation_instantaneous,
             'gyro_bias_cal_samples': str(self.gyro_bias_cal_samples),
+            'yaw_bias_tracking_enabled': self.yaw_bias_tracking_enabled,
+            'persist_calibration_across_sessions': (
+                self.persist_calibration_across_sessions
+            ),
             'invert_yaw': self.invert_yaw,
             'invert_pitch': self.invert_pitch,
             'invert_roll': self.invert_roll

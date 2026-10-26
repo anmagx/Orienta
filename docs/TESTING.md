@@ -32,7 +32,7 @@ test runner is required.
 | Feature | Automated coverage | Coverage boundary |
 |---|---|---|
 | IMU sample parsing and serial recovery | `test_serial_connection.py`; `test_fusion_tilt_correction.py` | Validated lines, reconnect behavior, startup-text filtering, and sample-history integration use tests/fakes; no physical IMU is opened. |
-| Calibration and orientation reset | `test_fusion_center_assist_and_bias.py`; `test_fusion_orientation_hold.py`; `test_reset_orientation_toggle_follow.py` | Bias math, worker calibration, pose hold/recenter, and command timing are covered; stationary behavior on a mounted device is not. |
+| Calibration and orientation reset | `test_fusion_center_assist_and_bias.py`; `test_fusion_tilt_correction.py`; `test_fusion_orientation_hold.py`; `test_reset_orientation_toggle_follow.py`; `test_user_data_paths.py` | Known-level gyro/accelerometer offset estimates, opt-in calibration persistence and startup restoration, yaw-only center assist with three-axis gating, pose hold/recenter, and native-filter reset signaling are covered; stationary behavior on a mounted device is not. |
 | Worker restart | No dedicated process-monitor/restart test module currently exists. | Restart limits and recovery behavior are documented in `ARCHITECTURE.md`; automated coverage does not verify a child-process crash and restart end to end. |
 | Output routing | `test_output_protocol_selection.py`; `test_native_output_processing.py` | Queue routing, backend selection, packet/shared-memory conversion, filters, and settings are exercised with test backends and fixtures. |
 | Client registration | `test_output_protocol_selection.py` | Registration staging/restoration and ownership cases are tested; this does not prove that a third-party game discovers or accepts the client. |
@@ -41,17 +41,17 @@ test runner is required.
 
 | Module | Main coverage |
 |---|---|
-| `test_fusion_center_assist_and_bias.py` | Centre-assist engagement and sustained correction, sample-rate independence, thresholds and stationarity gates, three-axis gyro-bias calibration and worker behavior. |
+| `test_fusion_center_assist_and_bias.py` | Yaw-only center-assist engagement and sustained correction, sample-rate independence, three-axis thresholds and stationarity gates, robust gyro/accelerometer bias calibration, output continuity during calibration, and opt-in stationary yaw-bias adaptation. |
 | `test_fusion_orientation_hold.py` | Fusion-level pose hold, recentering, and smooth resume to live orientation. |
 | `test_orientation_hold_input_modes.py` | Momentary versus toggle Hold Orientation behavior for buttons and shortcuts, including preferences. |
 | `test_orientation_held_marker.py` | Visualization rendering for held-pose and recenter-guide markers. |
-| `test_reset_orientation_toggle_follow.py` | Reset/recenter press and release timing, instantaneous mode, multiple held inputs, and fusion-worker command handling. |
+| `test_reset_orientation_toggle_follow.py` | Reset/recenter press and release timing, instantaneous mode, multiple held inputs, fusion-worker command handling, sensor-bias command routing, and native-filter history reset on recenter. |
 | `test_native_output_processing.py` | Filter registry and default, filter/setting descriptions, One Euro, EMA, hysteresis, critically damped, and Accela-inspired behavior; response curves and limits; native processing and offsets; settings migration/round-trip; calibration prompts; output panel layout, themes, and controls. |
 | `test_gyro_adaptive_filter.py` | Gyro-assisted filter: rest tremor suppression, fast-turn and slow-pan tracking, cross-axis following of diagonal turns without opening idle axes, rate fallback, catch-up, yaw wrap, tremor-learning reset, and rate forwarding through native processing. |
 | `test_output_protocol_selection.py` | UDP, FreeTrack, and NPClient routing; live native-filter switching; gyro-rate forwarding; UDP packet layout; FreeTrack shared-memory structure and game-response tables; client registration and restoration. |
 | `test_sensor_settings.py` | Sensor-settings command/response validation, dialog behavior, handling of an unmatched startup report, and preserving selections changed while an earlier apply is pending. |
 | `test_serial_connection.py` | Verified COM/baud detection, detection cancellation, reconnect after a read failure, filtering startup text before fusion, and applying saved settings after the first valid sample. |
-| `test_user_data_paths.py` | Preferences and logs in per-user AppData, atomic preference writes, failed-save behavior, and packaged-path behavior. |
+| `test_user_data_paths.py` | Preferences and logs in per-user AppData, atomic preference writes, validated sensor calibration round-trip, opt-in save/clear behavior, failed-save behavior, and packaged-path behavior. |
 
 The output and native-processing tests use queues, temporary directories,
 mocked sockets/worker backends, and Qt widgets. They test application-side
@@ -90,7 +90,7 @@ setup:
 3. For direct FreeTrack and NPClient modes, verify registration, game
    discovery, live head movement, and runtime protocol switching in
    representative games.
-4. Exercise screen-edge input-limit calibration while tracking data is live.
+4. Exercise manual input-magnitude limits and response-curve editing while tracking data is live.
 
 An automated unit or ABI smoke test passing is not evidence that a particular
 game, driver, or sensor has been integration-tested.

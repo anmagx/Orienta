@@ -16,7 +16,6 @@ from PyQt5.QtGui import QMouseEvent, QPalette
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
-    QFrame,
     QGroupBox,
     QSlider,
     QWidget,
@@ -31,10 +30,6 @@ from src.workers.gui_qt.panels.native_output_settings_dialog import (
     native_output_section_from_settings,
 )
 from src.workers.gui_qt.panels.preferences_panel import PreferencesPanel
-from src.workers.gui_qt.panels.input_limit_calibration import (
-    InputMagnitudeCalibration,
-    symmetric_limits_from_samples,
-)
 from src.outputs.native_output_processing import (
     NativeOutputProcessor,
     default_native_output_settings,
@@ -610,17 +605,6 @@ class NativeOutputProcessingTests(unittest.TestCase):
         processor = NativeOutputProcessor(migrated)
         self.assertEqual(processor.process((-15, 0, 0), 1.0)[0], -120.0)
 
-    def test_screen_edge_limit_uses_the_smaller_opposite_capture(self):
-        self.assertEqual(
-            symmetric_limits_from_samples({
-                "left": -35.0,
-                "right": 30.5,
-                "top": -28.0,
-                "bottom": 27.4,
-            }),
-            (30.5, 27.4),
-        )
-
     def test_previous_fixed_domain_curve_rescales_to_selected_input_limit(self):
         loaded = native_output_preferences_from_section({
             "input_limit_yaw_deg": "30",
@@ -1010,10 +994,13 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
             ).widget(),
             serial_panel.toggle_button,
         )
+        sensor_actions_row = serial_panel.content_layout.itemAt(
+            serial_panel.content_layout.count() - 2
+        ).layout()
+        self.assertIsNotNone(sensor_actions_row)
+        self.assertIs(sensor_actions_row.itemAt(0).widget(), serial_panel.detect_button)
         self.assertIs(
-            serial_panel.content_layout.itemAt(
-                serial_panel.content_layout.count() - 2
-            ).widget(),
+            sensor_actions_row.itemAt(1).widget(),
             serial_panel.sensor_settings_button,
         )
         self.assertLess(
@@ -1158,6 +1145,8 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         control_queue = Queue()
         panel = NativeOutputSettingsDialog(control_queue)
         self.addCleanup(panel.close)
+        self.assertFalse(hasattr(panel, "auto_calibrate_button"))
+        self.assertEqual(set(panel.input_limit_controls), {"yaw", "pitch", "roll"})
         yaw_combo = panel.input_limit_controls["yaw"]
         yaw_combo.setCurrentIndex(yaw_combo.findData(45.0))
         self.assertEqual(panel.curve_widgets["yaw"].input_limit_deg, 45.0)
@@ -1169,71 +1158,6 @@ class NativeOutputSettingsDialogTests(unittest.TestCase):
         self.assertEqual(command, "set_native_processing")
         self.assertEqual(settings["input_limits"]["yaw"], 45.0)
         self.assertEqual(settings["input_limits"]["pitch"], 90.0)
-
-    def test_automatic_calibration_updates_custom_yaw_and_pitch_limits(self):
-        panel = NativeOutputSettingsDialog()
-        self.addCleanup(panel.close)
-        panel.set_current_pose((0.0, 0.0, 0.0))
-        panel._apply_calibrated_limits(30.5, 27.4)
-        settings = panel.get_settings()
-        self.assertEqual(settings["input_limit_custom"]["yaw"], True)
-        self.assertEqual(settings["input_limit_custom"]["pitch"], True)
-        self.assertAlmostEqual(settings["input_limits"]["yaw"], 30.5)
-        self.assertAlmostEqual(settings["input_limits"]["pitch"], 27.4)
-        self.assertFalse(settings["input_limit_custom"]["roll"])
-
-    def test_screen_edge_calibration_completes_and_closes_popouts(self):
-        current_pose = [-35.0, 0.0, 0.0]
-        results = []
-        calibration = InputMagnitudeCalibration(
-            lambda: tuple(current_pose),
-            lambda yaw, pitch: results.append((yaw, pitch)),
-        )
-        self.addCleanup(calibration.cancel)
-        calibration.start()
-        self.assertEqual(calibration._intro.width(), calibration._intro.height())
-        self.assertEqual(
-            calibration._intro.container.objectName(),
-            "visualizationPopup",
-        )
-        self.assertEqual(
-            calibration._intro.objectName(),
-            "visualizationPopupWindow",
-        )
-        self.assertIn(
-            "border-radius",
-            calibration._intro.container.styleSheet(),
-        )
-        self.assertIn("border: none", calibration._intro.container.styleSheet())
-        calibration._intro.start_button.click()
-        self.assertIsNotNone(calibration._target)
-        self.assertEqual(calibration._target.width(), calibration._target.height())
-        self.assertEqual(calibration._target.container.objectName(), "visualizationPopup")
-        self.assertEqual(
-            calibration._target.objectName(),
-            "visualizationPopupWindow",
-        )
-        self.assertIsInstance(calibration._prompt.container, QFrame)
-        self.assertEqual(calibration._prompt.width(), calibration._prompt.height())
-        self.assertIn("border-radius", calibration._prompt.container.styleSheet())
-        self.assertEqual(calibration._prompt.windowTitle(), "Left edge calibration")
-        calibration._prompt.set_button.click()
-        self.assertEqual(calibration._prompt.windowTitle(), "Right edge calibration")
-
-        for pose, expected_next_title in (
-            ((30.5, 0.0, 0.0), "Upper edge calibration"),
-            ((0.0, -28.0, 0.0), "Lower edge calibration"),
-        ):
-            current_pose[:] = pose
-            calibration._prompt.set_button.click()
-            self.assertEqual(calibration._prompt.windowTitle(), expected_next_title)
-
-        current_pose[:] = (0.0, 27.4, 0.0)
-        calibration._prompt.set_button.click()
-        self.assertEqual(results, [(30.5, 27.4)])
-        self.assertFalse(calibration.active)
-        self.assertIsNone(calibration._target)
-        self.assertIsNone(calibration._prompt)
 
     def test_filter_sliders_use_configured_ranges_and_values(self):
         from queue import Queue

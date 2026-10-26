@@ -132,6 +132,26 @@ class TiltCorrectionTests(unittest.TestCase):
                     for component in flt._tilt_bias:
                         self.assertLess(abs(math.degrees(component)), 0.001)
 
+    def test_stationary_accelerometer_noise_does_not_disable_tilt_feedback(self):
+        flt = _level_filter(gyro_bias_tracking_gain=0.0)
+        outputs = []
+
+        def noisy_level(timestamp):
+            return (
+                0.0016 * math.sin(2.0 * math.pi * 31.0 * timestamp),
+                0.0015 * math.sin(2.0 * math.pi * 23.0 * timestamp + 0.4),
+                1.0 + 0.0015 * math.cos(2.0 * math.pi * 29.0 * timestamp),
+            )
+
+        for index in range(1, 250 * 30 + 1):
+            timestamp = index / 250
+            outputs.append(
+                flt.update((0.0, 0.2, 0.0), noisy_level(timestamp), timestamp)
+            )
+
+        self.assertLess(abs(outputs[-1][1]), 0.5)
+        self.assertLess(abs(outputs[-1][1] - outputs[-2500][1]), 0.1)
+
     def test_filtered_innovation_cannot_push_against_current_gravity_error(self):
         flt = _level_filter(gyro_bias_tracking_gain=0.0)
         flt._tilt_err_lp1 = [0.0, 0.05, 0.0]
@@ -281,8 +301,7 @@ class TiltCorrectionTests(unittest.TestCase):
             self.assertAlmostEqual(angle, 0.0, places=9)
 
     def test_resting_off_center_under_center_assist_does_not_learn_bias(self):
-        # Center assist pulls toward 0 deg while gravity says 3 deg; that
-        # disagreement is not gyro bias and must not wind up the integrator.
+        # Yaw-only center assistance must not create tilt-bias disagreement.
         filter_instance = QuaternionComplementaryFilter()
         tilt = math.radians(3.0)
         rested = (-math.sin(tilt), 0.0, math.cos(tilt))
@@ -497,6 +516,120 @@ class AccelTauPreferenceTests(unittest.TestCase):
         preferences.accel_tau_roll_slider.setValue(30)
         preferences._apply_accel_tau_roll()
         self.assertIn(('set_accel_tau_roll', 3.0), list(control_queue.queue))
+
+    def test_stationary_yaw_bias_tracking_setting_persists_and_applies_live(self):
+        control_queue = Queue()
+        preferences = PreferencesPanel(
+            preferences_manager=Mock(), control_queue=control_queue
+        )
+        self.addCleanup(preferences.close)
+
+        preferences._load_gyro_settings({'yaw_bias_tracking_enabled': 'true'})
+        self.assertTrue(preferences.yaw_bias_tracking_enabled)
+        self.assertTrue(
+            preferences.get_tuning_preferences()['yaw_bias_tracking_enabled']
+        )
+        preferences._apply_settings_to_fusion_worker({})
+        self.assertIn(
+            ('set_yaw_bias_tracking', True),
+            list(control_queue.queue),
+        )
+
+        preferences._loading = False
+        preferences.yaw_bias_tracking_checkbox.setChecked(False)
+        self.assertFalse(preferences.yaw_bias_tracking_enabled)
+        self.assertIn(
+            ('set_yaw_bias_tracking', False),
+            list(control_queue.queue),
+        )
+
+    def test_persist_calibration_option_restores_loaded_sensor_offsets(self):
+        calibration = {
+            'gyro': (0.12, -0.23, 0.34),
+            'accel': (0.012, -0.023, 0.034),
+        }
+        manager = Mock()
+        manager.get_sensor_calibration.return_value = calibration
+        manager.sensor_calibration_preferences.side_effect = (
+            lambda value: {
+                'gyro_x_dps': str(value['gyro'][0]),
+                'gyro_y_dps': str(value['gyro'][1]),
+                'gyro_z_dps': str(value['gyro'][2]),
+                'accel_x_g': str(value['accel'][0]),
+                'accel_y_g': str(value['accel'][1]),
+                'accel_z_g': str(value['accel'][2]),
+            }
+        )
+        control_queue = Queue()
+        preferences = PreferencesPanel(
+            preferences_manager=manager,
+            control_queue=control_queue,
+        )
+        self.addCleanup(preferences.close)
+
+        self.assertFalse(preferences.persist_calibration_checkbox.isChecked())
+        self.assertFalse(
+            preferences.get_tuning_preferences()[
+                'persist_calibration_across_sessions'
+            ]
+        )
+        self.assertIsNone(preferences.get_sensor_calibration_preferences())
+
+        preferences._load_gyro_settings({
+            'persist_calibration_across_sessions': 'true',
+        })
+        preferences._apply_settings_to_fusion_worker({})
+
+        self.assertTrue(preferences.persist_calibration_checkbox.isChecked())
+        self.assertEqual(
+            preferences.get_sensor_calibration_preferences(),
+            {
+                'gyro_x_dps': '0.12',
+                'gyro_y_dps': '-0.23',
+                'gyro_z_dps': '0.34',
+                'accel_x_g': '0.012',
+                'accel_y_g': '-0.023',
+                'accel_z_g': '0.034',
+            },
+        )
+        self.assertIn(
+            ('set_sensor_biases', calibration['gyro'], calibration['accel']),
+            list(control_queue.queue),
+        )
+
+    def test_current_calibration_is_saved_only_when_persistence_is_enabled(self):
+        calibration = {
+            'gyro': (0.12, -0.23, 0.34),
+            'accel': (0.012, -0.023, 0.034),
+        }
+        manager = Mock()
+        manager.sensor_calibration_preferences.side_effect = (
+            lambda value: {
+                'gyro_x_dps': str(value['gyro'][0]),
+                'gyro_y_dps': str(value['gyro'][1]),
+                'gyro_z_dps': str(value['gyro'][2]),
+                'accel_x_g': str(value['accel'][0]),
+                'accel_y_g': str(value['accel'][1]),
+                'accel_z_g': str(value['accel'][2]),
+            }
+        )
+        manager.sensor_calibration_from_preferences.return_value = calibration
+        preferences = PreferencesPanel(preferences_manager=manager)
+        self.addCleanup(preferences.close)
+
+        preferences.update_sensor_calibration(calibration)
+        self.assertIsNone(preferences.get_sensor_calibration_preferences())
+
+        preferences.persist_calibration_checkbox.setChecked(True)
+        self.assertIsNotNone(preferences.get_sensor_calibration_preferences())
+        preferences._loading = False
+        changes = []
+        preferences.preferences_changed.connect(lambda: changes.append(True))
+        preferences.update_sensor_calibration(calibration)
+        self.assertEqual(changes, [True])
+        preferences.update_sensor_calibration(None)
+        self.assertIsNone(preferences.get_sensor_calibration_preferences())
+        self.assertEqual(changes, [True, True])
 
 
 if __name__ == "__main__":

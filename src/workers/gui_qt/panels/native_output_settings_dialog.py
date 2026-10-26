@@ -3,7 +3,6 @@
 import json
 import logging
 import math
-import time
 
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
@@ -29,7 +28,6 @@ from PyQt5.QtWidgets import (
 from src.config.config import (
     CUSTOM_INPUT_LIMIT_DEG_RANGE,
     CUSTOM_INPUT_LIMIT_DEG_STEP,
-    INPUT_LIMIT_CALIBRATION_POSE_STALE_S,
     QUEUE_PUT_TIMEOUT,
 )
 
@@ -41,7 +39,6 @@ from .dialog_utils import (
 from src.filters import available_filters, default_filter_settings, get_filter_definition
 from src.filters.one_euro import ONE_EURO_FILTER_ID
 from src.util.error_utils import safe_queue_put
-from .input_limit_calibration import InputMagnitudeCalibration
 from src.outputs.native_output_processing import (
     AXES,
     CURVE_INPUT_LIMIT_DEG,
@@ -631,9 +628,7 @@ class NativeOutputSettingsDialog(QDialog):
         self.log_message = log_message or logging.getLogger(__name__).warning
         self.settings = default_native_output_settings()
         self._loading = True
-        self._calibration_controller = None
         self._current_pose = None
-        self._current_pose_time = None
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._apply_pending_settings)
@@ -722,15 +717,6 @@ class NativeOutputSettingsDialog(QDialog):
         self.reset_curve_button = QPushButton("Reset Selected Curve")
         self.reset_curve_button.clicked.connect(self._reset_selected_curve)
         curve_buttons.addWidget(self.reset_curve_button)
-        self.auto_calibrate_button = QPushButton("Set automatically")
-        self.auto_calibrate_button.clicked.connect(
-            self._start_automatic_calibration
-        )
-        self.auto_calibrate_button.setToolTip(
-            "Calibrate yaw and pitch from four comfortable screen-edge turns. "
-            "Roll is not changed."
-        )
-        curve_buttons.addWidget(self.auto_calibrate_button)
         curve_buttons.addStretch()
         curve_help = QLabel(
             "Double-click to add; drag to edit; right-click to remove."
@@ -1103,68 +1089,8 @@ class NativeOutputSettingsDialog(QDialog):
         if not all(math.isfinite(value) for value in current_pose):
             return
         self._current_pose = current_pose
-        self._current_pose_time = time.perf_counter()
         for axis_index, axis in enumerate(AXES):
             self.curve_widgets[axis].set_current_input(current_pose[axis_index])
-
-    def _get_recent_pose_for_calibration(self):
-        if (
-            self._current_pose is None
-            or self._current_pose_time is None
-            or time.perf_counter() - self._current_pose_time
-            > INPUT_LIMIT_CALIBRATION_POSE_STALE_S
-        ):
-            return None
-        return self._current_pose
-
-    def _start_automatic_calibration(self):
-        if (
-            self._calibration_controller is not None
-            and self._calibration_controller.active
-        ):
-            return
-        calibration = InputMagnitudeCalibration(
-            self._get_recent_pose_for_calibration,
-            self._apply_calibrated_limits,
-            self.log_message,
-        )
-        try:
-            calibration.start()
-        except RuntimeError as error:
-            self.log_message(f"Could not start input magnitude calibration: {error}")
-            self.status_label.setText(f"Could not start calibration: {error}")
-            return
-        self._calibration_controller = calibration
-
-    def _apply_calibrated_limits(self, yaw_limit, pitch_limit):
-        applied_limits = {}
-        self._loading = True
-        try:
-            for axis, limit in (("yaw", yaw_limit), ("pitch", pitch_limit)):
-                custom_check = self.input_limit_custom_checks[axis]
-                custom_spin = self.input_limit_custom_spins[axis]
-                custom_check.blockSignals(True)
-                custom_check.setChecked(True)
-                custom_check.blockSignals(False)
-                custom_spin.blockSignals(True)
-                custom_spin.setValue(limit)
-                custom_spin.blockSignals(False)
-                applied_limit = custom_spin.value()
-                applied_limits[axis] = applied_limit
-                self._update_input_limit_controls(axis, True)
-                self.curve_widgets[axis].set_input_limit(
-                    applied_limit,
-                    rescale=True,
-                )
-            self._calibration_controller = None
-        finally:
-            self._loading = False
-
-        self.status_label.setText(
-            f"Calibration set yaw to {applied_limits['yaw']:.1f}° and "
-            f"pitch to {applied_limits['pitch']:.1f}°."
-        )
-        self._apply_pending_settings()
 
     def open_window(self):
         self.show()

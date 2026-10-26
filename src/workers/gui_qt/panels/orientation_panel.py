@@ -1,7 +1,7 @@
 """Orientation display and controls for the Orienta GUI."""
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QGridLayout, 
                              QLabel, QSizePolicy, QWidget, QFrame, QPushButton, QDialog, QSlider, QApplication,
-                             QStackedWidget, QDialogButtonBox)
+                             QStackedWidget, QDialogButtonBox, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer, QRect, QEvent
 
 from src.config.config import (
@@ -55,12 +55,14 @@ class OrientationPanelQt(QGroupBox):
         # Track whether fusion worker is actively processing data; start False
         self._processing_active = False
 
-        # Track whether gyro calibration is currently running
+        # Track whether sensor-bias calibration is currently running
         self._calibrating = False
-        self._gyro_calibrated = False
+        self._sensor_calibrated = False
+        self._sensor_calibration_source = "fresh"
         self.orientation_held = False
         self.orientation_hold_toggle_mode = False
         self._orientation_hold_sources = set()
+        self.disengage_toggled_on = False
         self.reset_orientation_instantaneous = False
         self._reset_recenter_sources = set()
         self._reset_orientation_pressed_sources = set()
@@ -244,7 +246,7 @@ class OrientationPanelQt(QGroupBox):
         values_layout.setSpacing(DEFAULT_SPACING)
         values_layout.setContentsMargins(*CONTENT_MARGINS)
 
-        # Device status, gyro calibration and drift correction indicators at the top of the values column
+        # Device status, sensor calibration and drift correction indicators.
         try:
             # Device status
             self.device_status_label = QLabel("Device status: Unknown")
@@ -252,14 +254,13 @@ class OrientationPanelQt(QGroupBox):
             self.device_status_label.setProperty('status', 'unknown')
             values_layout.addWidget(self.device_status_label)
 
-            # Gyro calibration status indicator (will be wired by calibration panel)
-            self.calib_status_label = QLabel("Gyro: Not calibrated")
+            self.calib_status_label = QLabel("Sensor: Not calibrated")
             self.calib_status_label.setAlignment(Qt.AlignLeft)
             self.calib_status_label.setProperty('status', 'error')
             values_layout.addWidget(self.calib_status_label)
 
-            # Drift correction status
-            self.drift_status_label = QLabel("Drift Correction Inactive")
+            # Yaw center-assist status
+            self.drift_status_label = QLabel("Yaw Center Assist Inactive")
             self.drift_status_label.setProperty("status", "error")
             self.drift_status_label.setAlignment(Qt.AlignLeft)
             values_layout.addWidget(self.drift_status_label)
@@ -279,12 +280,12 @@ class OrientationPanelQt(QGroupBox):
             self.device_status_label.setProperty('status', 'unknown')
             values_layout.addWidget(self.device_status_label)
 
-            self.calib_status_label = QLabel("Gyro: Not calibrated")
+            self.calib_status_label = QLabel("Sensor: Not calibrated")
             self.calib_status_label.setAlignment(Qt.AlignLeft)
             self.calib_status_label.setProperty('status', 'error')
             values_layout.addWidget(self.calib_status_label)
 
-            self.drift_status_label = QLabel("Drift Correction Inactive")
+            self.drift_status_label = QLabel("Yaw Center Assist Inactive")
             self.drift_status_label.setProperty("status", "error")
             self.drift_status_label.setAlignment(Qt.AlignLeft)
             values_layout.addWidget(self.drift_status_label)
@@ -358,7 +359,7 @@ class OrientationPanelQt(QGroupBox):
             pass
         # The euler grid shares its space with a "hold still" indicator that is
         # shown whenever no live orientation data is available (fusion inactive
-        # or gyro calibration running).
+        # or sensor-bias calibration running).
         self._euler_page = QWidget()
         euler_page_layout = QVBoxLayout(self._euler_page)
         euler_page_layout.setContentsMargins(0, 0, 0, 0)
@@ -396,18 +397,12 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
-        # Disengage drift correction button (moved from Calibration panel)
-        from PyQt5.QtGui import QFontMetrics, QFont
-        self.disengage_btn = TwoLineButton("Disengage Drift Correction", "")
+        # Center-assist disengage button.
+        self.disengage_btn = TwoLineButton("Center Assist Disengage", "")
         self.disengage_btn.setCheckable(True)
-        self.disengage_btn.setToolTip("Hold to temporarily disable drift correction")
-
-        # Compute size based on bold font like before
-        bold_font = QFont(self.disengage_btn.font())
-        bold_font.setBold(True)
-        fm = QFontMetrics(bold_font)
-        text_width = fm.horizontalAdvance("🔴 Drift Correction DISENGAGED")
-        text_height = fm.height()
+        self.disengage_btn.setToolTip(
+            "Hold this button or its shortcut to disable center assist."
+        )
         try:
             # Match ConnectionPanel's prominent button sizing: ensure at least 40px base
             desired_h = max(self.disengage_btn.sizeHint().height(), BUTTON_MIN_HEIGHT)
@@ -462,7 +457,7 @@ class OrientationPanelQt(QGroupBox):
         # button in the panel; only its width is constrained by the row layout.
         try:
             self.disengage_shortcut_btn = QPushButton("⚙")
-            self.disengage_shortcut_btn.setToolTip("Set shortcut for Disengage Drift Correction")
+            self.disengage_shortcut_btn.setToolTip("Set shortcut for Center Assist Disengage")
             try:
                 desired_h = max(self.disengage_btn.sizeHint().height(), BUTTON_MIN_HEIGHT)
                 self.disengage_shortcut_btn.setFixedHeight(desired_h + BUTTON_EXTRA_HEIGHT)
@@ -740,9 +735,12 @@ class OrientationPanelQt(QGroupBox):
         )
         values_layout.addLayout(hold_orientation_row)
 
-        # Recalibrate yaw drift correction button (moved from Calibration panel)
+        # Sensor bias calibration button.
         try:
-            self.recal_button = QPushButton("Recalibrate Yaw Drift Correction")
+            self.recal_button = QPushButton("Calibrate Sensor Biases")
+            self.recal_button.setToolTip(
+                "Estimates gyro and accelerometer offsets."
+            )
             # Match sizing of other buttons but keep this one slightly smaller
             try:
                 desired_h = max(self.recal_button.sizeHint().height(), BUTTON_MIN_HEIGHT - 16)
@@ -953,7 +951,7 @@ class OrientationPanelQt(QGroupBox):
             sliders_layout.setSpacing(DEFAULT_SPACING)
 
             # Header
-            header = QLabel("Drift Correction Angles")
+            header = QLabel("Center Assist Threshold Angles")
             header.setAlignment(Qt.AlignCenter)
             header.setStyleSheet("font-weight: bold; margin-bottom: 4px;")
             sliders_layout.addWidget(header)
@@ -2091,14 +2089,13 @@ class OrientationPanelQt(QGroupBox):
         return super().eventFilter(obj, event)
 
     def _update_euler_view(self):
-        """Show Euler angles only while fusion is processing and no calibration runs."""
+        """Show Euler angles whenever fusion is processing."""
         try:
             stack = getattr(self, 'euler_stack', None)
             if stack is None:
                 return
 
-            show_angles = (bool(getattr(self, '_processing_active', False))
-                           and not bool(getattr(self, '_calibrating', False)))
+            show_angles = bool(getattr(self, '_processing_active', False))
             hold = getattr(self, 'hold_indicator', None)
 
             if show_angles:
@@ -2148,27 +2145,52 @@ class OrientationPanelQt(QGroupBox):
             # Update own drift status label
             if hasattr(self, 'drift_status_label') and self.drift_status_label:
                 if active:
-                    self.drift_status_label.setText("Drift Correction Active")
-                    self.drift_status_label.setProperty("status", "enabled")
+                    self.drift_status_label.setText("Yaw Center Assist Active")
+                    self._set_top_indicator_status(
+                        self.drift_status_label, "enabled"
+                    )
                 else:
-                    self.drift_status_label.setText("Drift Correction Inactive")
-                    self.drift_status_label.setProperty("status", "error")
-                try:
-                    self.drift_status_label.style().polish(self.drift_status_label)
-                except Exception:
-                    pass
+                    self.drift_status_label.setText("Yaw Center Assist Inactive")
+                    self._set_top_indicator_status(
+                        self.drift_status_label, "error"
+                    )
 
         except Exception:
             pass
 
     # --- Calibration status compatibility API ---
+    def _set_top_indicator_status(self, label, active_status):
+        """Show semantic status only while valid sensor samples are flowing."""
+        if label is None:
+            return
+        label.setProperty("activeStatus", active_status)
+        visible_status = (
+            active_status if self._processing_active else "disabled"
+        )
+        if label.property("status") != visible_status:
+            label.setProperty("status", visible_status)
+            label.style().polish(label)
+            label.update()
+
+    def _refresh_top_indicator_statuses(self):
+        """Reapply the no-data override to all top status indicators."""
+        for name in (
+            "device_status_label",
+            "calib_status_label",
+            "drift_status_label",
+        ):
+            label = getattr(self, name, None)
+            if label is not None:
+                active_status = label.property("activeStatus") or "unknown"
+                self._set_top_indicator_status(label, active_status)
+
     def _update_recalibration_button_status(self):
         button = getattr(self, 'recal_button', None)
         if button is None:
             return
         if not self._processing_active:
             status = 'disabled'
-        elif not self._gyro_calibrated or self._calibrating:
+        elif not self._sensor_calibrated or self._calibrating:
             status = 'warning'
         else:
             status = ''
@@ -2178,25 +2200,41 @@ class OrientationPanelQt(QGroupBox):
 
     def update_calibration_status(self, calibrated: bool):
         """
-        Compatibility method called by GUI worker when fusion reports gyro calibration status.
+        Compatibility method called by GUI worker when fusion reports sensor calibration status.
         Updates the calibration indicator label.
         """
-        self._gyro_calibrated = bool(calibrated)
+        self._sensor_calibrated = bool(calibrated)
+        self._render_calibration_status()
+        self._update_recalibration_button_status()
+
+    def update_calibration_source(self, source):
+        """Track whether active sensor offsets came from preferences or calibration."""
+        self._sensor_calibration_source = (
+            "stored" if source == "stored" else "fresh"
+        )
+        self._render_calibration_status()
+
+    def _render_calibration_status(self):
+        """Render the current calibrated state and its source."""
         try:
             if hasattr(self, 'calib_status_label') and self.calib_status_label:
-                if calibrated:
-                    self.calib_status_label.setText("Gyro: Calibrated")
-                    self.calib_status_label.setProperty('status', 'enabled')
+                if self._sensor_calibrated:
+                    label = (
+                        "Sensor: calibrated (stored)"
+                        if self._sensor_calibration_source == "stored"
+                        else "Sensor: Calibrated"
+                    )
+                    self.calib_status_label.setText(label)
+                    self._set_top_indicator_status(
+                        self.calib_status_label, "enabled"
+                    )
                 else:
-                    self.calib_status_label.setText("Gyro: Not calibrated")
-                    self.calib_status_label.setProperty('status', 'error')
-                try:
-                    self.calib_status_label.style().polish(self.calib_status_label)
-                except Exception:
-                    pass
+                    self.calib_status_label.setText("Sensor: Not calibrated")
+                    self._set_top_indicator_status(
+                        self.calib_status_label, "error"
+                    )
         except Exception:
             pass
-        self._update_recalibration_button_status()
 
     def update_calibrating_status(self, calibrating: bool):
         """
@@ -2206,8 +2244,10 @@ class OrientationPanelQt(QGroupBox):
         try:
             if hasattr(self, 'calib_status_label') and self.calib_status_label:
                 if calibrating:
-                    self.calib_status_label.setText("Gyro: Calibrating...")
-                    self.calib_status_label.setProperty('status', 'warning')
+                    self.calib_status_label.setText("Sensor: Calibrating...")
+                    self._set_top_indicator_status(
+                        self.calib_status_label, "warning"
+                    )
                 else:
                     # When calibration stops, leave result unchanged; GUI _handle_status_update
                     # will subsequently call update_calibration_status with the final result.
@@ -2219,7 +2259,6 @@ class OrientationPanelQt(QGroupBox):
         except Exception:
             pass
 
-        # Calibration blocks live angle output; reflect that in the Euler area
         self._calibrating = bool(calibrating)
         self._update_recalibration_button_status()
         self._update_euler_view()
@@ -2289,11 +2328,13 @@ class OrientationPanelQt(QGroupBox):
 
             # If state hasn't changed, do nothing
             if getattr(self, '_processing_active', None) == active:
+                self._refresh_top_indicator_statuses()
                 self._update_euler_view()
                 return
 
             # Remember state
             self._processing_active = active
+            self._refresh_top_indicator_statuses()
             self._update_euler_view()
 
             # Log state change
@@ -2340,7 +2381,14 @@ class OrientationPanelQt(QGroupBox):
                             'status',
                             'warning'
                             if (
-                                (name == 'orientation_hold_btn' and self.orientation_held)
+                                (
+                                    name == 'disengage_btn'
+                                    and self.disengage_toggled_on
+                                )
+                                or (
+                                    name == 'orientation_hold_btn'
+                                    and self.orientation_held
+                                )
                                 or (
                                     name == 'reset_button'
                                     and self._reset_orientation_pressed_sources
@@ -2348,7 +2396,7 @@ class OrientationPanelQt(QGroupBox):
                                 or (
                                     name == 'recal_button'
                                     and (
-                                        not self._gyro_calibrated
+                                        not self._sensor_calibrated
                                         or self._calibrating
                                     )
                                 )
@@ -2391,18 +2439,17 @@ class OrientationPanelQt(QGroupBox):
         should only update calibration-related indicators.
         """
         try:
-            self._gyro_calibrated = False
+            self._sensor_calibrated = False
+            self._sensor_calibration_source = "fresh"
             # Update calibration indicator only; do not change slider values or
             # stored drift thresholds (stored_drift_*). Those are preserved so
             # user tuning is not lost by a calibration/state reset.
             if getattr(self, 'calib_status_label', None):
                 try:
-                    self.calib_status_label.setText("Gyro: Not calibrated")
-                    self.calib_status_label.setProperty('status', 'error')
-                    try:
-                        self.calib_status_label.style().polish(self.calib_status_label)
-                    except Exception:
-                        pass
+                    self.calib_status_label.setText("Sensor: Not calibrated")
+                    self._set_top_indicator_status(
+                        self.calib_status_label, "error"
+                    )
                 except Exception:
                     pass
 
@@ -2430,16 +2477,12 @@ class OrientationPanelQt(QGroupBox):
                 return
             if stationary:
                 text = "Device status: stationary"
-                self.device_status_label.setProperty('status', 'enabled')
+                status = "enabled"
             else:
                 text = "Device status: moving"
-                self.device_status_label.setProperty('status', 'error')
+                status = "error"
             self.device_status_label.setText(text)
-            try:
-                # Ensure stylesheet updates are reflected
-                self.device_status_label.style().polish(self.device_status_label)
-            except Exception:
-                pass
+            self._set_top_indicator_status(self.device_status_label, status)
         except Exception:
             pass
 
@@ -2448,6 +2491,9 @@ class OrientationPanelQt(QGroupBox):
         try:
             if hasattr(self, 'device_status_label') and self.device_status_label:
                 self.device_status_label.setText("Device status: Unknown")
+                self._set_top_indicator_status(
+                    self.device_status_label, "unknown"
+                )
         except Exception:
             pass
     
@@ -2908,23 +2954,7 @@ class OrientationPanelQt(QGroupBox):
         try:
             self.disengage_shortcut = key
             self.disengage_shortcut_display_name = display_name if display_name else key
-            try:
-                # Update the button to show the shortcut on a second line
-                if key and key != 'None' and hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    try:
-                        self.disengage_btn.setParts("Disengage Drift Correction", self.disengage_shortcut_display_name)
-                    except Exception:
-                        try:
-                            self.disengage_btn.setParts("Disengage Drift Correction", str(self.disengage_shortcut_display_name))
-                        except Exception:
-                            pass
-                elif hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    try:
-                        self.disengage_btn.setParts("Disengage Drift Correction", "")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            self._update_disengage_button()
 
             if getattr(self, 'input_command_queue', None) and key and key != 'None':
                 try:
@@ -2938,6 +2968,45 @@ class OrientationPanelQt(QGroupBox):
                     pass
         except Exception:
             pass
+
+    def _update_disengage_button(self):
+        """Keep the shortcut visible while reflecting center-assist state."""
+        button = getattr(self, 'disengage_btn', None)
+        if button is None:
+            return
+
+        disengaged = bool(getattr(self, 'disengage_toggled_on', False))
+        shortcut = getattr(self, 'disengage_shortcut_display_name', None)
+        if not shortcut or shortcut == 'None':
+            shortcut = ''
+
+        button.setParts(
+            "Center Assist Disengaged" if disengaged else "Center Assist Disengage",
+            str(shortcut),
+        )
+        if getattr(self, 'disengage_toggle_mode', False):
+            button.setToolTip(
+                "Center assist is disabled. Press this button or its shortcut "
+                "again to re-enable it."
+                if disengaged
+                else "Press this button or its shortcut to toggle center assist off."
+            )
+        else:
+            button.setToolTip(
+                "Center assist is disabled. Release this button or its shortcut "
+                "to re-enable it."
+                if disengaged
+                else "Hold this button or its shortcut to disable center assist."
+            )
+
+        status = (
+            'disabled'
+            if not getattr(self, '_processing_active', False)
+            else 'warning' if disengaged else ''
+        )
+        button.setProperty('status', status)
+        button.style().polish(button)
+        button.update()
 
     def _set_orientation_hold_shortcut(self, key, display_name):
         """Set the orientation-hold shortcut and register it with the input worker."""
@@ -3090,6 +3159,8 @@ class OrientationPanelQt(QGroupBox):
                     self._disengage_off()
                 except Exception:
                     pass
+            else:
+                self._update_disengage_button()
         except Exception:
             pass
 
@@ -3203,24 +3274,38 @@ class OrientationPanelQt(QGroupBox):
             )
 
     def _on_recalibrate(self):
-        """Request gyro recalibration from control queue."""
+        """Request gyro and known-level accelerometer bias calibration."""
         try:
+            if not self.control_queue:
+                if self.message_callback:
+                    self.message_callback("Cannot calibrate sensor biases: no fusion control queue")
+                return
+            confirmation = QMessageBox.question(
+                self,
+                "Calibrate Sensor Biases",
+                "Set your sensor up so that it's still and level. "
+                "Keep it still "
+                "until calibration completes. This estimates gyro and "
+                "accelerometer offsets.\n\n"
+                "Start calibration?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if confirmation != QMessageBox.Yes:
+                return
+
             sample_count = None
             if hasattr(self, 'preferences_panel') and self.preferences_panel:
                 try:
                     sample_count = self.preferences_panel.gyro_bias_cal_samples
                 except Exception:
                     sample_count = None
-            cmd = ('recalibrate_gyro_bias', sample_count) if sample_count is not None else ('recalibrate_gyro_bias',)
-            if not self.control_queue:
-                if self.message_callback:
-                    self.message_callback("Cannot recalibrate: no fusion control queue")
-                return
+            cmd = ('recalibrate_sensor_bias', sample_count) if sample_count is not None else ('recalibrate_sensor_bias',)
             if not safe_queue_put(self.control_queue, cmd, timeout=QUEUE_PUT_TIMEOUT):
                 if self.message_callback:
-                    self.message_callback("Failed to send gyro recalibration command")
+                    self.message_callback("Failed to send sensor calibration command")
         except Exception as e:
-            _ui_log(self, f"[OrientationPanel] Error requesting gyro recalibration: {e}")
+            _ui_log(self, f"[OrientationPanel] Error requesting sensor calibration: {e}")
 
     def _on_disengage_pressed(self):
         """Handle disengage pressed (toggle or hold)."""
@@ -3236,76 +3321,25 @@ class OrientationPanelQt(QGroupBox):
             pass
 
     def _disengage_on(self):
-        """Disable drift correction at the worker and update visuals."""
+        """Disable center assist at the worker and update the button."""
         try:
             self.stored_drift_yaw = getattr(self, 'drift_angle_yaw_value', 0.0)
             self.stored_drift_pitch = getattr(self, 'drift_angle_pitch_value', 0.0)
             self.stored_drift_roll = getattr(self, 'drift_angle_roll_value', 0.0)
             if self.control_queue:
                 safe_queue_put(self.control_queue, ('set_threshold', 0.0, 0.0, 0.0), timeout=QUEUE_PUT_TIMEOUT)
-            try:
-                if hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    self.disengage_btn.setParts("🔴 Drift Correction DISENGAGED", "")
-                    # Use semantic property so QSS applies the correct styling (dark/light aware)
-                    try:
-                        self.disengage_btn.setProperty('status', 'error')
-                        # Also make text bold via font rather than stylesheet
-                        f = self.disengage_btn.font()
-                        f.setBold(True)
-                        self.disengage_btn.setFont(f)
-                        # Refresh style
-                        try:
-                            self.disengage_btn.style().polish(self.disengage_btn)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
             self.disengage_toggled_on = True
+            self._update_disengage_button()
         except Exception:
             pass
 
     def _disengage_off(self):
-        """Restore drift correction thresholds and visuals."""
+        """Restore center-assist thresholds and update the button."""
         try:
             if self.control_queue:
                 safe_queue_put(self.control_queue, ('set_threshold', getattr(self, 'stored_drift_yaw', 0.0), getattr(self, 'stored_drift_pitch', 0.0), getattr(self, 'stored_drift_roll', 0.0)), timeout=QUEUE_PUT_TIMEOUT)
-            try:
-                if hasattr(self, 'disengage_btn') and self.disengage_btn:
-                    # Restore default button text: show shortcut on second line if available
-                    try:
-                        if getattr(self, 'disengage_shortcut_display_name', None):
-                            try:
-                                self.disengage_btn.setParts("Disengage Drift Correction", self.disengage_shortcut_display_name)
-                            except Exception:
-                                try:
-                                    self.disengage_btn.setParts("Disengage Drift Correction", str(self.disengage_shortcut_display_name))
-                                except Exception:
-                                    pass
-                        else:
-                            try:
-                                self.disengage_btn.setParts("Disengage Drift Correction", "")
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                    # Clear semantic status property so QSS reverts to default button styling
-                    try:
-                        self.disengage_btn.setProperty('status', '')
-                        f = self.disengage_btn.font()
-                        f.setBold(False)
-                        self.disengage_btn.setFont(f)
-                        try:
-                            self.disengage_btn.style().polish(self.disengage_btn)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
             self.disengage_toggled_on = False
+            self._update_disengage_button()
         except Exception:
             pass
 

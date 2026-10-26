@@ -83,8 +83,9 @@ to fusion. Startup and diagnostic text is not placed on the fusion queue.
 ### `src/workers/fusion_wrk.py`
 
 This is the core orientation implementation. `QuaternionComplementaryFilter`
-contains quaternion math, accelerometer-derived roll/pitch, stationary
-detection, gradual drift correction, calibration offsets, and reset state.
+contains quaternion math, corrected-accelerometer roll/pitch, stationary
+detection, yaw-only center assistance, sensor-bias calibration, and output-origin
+state.
 `run_worker()` implements the control command protocol, gathers calibration
 samples, runs the filter, handles output queue backpressure, and produces
 status changes. The fusion worker validates that computed Euler outputs are
@@ -102,21 +103,33 @@ Important state fields:
   right-handed sensor frame (application yaw is its negation; see
   `_euler_from_quat`);
 * `last_time`: IMU timing baseline, not wall-clock time;
-* `gyro_bias_roll`, `gyro_bias_pitch`, `gyro_bias_yaw`: stationary-estimated raw
-  sensor `gx`, `gy`, `gz` biases, subtracted before integration and stationary detection;
+* `gyro_bias_roll`, `gyro_bias_pitch`, `gyro_bias_yaw`: raw sensor `gx`, `gy`,
+  `gz` offsets, subtracted before integration and stationary detection;
+* `accel_bias_x`, `accel_bias_y`, `accel_bias_z`: raw acceleration offsets
+  estimated while the sensor is level with +Z up, subtracted before tilt
+  initialization, correction, and stationary detection;
 * `accel_tau_pitch`, `accel_tau_roll`: accelerometer tilt-correction time
   constants in seconds (`math.inf` disables correction);
 * `_tilt_bias`: online residual gyro-bias estimate from the tilt-correction
   integral term;
-* `center_offset_*`: level/rest-pose offsets;
-* `center_threshold_*`: independent limits before auto-drift correction;
+* `output_origin`: unified full-pose reference captured by recenter and used
+  for output zero and yaw center-assist gating;
+* `center_threshold_*`: independent limits; all three must pass before
+  stationary yaw-only center assistance engages;
+* `yaw_bias_tracking_enabled`, its manual-calibration reference, and stationary
+  dwell state: opt-in bounded adaptation of the raw yaw-axis gyro bias;
 * `invert_*`: output axis inversion;
 * `_stationary_start` and `_drift_correction_start`: timestamp-driven state.
 
 `_calculate_drift_factor` integrates the selected engagement ramp and returns
-an exponential per-frame attraction gain. Once engagement finishes, correction
-continues at a constant rate instead of stalling. `calibrate_gyro_bias` averages
-accepted raw X/Y/Z samples, and `_correct_gyro` subtracts those estimates.
+an exponential per-frame attraction gain. Once engagement finishes, yaw
+correction continues at a constant rate instead of stalling.
+`SensorBiasCalibration` collects a confidence-checked stationary window
+without pausing fusion; robust gyro and accelerometer estimates must both pass
+before `calibrate_sensor_bias` atomically replaces the offsets. A failed or
+timed-out request retains the existing calibration. `_correct_gyro` and
+`_correct_accel` apply offsets before fusion; recenter sets `output_origin`
+without changing the physical quaternion or sensor calibration.
 `_slerp` supports orientation hold/resume; `_nlerp` is a retained utility.
 Preserve math units:
 gyroscope input is degrees/second, quaternion integration converts it to
@@ -157,9 +170,8 @@ still opens immediately from its own rate.
 `gui_qt/panels/native_output_settings_dialog.py` builds the filter dropdown and
 the selected filter's parameter sliders from registry metadata, alongside the
 smooth curve editor, per-axis preset/custom input limits, offsets, validation,
-and preference serialization. Its automatic yaw/pitch calibration is
-implemented in `gui_qt/panels/input_limit_calibration.py`; the worker receives
-validated settings through `set_native_processing`.
+and preference serialization. The worker receives validated settings through
+`set_native_processing`.
 
 ### `src/outputs/udp_output.py`
 
@@ -287,8 +299,8 @@ similarly named orientation class.
 
 ### `src/workers/gui_qt/panels/preferences_panel.py`
 
-`PreferencesPanel` supplies theme, fusion tuning, stationary/drift behavior,
-gyro calibration sample count, axis inversion, and behavior preferences for
+`PreferencesPanel` supplies theme, fusion tuning, stationary/yaw-assist behavior,
+sensor-bias calibration sample count, axis inversion, and behavior preferences for
 Disengage, Hold Orientation, and Reset Orientation.
 Several sliders use one-shot QTimers so a drag does not flood the small fusion
 control queue. `_apply_settings_to_fusion_worker()` is the bridge from saved
@@ -298,6 +310,11 @@ UI state back to runtime commands. New persisted fusion options need:
 2. loading and preference serialization,
 3. a command from this panel,
 4. fusion command validation/application.
+
+The Sensor Bias Calibration group describes the required known-level (+Z up)
+pose and owns the opt-in stationary yaw-bias tracking checkbox. It is off by
+default and warns that very slow intentional yaw can be learned as bias; its
+saved preference is applied to FusionWorker at startup.
 
 ### `src/workers/gui_qt/panels/message_panel.py`
 
@@ -324,7 +341,10 @@ Qt base classes.
   `%LOCALAPPDATA%\Orienta\config.cfg`, reads nested INI sections, and writes atomically.
   Its legacy single-key helpers read and write keys in the `[gui]` section;
   GUI panels persist their settings in named sections such as `[serial]`,
-  `[network]`, `[orientation]`, and `[native_output]`.
+  `[network]`, `[orientation]`, and `[native_output]`. Opt-in sensor-bias
+  persistence stores validated gyro and accelerometer offsets in
+  `[sensor_calibration]`; it is restored to FusionWorker at startup only when
+  `persist_calibration_across_sessions` is enabled.
 * `src/managers/theme_manager.py` searches upward for `src/themes/`, reads a requested
   QSS file, and applies it to `QApplication`.
 * `workers/gui_qt/helpers/icon_helper.py` searches upward for `src/img/icon.ico` (or `icon.png`)

@@ -87,6 +87,7 @@ dmypy.json
 *.bak
 test_output/
 todo.md
+guides/
 
 # Agents
 .github/

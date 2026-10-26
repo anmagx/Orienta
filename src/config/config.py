@@ -67,7 +67,7 @@ SENSOR_SETTINGS_RESPONSE_TIMEOUT_MS = 3000
 # ============================================================================
 QUEUE_SIZE_DATA = 300  # For data pipelines (serial, euler) - 2.5s buffer at 120Hz
 QUEUE_SIZE_DISPLAY = 60  # For display-only queues - 500ms buffer for smooth updates
-QUEUE_SIZE_CONTROL = 10  # For control command queues
+QUEUE_SIZE_CONTROL = 12  # For control commands plus startup preference replay
 
 # Queue monitoring thresholds
 QUEUE_HIGH_WATERMARK = 0.8  # Trigger adaptive sampling when queue is 80% full
@@ -118,7 +118,9 @@ ACCEL_TRUST_SIGMA_G = 0.05
 ACCEL_TRUST_GYRO_RATE_DPS = 30.0
 ACCEL_TRUST_HOLD_S = 0.5
 # Gravity-innovation slew width (1/s). Rapid direction changes without matching
-# gyro motion indicate translation; hold distrust through the disturbance.
+# gyro motion indicate translation; compute its slew after a short low-pass to
+# avoid amplifying ordinary accelerometer noise at the sample rate.
+ACCEL_INNOVATION_SLEW_CUTOFF_HZ = 3.0
 ACCEL_INNOVATION_SLEW_SIGMA = 0.2
 ACCEL_CORRECTION_MAX_DPS = 2.0
 # Integral gain (1/s^2) of the online gyro bias estimate driven by the tilt
@@ -147,15 +149,28 @@ DRIFT_UI_THRESHOLD = 0.1             # Minimum drift strength to show UI indicat
 DRIFT_SMOOTHING_TIME = 2.0           # Center-assist engagement time and sustained time constant (seconds)
 
 # ============================================================================
-# Gyro bias calibration
+# Sensor bias calibration
 # ============================================================================
-# Number of stationary X/Y/Z samples for manually triggered gyro bias calibration.
+# Number of stationary samples for the known-level sensor-bias calibration.
 GYRO_BIAS_CAL_SAMPLES = 400
-# Number of accel samples to collect for a quick level (pitch/roll) calibration.
-# Level calibration requires far fewer samples than gyro bias; 10-20 is typically enough.
-LEVEL_CAL_SAMPLES = 20
-
-
+# Calibration requires a stable sample set; reject noisy windows rather than
+# replacing a previously useful bias estimate.
+GYRO_BIAS_CAL_MAX_ROBUST_STDDEV_DPS = 0.25
+ACCEL_BIAS_CAL_MAX_ROBUST_STDDEV_G = 0.02
+ACCEL_BIAS_CAL_MAX_LEVEL_ANGLE_DEG = 15.0
+GYRO_BIAS_CAL_OUTLIER_SIGMAS = 3.0
+GYRO_BIAS_CAL_OUTLIER_FLOOR_DPS = 0.05
+ACCEL_BIAS_CAL_OUTLIER_SIGMAS = 3.0
+ACCEL_BIAS_CAL_OUTLIER_FLOOR_G = 0.003
+GYRO_BIAS_CAL_TIMEOUT_S = 30.0
+# Optional, conservative yaw gyro-bias adaptation while confidently stationary.
+DEFAULT_YAW_BIAS_TRACKING_ENABLED = False
+YAW_BIAS_TRACKING_DWELL_S = 2.0
+YAW_BIAS_TRACKING_TIME_CONSTANT_S = 30.0
+YAW_BIAS_TRACKING_MAX_OFFSET_DPS = 0.25
+YAW_BIAS_TRACKING_MEAN_RATE_DPS = 0.2
+YAW_BIAS_TRACKING_MEAN_SPEED_DPS = 0.35
+YAW_BIAS_TRACKING_MIN_SAMPLES = 50
 
 # ============================================================================
 # Network / UDP
@@ -233,7 +248,6 @@ GYRO_ADAPTIVE_CROSS_AXIS_THRESHOLD_FLOOR = 0.5
 GYRO_ADAPTIVE_REVERSAL_CONFIRM_S = 0.10
 CUSTOM_INPUT_LIMIT_DEG_RANGE = (1.0, 180.0)
 CUSTOM_INPUT_LIMIT_DEG_STEP = 0.1
-INPUT_LIMIT_CALIBRATION_POSE_STALE_S = 0.5
 
 # ============================================================================
 # GUI / Display
